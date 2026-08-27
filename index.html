@@ -1,0 +1,92 @@
+<div class="wtm-root">
+  <div class="wtm-header">
+    <div class="wtm-header-icon"><i class="fa-solid fa-book-open-reader"></i></div>
+    <div class="wtm-header-text">
+      <div class="wtm-title">웹툰 관리</div>
+      <div class="wtm-subtitle">네이버웹툰 무료 회차 자동 구독 &middot; 다운로드</div>
+    </div>
+    <div class="wtm-header-actions">
+      <button class="wtm-btn wtm-btn-ghost" data-action="refresh"><i class="fa-solid fa-rotate"></i> 새로고침</button>
+      <button class="wtm-btn wtm-btn-primary" data-action="scan_now"><i class="fa-solid fa-magnifying-glass"></i> 지금 스캔</button>
+      <button class="wtm-btn wtm-btn-primary" data-action="run_full_cycle_now"><i class="fa-solid fa-play"></i> 지금 전체 실행</button>
+    </div>
+  </div>
+
+  <div class="wtm-status-bar" data-el="status-bar">
+    <span class="wtm-status-pill" data-el="status-pill">대기 중</span>
+    <span data-el="status-message"></span>
+    <div class="wtm-progress" data-el="progress-wrap" style="display:none">
+      <div class="wtm-progress-bar" data-el="progress-bar"></div>
+    </div>
+    <button class="wtm-btn wtm-btn-small wtm-btn-danger" data-action="cancel_job" data-el="cancel-btn" style="display:none">취소</button>
+  </div>
+
+  <div class="wtm-tabs" data-el="tabs">
+    <button class="wtm-tab active" data-tab="all">전체목록</button>
+    <button class="wtm-tab" data-tab="subscribed">구독중</button>
+    <button class="wtm-tab" data-tab="unsubscribed">구독해제</button>
+    <button class="wtm-tab" data-tab="excluded">제외됨</button>
+    <button class="wtm-tab" data-tab="manual">수동 다운로드</button>
+    <button class="wtm-tab" data-tab="authors">작가·태그 관리</button>
+    <button class="wtm-tab" data-tab="history">다운로드 이력</button>
+    <button class="wtm-tab" data-tab="settings">설정</button>
+  </div>
+
+  <div class="wtm-toolbar" data-panel="all,subscribed,unsubscribed,excluded">
+    <input type="text" class="wtm-input" data-el="search-input" placeholder="제목/작가로 검색">
+  </div>
+
+  <div class="wtm-panel" data-panel-view="all,subscribed,unsubscribed,excluded">
+    <div class="wtm-card-grid" data-el="title-grid"></div>
+  </div>
+
+  <div class="wtm-panel" data-panel-view="manual" style="display:none">
+    <div class="wtm-form-row">
+      <input type="text" class="wtm-input" data-el="manual-title-id" placeholder="titleId 입력 (예: 758037)">
+      <button class="wtm-btn wtm-btn-primary" data-action="manual_lookup">조회</button>
+    </div>
+    <div data-el="manual-result"></div>
+  </div>
+
+  <div class="wtm-panel" data-panel-view="authors" style="display:none">
+    <div class="wtm-two-col">
+      <div class="wtm-box">
+        <div class="wtm-box-title">관심 작가</div>
+        <div class="wtm-form-row">
+          <input type="text" class="wtm-input" data-el="author-input" placeholder="작가명 입력">
+          <button class="wtm-btn wtm-btn-primary" data-action="add_author">추가</button>
+        </div>
+        <div class="wtm-chip-list" data-el="author-list"></div>
+      </div>
+      <div class="wtm-box">
+        <div class="wtm-box-title">관심 태그</div>
+        <div class="wtm-form-row">
+          <input type="text" class="wtm-input" data-el="tag-input" placeholder="태그(장르 코드) 입력">
+          <button class="wtm-btn wtm-btn-primary" data-action="add_tag">추가</button>
+        </div>
+        <div class="wtm-chip-list" data-el="tag-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="wtm-panel" data-panel-view="history" style="display:none">
+    <div class="wtm-history-list" data-el="history-list"></div>
+  </div>
+
+  <div class="wtm-panel" data-panel-view="settings" style="display:none">
+    <div class="wtm-box">
+      <div class="wtm-box-title">요약</div>
+      <div class="wtm-settings-summary" data-el="settings-summary"></div>
+      <p class="wtm-hint">
+        네이버 아이디/비밀번호/쿠키, 디스코드, 다운로드 경로 등 세부 값은
+        환경설정 &gt; 플러그인 설정 &gt; 웹툰 관리 화면에서 입력합니다.
+        여기서는 확인 및 디스코드 테스트만 가능합니다.
+      </p>
+      <button class="wtm-btn wtm-btn-secondary" data-action="test_discord">디스코드 테스트 알림 보내기</button>
+    </div>
+    <div class="wtm-box">
+      <div class="wtm-box-title">실행 로그(최근)</div>
+      <pre class="wtm-log" data-el="log-tail"></pre>
+    </div>
+  </div>
+</div>
