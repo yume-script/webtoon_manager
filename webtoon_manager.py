@@ -76,18 +76,15 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         {"key": "DISCORD_CHANNEL_ID", "label": "디스코드 채널 ID(선택)", "type": "text"},
     ]
 
-    # 공식 가이드 문서 계약(all_desk_tab)과, 실제 배포 환경에서 좌측 사이드바
-    # 전용 탭으로 확인된 category_tab 속성을 함께 선언해 둘 다 호환.
-    dashboard_widget = {
+    # plugin_board(실제 동작 중인 참조 플러그인) 기준: 좌측 사이드바 1등 시민
+    # 탭으로 등록하려면 category_tab이 True가 아니라 dict여야 한다
+    # (title/icon/order 필드로 사이드바 메뉴 항목을 구성). dashboard_widget은
+    # "공통 데스크" 카드용 별개 메커니즘이라 category_tab과 병행 선언하지 않는다.
+    category_tab = {
         "title": "웹툰 관리",
-        "subtitle": "네이버웹툰 구독/자동 다운로드",
-        "provider": "Naver Webtoon",
         "icon": "fa-solid fa-book-open-reader",
-        "limit": 5000,
-        "all_desk_tab": True,
-        "supported_types": ["general", "adult"],
+        "order": 50,
     }
-    category_tab = True
 
     update_manifest = {
         "enabled": True,
@@ -111,7 +108,14 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         return {"success": True, "items": []}
 
     def apply(self, db_type, book_id, item_data):
-        return False, "이 플러그인은 메타데이터 적용 대상이 아닙니다. 카테고리탭에서 사용하세요."
+        """plugin_board(실제 동작 확인된 참조 플러그인) 기준: apply()가 카테고리탭
+        script.js의 실제 액션 RPC 진입점이다. book_id는 이 플러그인에서 의미
+        없는 값(0 등)으로 넘어오며, 실제 라우팅은 item_data['action']으로 한다."""
+        try:
+            item_data = item_data or {}
+            return self._dispatch(db_type, item_data.get("action"), item_data)
+        except Exception as e:  # noqa: BLE001
+            return False, "예상치 못한 오류가 발생했습니다: %s" % e
 
     # ------------------------------------------------------------------
     # 설정 헬퍼
@@ -188,14 +192,6 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
 
     def run_context_menu_action(self, db_type, action_id, context):
         return self._dispatch(db_type, action_id, context or {})
-
-    def run_action(self, db_type, item_data):
-        """index.html/script.js가 직접 호출하는 액션 엔드포인트용 진입점.
-        코어가 apply()를 book_id 없는 범용 채널로 라우팅하지 않는 경우를 대비해
-        같은 이름의 헬퍼를 별도로 노출해둔다."""
-        item_data = item_data or {}
-        action = item_data.get("action")
-        return self._dispatch(db_type, action, item_data)
 
     def _dispatch(self, db_type, action, payload):
         try:
