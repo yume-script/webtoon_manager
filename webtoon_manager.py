@@ -9,8 +9,10 @@ GitHub murianwind/webtoon-manager(네이버웹툰 무료 회차 자동 구독/�
 알림, 주기 실행 스케줄러, 구독해제/제외 관리, 수동 다운로드, 다운로드 이력.
 
 화면: index.html(카테고리탭 풀페이지) + script.js + style.css.
+
 데이터: get_dashboard_data()가 전체 상태를 한 번에 반환하고, 화면에서는
 탭별로 클라이언트 사이드 필터링만 한다(작품 수가 매우 많지 않다는 전제).
+
 액션(구독/다운로드/설정 등)은 apply(db_type, book_id=0, item_data)를
 범용 RPC 채널로 사용한다 (rclone_g2g_copy 플러그인과 동일한 패턴).
 """
@@ -20,11 +22,14 @@ import time
 
 from plugins.metadata.base import BaseMetadataProvider
 
-from .core import state_store as ss
-from .core import pipeline
-from .core import scheduler
-from .core import discord_notify
-from .core import naver_api
+# NOTE: 이 저장소(yume-script/webtoon_manager)는 core/ 서브패키지 없이
+# 모든 모듈이 플러그인 루트에 flat 하게 있음. pipeline.py 등 다른 모듈들도
+# 전부 `from . import ...` 형태로 서로를 참조하므로 여기도 동일하게 맞춤.
+from . import state_store as ss
+from . import pipeline
+from . import scheduler
+from . import discord_notify
+from . import naver_api
 
 PLUGIN_ID = "webtoon_manager"
 
@@ -89,10 +94,11 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         "provider": "github-raw",
         "raw_base_url": "https://raw.githubusercontent.com/yume-script/webtoon_manager/main",
         "files": ["webtoon_manager.py", "__init__.py", "VERSION",
-                   "index.html", "style.css", "script.js",
-                   "core/__init__.py", "core/state_store.py", "core/naver_api.py",
-                   "core/downloader.py", "core/discord_notify.py", "core/scheduler.py",
-                   "core/pipeline.py"],
+                  "index.html", "style.css", "script.js", "settings.html",
+                  "requirements.txt",
+                  "state_store.py", "naver_api.py",
+                  "downloader.py", "discord_notify.py", "scheduler.py",
+                  "pipeline.py"],
         "version_file": "VERSION",
         "version_key": "plugin version",
         "show_sample_update_button": True,
@@ -241,6 +247,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         job = ss.load_job_state()
         if job.get("running"):
             return False, "이미 실행 중인 작업이 있습니다"
+
         cfg = self._get_cfg(db_type)
         ss.save_job_state({"running": True, "stage": "starting", "message": "%s 시작" % label,
                             "started_at": time.time(), "cancel_requested": False,
@@ -310,7 +317,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                             "progress": 0, "total": len(episode_nos)})
 
         def _runner():
-            from .core import downloader as dl
+            from . import downloader as dl
             session = pipeline.build_session_from_cfg(cfg)
             ok_count = 0
             for i, no in enumerate(episode_nos):
