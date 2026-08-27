@@ -91,7 +91,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         "provider": "github-raw",
         "raw_base_url": "https://raw.githubusercontent.com/yume-script/webtoon_manager/main",
         "files": ["webtoon_manager.py", "__init__.py", "VERSION",
-                  "index.html", "style.css", "script.js", "settings.html",
+                  "index.html", "style.css", "script.js",
                   "requirements.txt",
                   "state_store.py", "naver_api.py",
                   "downloader.py", "discord_notify.py", "scheduler.py",

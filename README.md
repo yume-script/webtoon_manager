@@ -45,9 +45,12 @@
   넘어옵니다. 동일 로직을 `run_context_menu_action()`으로도 노출해 컨텍스트 메뉴에서도
   호출할 수 있게 합니다. (`run_action()`이라는 별도 메서드는 코어가 인식하지 않는
   존재하지 않는 계약이라 삭제했습니다.)
-- 설정 폼 커스터마이징이 필요하면 `settings.html`(+ `settings.css`/`settings.js`)을 따로
-  둡니다. `index.html`/`style.css`/`script.js`는 `category_tab` 선언 시 **필수인 카테고리
-  풀페이지 뷰**이고, 이 둘은 서로 다른 용도입니다.
+- `settings.html`은 **존재 자체가 "커스텀 설정 화면을 쓴다"는 신호**입니다(`plugin_board.py`의
+  `_has_settings_ui()` 참고: 파일이 있으면 코어가 `config_schema` 자동 폼 대신 이 파일을
+  설정 화면으로 씁니다). 안내 문구만 들어있는 `settings.html`을 두면 표준 폼이 안 뜨고
+  입력할 곳이 사라지므로, **`settings.html`은 아예 만들지 않고 `config_schema`가 표준 폼을
+  자동 생성**하도록 둡니다. 커스텀 폼이 정말 필요해지면 그때 실제 입력 필드를 갖춘
+  `settings.html`/`settings.css`/`settings.js`로 새로 만들어야 합니다.
 
 ## 파일 구조
 
@@ -61,7 +64,7 @@ webtoon_manager/
   VERSION
   requirements.txt        # 빈 파일(코어에 requests가 이미 있다는 전제)
   index.html / style.css / script.js   # 카테고리탭 풀페이지 UI
-  settings.html            # 설정 모달 안내문(세부 입력은 config_schema 표준 폼 사용)
+  settings.html            # (사용 안 함 — 존재하면 config_schema 자동 폼이 꺼지므로 만들지 않음)
   state_store.py            # 파일 기반 상태 저장(모듈 재로드에도 값 유지)
   naver_api.py               # 목록/회차/이미지 스크래핑
   downloader.py                # 이미지 다운로드/저장
