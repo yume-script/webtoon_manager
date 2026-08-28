@@ -484,24 +484,67 @@ def fetch_episode_list(session, title_id, max_pages=50):
     return episodes
 
 
+_IMAGE_URL_RE = re.compile(r'https?://[^\s"\'\\]+\.(?:jpg|jpeg|png|webp|gif)(?:\?[^\s"\'\\]*)?', re.I)
+# 실제 회차 컨텐츠 이미지가 서빙되는 CDN 호스트로 알려진 패턴만 채택해,
+# __NEXT_DATA__ 트리 안에 섞여있을 수 있는 프로필/배너 등 무관한 이미지를 배제한다.
+_IMAGE_CDN_HOST_RE = re.compile(r'(image-comic\.pstatic\.net|comicimage|cptoon)', re.I)
+
+
 def fetch_episode_images(session, title_id, episode_no):
     url = "%s?titleId=%s&no=%s" % (NAVER_DETAIL_URL, title_id, episode_no)
     resp = _naver_get(session, url, referer=NAVER_BASE + "/")
     html = resp.text
 
-    if "성인인증" in html or "adult_ok" in html or "만 19세" in html:
-        imgs = _IMG_RE.findall(html)
-        if not imgs:
+    # 1차: 구방식(정적 <img class="wt_viewer"> 태그) 시도
+    imgs = _IMG_RE.findall(html)
+    imgs = [u for u in imgs if _IMAGE_CDN_HOST_RE.search(u) or u.startswith("http")]
+
+    # 2차: 목록 페이지와 동일하게, 페이지가 Next.js로 바뀌어 정적 태그가 없는
+    # 경우 __NEXT_DATA__ JSON 트리 안에서 이미지 URL을 직접 추출한다.
+    if not imgs:
+        data = _extract_next_data(html)
+        if data is not None:
+            found = []
+            seen = set()
+            _walk_image_urls(data, found, seen, require_cdn_host=True)
+            if not found:
+                # CDN 호스트 패턴이 바뀌었을 가능성 — 필터를 풀고 한 번 더 시도
+                _walk_image_urls(data, found, seen, require_cdn_host=False)
+            imgs = found
+
+    if not imgs:
+        if "성인인증" in html or "adult_ok" in html or "만 19세" in html:
             raise NaverAuthExpired(
                 "titleId=%s no=%s: 성인 인증이 필요하거나 쿠키가 만료된 것으로 보임" %
                 (title_id, episode_no))
-
-    imgs = _IMG_RE.findall(html)
-    imgs = [u for u in imgs if "image-comic" in u or "comicimage" in u or "cptoon" in u or u.startswith("http")]
-    if not imgs:
-        raise ValueError("titleId=%s no=%s: 이미지 목록을 찾지 못함(페이지 구조 변경 가능성)" %
-                          (title_id, episode_no))
+        next_data_found = _extract_next_data(html) is not None
+        raise ValueError(
+            "titleId=%s no=%s: 이미지 목록을 찾지 못함(페이지 구조 변경 가능성, "
+            "__NEXT_DATA__ %s)" % (title_id, episode_no,
+                                    "발견됨(이미지 매칭 실패)" if next_data_found else "없음"))
     return imgs
+
+
+def _walk_image_urls(node, out, seen, require_cdn_host=True):
+    """__NEXT_DATA__ JSON 트리를 훑어 이미지 URL 문자열을 등장 순서대로 모은다
+    (정확한 키 이름을 몰라 값 전체를 대상으로 정규식 매칭).
+    require_cdn_host=True면 알려진 회차 이미지 CDN 호스트 패턴만 채택하고,
+    False면(1차 시도가 아무것도 못 찾았을 때의 폴백) 확장자만 맞으면 채택한다."""
+    if isinstance(node, str):
+        for m in _IMAGE_URL_RE.finditer(node):
+            u = m.group(0)
+            if u in seen:
+                continue
+            if require_cdn_host and not _IMAGE_CDN_HOST_RE.search(u):
+                continue
+            seen.add(u)
+            out.append(u)
+    elif isinstance(node, dict):
+        for v in node.values():
+            _walk_image_urls(v, out, seen, require_cdn_host)
+    elif isinstance(node, list):
+        for v in node:
+            _walk_image_urls(v, out, seen, require_cdn_host)
 
 
 def guess_title_meta(session, title_id):
