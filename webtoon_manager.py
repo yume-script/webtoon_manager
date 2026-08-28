@@ -181,6 +181,14 @@ DEFAULT_JOB_STATE = {
     "last_scan_at": None,
     "last_error": None,
     "cancel_requested": False,
+    # 수동 다운로드는 스캔/전체실행과 완전히 독립된 별도 플래그를 쓴다 —
+    # 이전에는 "running" 하나를 공유해서, 백그라운드 스캔이 도는 동안
+    # 수동 다운로드가 "이미 실행 중인 작업이 있습니다"로 막히는 문제가 있었다.
+    "manual_running": False,
+    "manual_message": "",
+    "manual_progress": 0,
+    "manual_total": 0,
+    "manual_cancel_requested": False,
 }
 
 
@@ -350,10 +358,12 @@ def _fetch_tab_titles(session, tab, page=None):
     return out
 
 
-def fetch_weekday_titles(session):
+def fetch_weekday_titles(session, cancel_check=None):
     """요일별(mon~sun) + dailyPlus(일일플러스) 탭을 모두 훑어 병합한다."""
     out = {}
     for tab in NAVER_WEEKDAY_TABS:
+        if cancel_check and cancel_check():
+            break
         try:
             items = _fetch_tab_titles(session, tab)
         except (requests.RequestException, ValueError):
@@ -368,11 +378,13 @@ def fetch_weekday_titles(session):
     return out
 
 
-def fetch_finished_titles(session, max_pages=200):
+def fetch_finished_titles(session, max_pages=200, cancel_check=None):
     """완결(finish) 탭을 페이지네이션하며 훑는다. 새로 나오는 titleId가 없어지면 중단."""
     out = {}
     page = 1
     while page <= max_pages:
+        if cancel_check and cancel_check():
+            break
         try:
             items = _fetch_tab_titles(session, NAVER_FINISH_TAB, page=page)
         except (requests.RequestException, ValueError):
@@ -388,12 +400,14 @@ def fetch_finished_titles(session, max_pages=200):
     return out
 
 
-def fetch_genre_titles(session, genre, max_pages=50):
+def fetch_genre_titles(session, genre, max_pages=50, cancel_check=None):
     """장르/태그 탭도 같은 URL 패턴(tab=장르코드)을 쓴다고 가정하고 동일하게 처리한다.
     실제 장르 탭 파라미터 이름이 다르면(예: genreTab, genre=...) 이 함수만 고치면 된다."""
     out = {}
     page = 1
     while page <= max_pages:
+        if cancel_check and cancel_check():
+            break
         try:
             items = _fetch_tab_titles(session, genre, page=page if page > 1 else None)
         except (requests.RequestException, ValueError):
@@ -687,26 +701,41 @@ def build_session_from_cfg(cfg):
 
 def run_scan(cfg, log=print):
     session = build_session_from_cfg(cfg)
+
+    def _cancelled():
+        return bool(load_job_state().get("cancel_requested"))
+
     save_job_state({"stage": "scanning", "message": "요일별 목록 수집 중"})
     log("요일별 연재 목록 수집 시작")
     merged = {}
     try:
-        merged.update(fetch_weekday_titles(session))
+        merged.update(fetch_weekday_titles(session, cancel_check=_cancelled))
     except Exception as e:  # noqa: BLE001
         log("요일별 목록 수집 실패: %s" % e)
+
+    if _cancelled():
+        log("사용자 요청으로 스캔 취소됨(요일별 수집 이후)")
+        return {"scanned": 0, "finished_events": [], "cancelled": True}
 
     save_job_state({"message": "완결 목록 수집 중"})
     log("완결 목록 수집 시작")
     try:
-        merged.update(fetch_finished_titles(session))
+        merged.update(fetch_finished_titles(session, cancel_check=_cancelled))
     except Exception as e:  # noqa: BLE001
         log("완결 목록 수집 실패: %s" % e)
 
+    if _cancelled():
+        log("사용자 요청으로 스캔 취소됨(완결 수집 이후)")
+        return {"scanned": 0, "finished_events": [], "cancelled": True}
+
     at = load_authors_tags()
     for tag in at.get("tags", []):
+        if _cancelled():
+            log("사용자 요청으로 스캔 취소됨(태그 수집 중)")
+            return {"scanned": 0, "finished_events": [], "cancelled": True}
         save_job_state({"message": "태그 '%s' 목록 수집 중" % tag})
         try:
-            merged.update(fetch_genre_titles(session, tag))
+            merged.update(fetch_genre_titles(session, tag, cancel_check=_cancelled))
         except Exception as e:  # noqa: BLE001
             log("태그 '%s' 수집 실패: %s" % (tag, e))
 
@@ -847,6 +876,10 @@ def run_full_cycle(cfg, log=print):
                      "cancel_requested": False})
     try:
         scan_result = run_scan(cfg, log=log)
+        if scan_result.get("cancelled"):
+            save_job_state({"running": False, "stage": "idle", "finished_at": time.time(),
+                             "message": "사용자 요청으로 취소됨"})
+            return {"scan": scan_result, "download": None}
         dl_result = run_download_cycle(cfg, log=log)
         save_job_state({"running": False, "stage": "done", "finished_at": time.time(),
                          "message": "완료: 스캔 %d개 / 신규 %d화 / 실패 %d건" % (
@@ -1074,8 +1107,13 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             if action == "run_full_cycle_now":
                 return self._act_run_bg(db_type, run_full_cycle, "전체 실행")
             if action == "cancel_job":
-                save_job_state({"cancel_requested": True})
+                save_job_state({"cancel_requested": True, "manual_cancel_requested": True})
                 return True, "취소 요청됨"
+            if action == "force_reset_job":
+                save_job_state({"running": False, "manual_running": False,
+                                 "cancel_requested": False, "manual_cancel_requested": False,
+                                 "stage": "idle", "message": "강제 초기화됨"})
+                return True, "작업 상태를 강제로 초기화했습니다"
             if action == "subscribe":
                 return self._act_set_flags(payload.get("titleId"), subscribed=True,
                                             excluded=False, unsubscribed=False)
@@ -1123,6 +1161,15 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             except Exception as e:  # noqa: BLE001
                 append_log("%s 실행 실패: %s" % (label, e))
                 save_job_state({"running": False, "stage": "error", "last_error": str(e)})
+            else:
+                # run_full_cycle()은 스스로 running=False를 정리하지만, run_scan()처럼
+                # 단독으로 넘겨받는 함수는 그렇지 않다. 함수가 끝났는데도 여전히
+                # running=True로 남아있으면 여기서 강제로 정리해, "지금 스캔"만 돌리고
+                # 나면 이후 모든 액션이 "이미 실행 중인 작업이 있습니다"로 영원히
+                # 막히는 문제를 방지한다.
+                job = load_job_state()
+                if job.get("running"):
+                    save_job_state({"running": False, "stage": "done", "finished_at": time.time()})
 
         t = threading.Thread(target=_runner, name="webtoon_manager_%s" % _action_slug(label), daemon=True)
         t.start()
@@ -1170,22 +1217,22 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             return False, "titleId/episodeNos 필요"
 
         job = load_job_state()
-        if job.get("running"):
-            return False, "이미 실행 중인 작업이 있습니다"
+        if job.get("manual_running"):
+            return False, "이미 실행 중인 수동 다운로드가 있습니다"
 
         cfg = self._get_cfg(db_type)
-        save_job_state({"running": True, "stage": "downloading", "message": "수동 다운로드 시작",
-                         "started_at": time.time(), "cancel_requested": False, "last_error": None,
-                         "progress": 0, "total": len(episode_nos)})
+        save_job_state({"manual_running": True, "manual_message": "수동 다운로드 시작",
+                         "manual_cancel_requested": False,
+                         "manual_progress": 0, "manual_total": len(episode_nos)})
 
         def _runner():
             session = build_session_from_cfg(cfg)
             ok_count = 0
             for i, no in enumerate(episode_nos):
-                if load_job_state().get("cancel_requested"):
+                if load_job_state().get("manual_cancel_requested"):
                     append_log("수동 다운로드 취소됨")
                     break
-                save_job_state({"progress": i, "message": "%s %s화 다운로드 중" % (title, no)})
+                save_job_state({"manual_progress": i, "manual_message": "%s %s화 다운로드 중" % (title, no)})
                 try:
                     ok, skipped, cnt, err = download_episode(
                         session, cfg.get("DOWNLOAD_ROOT") or DOWNLOAD_DEFAULT_DIR,
@@ -1207,8 +1254,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                     append_log("인증 만료: %s" % e)
                     notify_cookie_expired(cfg)
                     break
-            save_job_state({"running": False, "stage": "done", "finished_at": time.time(),
-                             "message": "수동 다운로드 완료(%d화)" % ok_count})
+            save_job_state({"manual_running": False,
+                             "manual_message": "수동 다운로드 완료(%d화)" % ok_count})
 
         t = threading.Thread(target=_runner, name="webtoon_manager_manual_dl", daemon=True)
         t.start()

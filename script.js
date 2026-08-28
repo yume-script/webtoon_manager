@@ -327,7 +327,7 @@
     if (headerAction) {
       var action = headerAction.getAttribute('data-action');
       if (action === 'refresh') { await refresh(); return; }
-      if (action === 'scan_now' || action === 'run_full_cycle_now' || action === 'cancel_job' || action === 'test_discord') {
+      if (action === 'scan_now' || action === 'run_full_cycle_now' || action === 'cancel_job' || action === 'force_reset_job' || action === 'test_discord') {
         headerAction.disabled = true;
         var r = await callAction({ action: action });
         headerAction.disabled = false;
