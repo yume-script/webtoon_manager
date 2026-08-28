@@ -51,21 +51,20 @@ gd_poller4bookoasis, rclone_g2g_copy)에서 확인된 아래 두 가지 관례�
 
 ## 파일 구조
 
+core/ 하위 폴더 없이 전부 `webtoon_manager.py` 한 파일에 통합했습니다
+(상태저장소 / 네이버 API / 다운로더 / 디스코드 알림 / 스케줄러 / 파이프라인 /
+플러그인 클래스 전부 포함). BookOasis가 이 플러그인 모듈을 정확히 어떤 방식으로
+import하는지 문서화되어 있지 않아, 상대/절대 임포트 경로 문제 자체를 아예
+없애기 위한 선택입니다.
+
 ```
 webtoon_manager/
   __init__.py
-  webtoon_manager.py     # 플러그인 메인 클래스
+  webtoon_manager.py     # 플러그인 전체 (상태저장/네이버API/다운로더/디스코드/스케줄러/파이프라인/클래스)
   VERSION
   requirements.txt        # 빈 파일(코어에 requests가 이미 있다는 전제)
   index.html / style.css / script.js   # 카테고리탭 풀페이지 UI
   settings.html            # 설정 모달 안내문(세부 입력은 config_schema 표준 폼 사용)
-  core/
-    state_store.py         # 파일 기반 상태 저장(모듈 재로드에도 값 유지)
-    naver_api.py            # 목록/회차/이미지 스크래핑
-    downloader.py            # 이미지 다운로드/저장
-    discord_notify.py         # 웹훅/봇 알림
-    scheduler.py               # 백그라운드 주기 실행
-    pipeline.py                  # 스캔→자동구독→다운로드→알림 파이프라인
 ```
 
 ## 의존성
