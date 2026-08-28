@@ -239,6 +239,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 return self._act_manual_lookup(db_type, payload.get("titleId"))
             if action == "manual_download":
                 return self._act_manual_download(db_type, payload)
+            if action == "download_title":
+                return self._act_download_title(db_type, payload.get("titleId"))
             if action == "test_discord":
                 return self._act_test_discord(db_type)
             return False, "알 수 없는 action: %s" % action
@@ -360,6 +362,86 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         t = threading.Thread(target=_runner, name="webtoon_manager_manual_dl", daemon=True)
         t.start()
         return True, "수동 다운로드 시작됨(백그라운드)"
+
+    def _act_download_title(self, db_type, title_id):
+        """구독중 카드의 '지금 다운로드' 버튼: 회차를 직접 선택하지 않고,
+        그 작품의 last_downloaded_no보다 새로운 회차를 자동으로 찾아 전부
+        받는다(run_download_cycle과 같은 로직을 titleId 하나로 축소한 버전)."""
+        if not title_id:
+            return False, "titleId 필요"
+        job = ss.load_job_state()
+        if job.get("running"):
+            return False, "이미 실행 중인 작업이 있습니다"
+
+        cfg = self._get_cfg(db_type)
+        titles = ss.load_titles()
+        t_info = titles.get(str(title_id))
+        if not t_info:
+            return False, "구독 목록에 없는 titleId입니다"
+
+        title_name = t_info.get("title", title_id)
+        ss.save_job_state({"running": True, "stage": "downloading",
+                            "message": "%s 새 회차 확인 중" % title_name,
+                            "started_at": time.time(), "cancel_requested": False,
+                            "last_error": None, "progress": 0, "total": 0})
+
+        def _runner():
+            from . import downloader as dl
+            session = pipeline.build_session_from_cfg(cfg)
+            try:
+                new_eps = pipeline._episodes_to_download(
+                    session, cfg, str(title_id), t_info.get("last_downloaded_no"))
+            except Exception as e:  # noqa: BLE001
+                ss.append_log("회차 목록 조회 실패: %s" % e)
+                ss.save_job_state({"running": False, "stage": "error", "last_error": str(e)})
+                return
+
+            if not new_eps:
+                ss.save_job_state({"running": False, "stage": "done", "finished_at": time.time(),
+                                    "message": "%s: 새 회차 없음" % title_name})
+                return
+
+            ss.save_job_state({"total": len(new_eps)})
+            last_ok_no = t_info.get("last_downloaded_no")
+            ok_count = 0
+            for i, ep in enumerate(new_eps):
+                if ss.load_job_state().get("cancel_requested"):
+                    ss.append_log("다운로드 취소됨")
+                    break
+                ss.save_job_state({"progress": i, "message": "%s %s화 다운로드 중" % (title_name, ep["no"])})
+                try:
+                    ok, skipped, cnt, err = dl.download_episode(
+                        session, cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR,
+                        title_name, title_id, ep["no"],
+                        image_zero_fill=int(cfg.get("IMAGE_ZERO_FILL", 4)),
+                        folder_zero_fill=int(cfg.get("FOLDER_ZERO_FILL", 4)),
+                        max_concurrent=int(cfg.get("MAX_CONCURRENT_DOWNLOADS", 5)),
+                        delay_seconds=float(cfg.get("DELAY_SECONDS", 1.0)),
+                        timeout=int(cfg.get("REQUEST_TIMEOUT_SECONDS", 10)),
+                        log=ss.append_log)
+                except naver_api.NaverAuthExpired as e:
+                    ss.append_log("인증 만료: %s" % e)
+                    discord_notify.notify_cookie_expired(cfg)
+                    break
+                if ok:
+                    last_ok_no = ep["no"]
+                    if not skipped:
+                        ok_count += 1
+                        ss.append_history({"type": "download", "title_id": title_id,
+                                            "title": title_name, "episode_no": ep["no"],
+                                            "image_count": cnt})
+                else:
+                    ss.append_history({"type": "download_fail", "title_id": title_id,
+                                        "title": title_name, "episode_no": ep["no"], "error": err})
+
+            if last_ok_no != t_info.get("last_downloaded_no"):
+                ss.upsert_title({str(title_id): {"last_downloaded_no": last_ok_no}})
+            ss.save_job_state({"running": False, "stage": "done", "finished_at": time.time(),
+                                "message": "%s 다운로드 완료(%d화)" % (title_name, ok_count)})
+
+        t = threading.Thread(target=_runner, name="webtoon_manager_dl_title", daemon=True)
+        t.start()
+        return True, "%s 다운로드 시작됨(백그라운드)" % title_name
 
     def _act_test_discord(self, db_type):
         cfg = self._get_cfg(db_type)

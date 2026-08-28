@@ -120,7 +120,8 @@
   function cardActionsHtml(t) {
     var st = statusOf(t);
     if (st === 'subscribed') {
-      return '<button class="wtm-btn wtm-btn-small" data-card-action="unsubscribe" data-title-id="' + t.titleId + '">구독해제</button>' +
+      return '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-card-action="download_title" data-title-id="' + t.titleId + '">지금 다운로드</button>' +
+        '<button class="wtm-btn wtm-btn-small" data-card-action="unsubscribe" data-title-id="' + t.titleId + '">구독해제</button>' +
         '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-card-action="exclude" data-title-id="' + t.titleId + '">제외</button>';
     }
     if (st === 'unsubscribed' || st === 'excluded') {
