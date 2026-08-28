@@ -196,9 +196,12 @@
     if (!list.length) { box.innerHTML = '<div class="wtm-hint">다운로드 이력이 없습니다.</div>'; return; }
     box.innerHTML = list.map(function (h) {
       var isFail = (h.type || '').indexOf('fail') >= 0;
+      var isSkipPaid = h.type === 'download_skip_paid';
       var text = '';
       if (h.type === 'download' || h.type === 'manual_download') {
         text = escapeHtml(h.title) + ' - ' + h.episode_no + '화 (' + (h.image_count || 0) + '장)';
+      } else if (isSkipPaid) {
+        text = escapeHtml(h.title) + ' - ' + h.episode_no + '화 (유료라 건너뜀)';
       } else if (isFail) {
         text = escapeHtml(h.title) + ' - ' + h.episode_no + '화 실패: ' + escapeHtml(h.error || '');
       } else {

@@ -1010,6 +1010,20 @@ def run_download_cycle(cfg, log=print):
 
             last_ok_no = t.get("last_downloaded_no")
             for ep in capped:
+                if ep.get("charge"):
+                    # 유료 회차 — "무료 회차 자동 다운로드"가 원래 취지이므로 여기서
+                    # 멈춘다. last_downloaded_no를 이 회차까지 올리지 않아, 나중에
+                    # 무료로 전환되면 다음 사이클에서 다시 시도된다. 이후(더 최신)
+                    # 회차들도 대부분 유료일 가능성이 높아 이 작품은 이번 사이클에서
+                    # 더 진행하지 않고 건너뛴다.
+                    log("titleId=%s no=%s: 유료 회차라 건너뜀" % (tid, ep["no"]))
+                    append_history({
+                        "type": "download_skip_paid", "title_id": tid, "title": t.get("title", tid),
+                        "episode_no": ep["no"], "subtitle": ep.get("subtitle"),
+                    })
+                    rest_needed = False
+                    break
+
                 try:
                     ok, skipped, img_count, err = download_episode(
                         session, download_root, t.get("title", tid), tid, ep["no"],
