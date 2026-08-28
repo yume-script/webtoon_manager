@@ -440,9 +440,14 @@
       '<input type="checkbox" data-ep-select-all> 전체 선택</label>' +
       '<div style="max-height:260px;overflow:auto">' +
       eps.map(function (e) {
+        if (e.charge) {
+          return '<div style="display:flex;gap:8px;padding:3px 0;font-size:12px;opacity:.45">' +
+            '<span style="width:13px"></span>' +
+            e.no + '화 - ' + escapeHtml(e.subtitle || '') + ' (유료 · 다운로드 불가)</div>';
+        }
         return '<label style="display:flex;gap:8px;padding:3px 0;font-size:12px">' +
           '<input type="checkbox" data-ep-checkbox="' + e.no + '"> ' +
-          e.no + '화 - ' + escapeHtml(e.subtitle || '') + (e.charge ? ' (유료)' : '') + '</label>';
+          e.no + '화 - ' + escapeHtml(e.subtitle || '') + '</label>';
       }).join('') +
       '</div>' +
       '<button class="wtm-btn wtm-btn-primary" style="margin-top:8px" data-action="manual_download_selected">선택 회차 다운로드</button>' +
