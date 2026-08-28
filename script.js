@@ -240,6 +240,14 @@
     if (cancelBtn) cancelBtn.style.display = job.running ? '' : 'none';
 
     pollFastUntil = job.running ? (Date.now() + 30000) : pollFastUntil;
+
+    // 스캔/전체실행과 독립된 개별 작품 다운로드 상태(title_job)도 함께 표시
+    var tjob = state.title_job || {};
+    var tbar = el('[data-el="title-job-bar"]');
+    var tmsg = el('[data-el="title-job-message"]');
+    if (tbar) tbar.style.display = tjob.running ? '' : 'none';
+    if (tmsg) tmsg.textContent = tjob.message || '';
+    if (tjob.running) pollFastUntil = Date.now() + 30000;
   }
 
   function renderAll() {
@@ -299,7 +307,8 @@
     if (headerAction) {
       var action = headerAction.getAttribute('data-action');
       if (action === 'refresh') { await refresh(); return; }
-      if (action === 'scan_now' || action === 'run_full_cycle_now' || action === 'cancel_job' || action === 'test_discord') {
+      if (action === 'scan_now' || action === 'run_full_cycle_now' || action === 'cancel_job' ||
+          action === 'cancel_title_job' || action === 'test_discord') {
         headerAction.disabled = true;
         var r = await callAction(action, {});
         headerAction.disabled = false;

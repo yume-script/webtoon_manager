@@ -25,6 +25,12 @@ TITLES_PATH = os.path.join(DATA_DIR, "titles.json")
 AUTHORS_TAGS_PATH = os.path.join(DATA_DIR, "authors_tags.json")
 HISTORY_PATH = os.path.join(DATA_DIR, "history.jsonl")
 JOB_STATE_PATH = os.path.join(DATA_DIR, "job_state.json")
+# 개별 작품 다운로드("지금 다운로드"/수동 다운로드)는 스캔/전체실행과는 독립된
+# 락을 쓴다 - 둘 다 titles.json에 upsert_title()로 쓰지만, 그 함수는 모듈 전역
+# _lock(threading.RLock)로 감싸여 있어 동시 호출돼도 파일 경합은 안전하다.
+# 여기서 분리하는 건 오직 "이미 실행 중인 작업이 있습니다" 라는 상호 배제
+# 안내만 큰 작업(스캔/전체실행)과 작품 단위 다운로드가 서로 막지 않게 하기 위함.
+TITLE_JOB_STATE_PATH = os.path.join(DATA_DIR, "title_job_state.json")
 JOB_LOG_PATH = os.path.join(DATA_DIR, "job.log")
 SCHED_LOCK_PATH = os.path.join(DATA_DIR, "scheduler.lock")
 
@@ -167,6 +173,36 @@ def save_job_state(patch):
         st = load_job_state()
         st.update(patch)
         write_json(JOB_STATE_PATH, st)
+    return st
+
+
+# ---- title_job_state.json (개별 작품 다운로드 잡 진행상태, 스캔/전체실행과 독립) ---
+DEFAULT_TITLE_JOB_STATE = {
+    "running": False,
+    "title_id": None,
+    "title": None,
+    "message": "",
+    "progress": 0,
+    "total": 0,
+    "started_at": None,
+    "finished_at": None,
+    "cancel_requested": False,
+    "last_error": None,
+}
+
+
+def load_title_job_state():
+    st = read_json(TITLE_JOB_STATE_PATH, dict(DEFAULT_TITLE_JOB_STATE))
+    for k, v in DEFAULT_TITLE_JOB_STATE.items():
+        st.setdefault(k, v)
+    return st
+
+
+def save_title_job_state(patch):
+    with _lock:
+        st = load_title_job_state()
+        st.update(patch)
+        write_json(TITLE_JOB_STATE_PATH, st)
     return st
 
 

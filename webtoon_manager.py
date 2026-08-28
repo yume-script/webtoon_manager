@@ -169,6 +169,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             "authors_tags": ss.load_authors_tags(),
             "history": ss.load_history(limit=200),
             "job": ss.load_job_state(),
+            "title_job": ss.load_title_job_state(),
             "log_tail": ss.tail_log(60),
             "config_public": {
                 "NAVER_ID": cfg.get("NAVER_ID", ""),
@@ -214,6 +215,9 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 return self._act_run_bg(db_type, pipeline.run_full_cycle, "전체 실행")
             if action == "cancel_job":
                 ss.save_job_state({"cancel_requested": True})
+                return True, "취소 요청됨"
+            if action == "cancel_title_job":
+                ss.save_title_job_state({"cancel_requested": True})
                 return True, "취소 요청됨"
             if action == "subscribe":
                 return self._act_set_flags(payload.get("titleId"), subscribed=True,
@@ -315,25 +319,29 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         if not title_id or not episode_nos:
             return False, "titleId/episodeNos 필요"
 
-        job = ss.load_job_state()
-        if job.get("running"):
-            return False, "이미 실행 중인 작업이 있습니다"
+        # 스캔/전체실행(job_state)과는 독립된 락(title_job_state)을 쓴다 —
+        # 큰 작업이 도는 중에도 개별 작품 다운로드는 막히지 않게 하기 위함.
+        # 개별 작품 다운로드끼리는 여전히 한 번에 하나만 허용(순차 처리).
+        tjob = ss.load_title_job_state()
+        if tjob.get("running"):
+            return False, "이미 다른 작품을 다운로드 중입니다(%s). 완료 후 다시 시도해주세요." % (
+                tjob.get("title") or tjob.get("title_id") or "")
 
         cfg = self._get_cfg(db_type)
-        ss.save_job_state({"running": True, "stage": "downloading",
-                            "message": "수동 다운로드 시작", "started_at": time.time(),
-                            "cancel_requested": False, "last_error": None,
-                            "progress": 0, "total": len(episode_nos)})
+        ss.save_title_job_state({"running": True, "title_id": title_id, "title": title,
+                                  "message": "수동 다운로드 시작", "started_at": time.time(),
+                                  "cancel_requested": False, "last_error": None,
+                                  "progress": 0, "total": len(episode_nos)})
 
         def _runner():
             from . import downloader as dl
             session = pipeline.build_session_from_cfg(cfg)
             ok_count = 0
             for i, no in enumerate(episode_nos):
-                if ss.load_job_state().get("cancel_requested"):
+                if ss.load_title_job_state().get("cancel_requested"):
                     ss.append_log("수동 다운로드 취소됨")
                     break
-                ss.save_job_state({"progress": i, "message": "%s %s화 다운로드 중" % (title, no)})
+                ss.save_title_job_state({"progress": i, "message": "%s %s화 다운로드 중" % (title, no)})
                 try:
                     ok, skipped, cnt, err = dl.download_episode(
                         session, cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR,
@@ -356,8 +364,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                     ss.append_log("인증 만료: %s" % e)
                     discord_notify.notify_cookie_expired(cfg)
                     break
-            ss.save_job_state({"running": False, "stage": "done", "finished_at": time.time(),
-                                "message": "수동 다운로드 완료(%d화)" % ok_count})
+            ss.save_title_job_state({"running": False, "finished_at": time.time(),
+                                      "message": "수동 다운로드 완료(%d화)" % ok_count})
 
         t = threading.Thread(target=_runner, name="webtoon_manager_manual_dl", daemon=True)
         t.start()
@@ -366,12 +374,14 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
     def _act_download_title(self, db_type, title_id):
         """구독중 카드의 '지금 다운로드' 버튼: 회차를 직접 선택하지 않고,
         그 작품의 last_downloaded_no보다 새로운 회차를 자동으로 찾아 전부
-        받는다(run_download_cycle과 같은 로직을 titleId 하나로 축소한 버전)."""
+        받는다(run_download_cycle과 같은 로직을 titleId 하나로 축소한 버전).
+        스캔/전체실행(job_state)과는 독립된 title_job_state 락을 쓴다."""
         if not title_id:
             return False, "titleId 필요"
-        job = ss.load_job_state()
-        if job.get("running"):
-            return False, "이미 실행 중인 작업이 있습니다"
+        tjob = ss.load_title_job_state()
+        if tjob.get("running"):
+            return False, "이미 다른 작품을 다운로드 중입니다(%s). 완료 후 다시 시도해주세요." % (
+                tjob.get("title") or tjob.get("title_id") or "")
 
         cfg = self._get_cfg(db_type)
         titles = ss.load_titles()
@@ -380,10 +390,10 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             return False, "구독 목록에 없는 titleId입니다"
 
         title_name = t_info.get("title", title_id)
-        ss.save_job_state({"running": True, "stage": "downloading",
-                            "message": "%s 새 회차 확인 중" % title_name,
-                            "started_at": time.time(), "cancel_requested": False,
-                            "last_error": None, "progress": 0, "total": 0})
+        ss.save_title_job_state({"running": True, "title_id": title_id, "title": title_name,
+                                  "message": "%s 새 회차 확인 중" % title_name,
+                                  "started_at": time.time(), "cancel_requested": False,
+                                  "last_error": None, "progress": 0, "total": 0})
 
         def _runner():
             from . import downloader as dl
@@ -393,22 +403,22 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                     session, cfg, str(title_id), t_info.get("last_downloaded_no"))
             except Exception as e:  # noqa: BLE001
                 ss.append_log("회차 목록 조회 실패: %s" % e)
-                ss.save_job_state({"running": False, "stage": "error", "last_error": str(e)})
+                ss.save_title_job_state({"running": False, "last_error": str(e)})
                 return
 
             if not new_eps:
-                ss.save_job_state({"running": False, "stage": "done", "finished_at": time.time(),
-                                    "message": "%s: 새 회차 없음" % title_name})
+                ss.save_title_job_state({"running": False, "finished_at": time.time(),
+                                          "message": "%s: 새 회차 없음" % title_name})
                 return
 
-            ss.save_job_state({"total": len(new_eps)})
+            ss.save_title_job_state({"total": len(new_eps)})
             last_ok_no = t_info.get("last_downloaded_no")
             ok_count = 0
             for i, ep in enumerate(new_eps):
-                if ss.load_job_state().get("cancel_requested"):
+                if ss.load_title_job_state().get("cancel_requested"):
                     ss.append_log("다운로드 취소됨")
                     break
-                ss.save_job_state({"progress": i, "message": "%s %s화 다운로드 중" % (title_name, ep["no"])})
+                ss.save_title_job_state({"progress": i, "message": "%s %s화 다운로드 중" % (title_name, ep["no"])})
                 try:
                     ok, skipped, cnt, err = dl.download_episode(
                         session, cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR,
@@ -436,8 +446,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
 
             if last_ok_no != t_info.get("last_downloaded_no"):
                 ss.upsert_title({str(title_id): {"last_downloaded_no": last_ok_no}})
-            ss.save_job_state({"running": False, "stage": "done", "finished_at": time.time(),
-                                "message": "%s 다운로드 완료(%d화)" % (title_name, ok_count)})
+            ss.save_title_job_state({"running": False, "finished_at": time.time(),
+                                      "message": "%s 다운로드 완료(%d화)" % (title_name, ok_count)})
 
         t = threading.Thread(target=_runner, name="webtoon_manager_dl_title", daemon=True)
         t.start()
