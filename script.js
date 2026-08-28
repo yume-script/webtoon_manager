@@ -303,6 +303,14 @@
   // ------------------------------------------------------------------
   // 이벤트 바인딩
   // ------------------------------------------------------------------
+  container.addEventListener('change', function (ev) {
+    var selectAll = ev.target.closest('[data-ep-select-all]');
+    if (selectAll) {
+      var checked = selectAll.checked;
+      els('[data-ep-checkbox]').forEach(function (c) { c.checked = checked; });
+    }
+  });
+
   container.addEventListener('click', async function (ev) {
     var tabBtn = ev.target.closest('.wtm-tab');
     if (tabBtn) { setTab(tabBtn.getAttribute('data-tab')); return; }
@@ -400,6 +408,8 @@
     box.innerHTML =
       '<div class="wtm-box" style="margin-top:10px">' +
       '<div class="wtm-box-title">' + escapeHtml(lookupResult.title) + ' (titleId=' + lookupResult.titleId + ')</div>' +
+      '<label style="display:flex;gap:8px;padding:3px 0 8px;font-size:12px;font-weight:600">' +
+      '<input type="checkbox" data-ep-select-all> 전체 선택</label>' +
       '<div style="max-height:260px;overflow:auto">' +
       eps.map(function (e) {
         return '<label style="display:flex;gap:8px;padding:3px 0;font-size:12px">' +
