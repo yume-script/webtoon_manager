@@ -54,6 +54,7 @@ DEFAULTS = {
     "INTERVAL_MINUTES": 240,
     "MAX_NEW_EPISODES_PER_TITLE": 10,
     "FINISHED_MAX_PAGES": 40,
+    "ENABLE_PLAYWRIGHT_FALLBACK": False,
     "BATCH_REST_MINUTES": 5.0,
     "MAX_CONCURRENT_DOWNLOADS": 5,
     "DELAY_SECONDS": 1.0,
@@ -250,6 +251,113 @@ _NEXT_DATA_RE = re.compile(
 
 class NaverAuthExpired(Exception):
     """쿠키(성인/로그인)가 만료되어 인증이 필요한 콘텐츠 접근이 막힌 경우"""
+
+
+class PlaywrightImageFetcher:
+    """regex 기반 추출이 실패했을 때만 쓰는 폴백. 일부 회차는 이미지가 정적 HTML에
+    없고 자바스크립트로 나중에 불러와지는 방식이라(원본 webtoon-manager 앱이
+    Playwright storage_state 쿠키 형식을 쓴 이유로 추정), 그런 경우 실제
+    헤드리스 브라우저로 페이지를 열어서 로드되는 이미지 요청을 가로채 수집한다.
+
+    playwright 패키지/Chromium이 설치되어 있지 않으면 조용히 비활성 상태로
+    남고(첫 사용 시 한 번만 안내 로그), 파이프라인 자체는 계속 진행된다.
+    브라우저는 최초 fetch_images() 호출 시점에 지연 기동하고, 이후 같은
+    인스턴스를 재사용한다(회차마다 새로 띄우면 너무 느림) — 그래서 한 번의
+    스캔/다운로드 사이클(run_download_cycle 또는 수동 다운로드 1회 실행)당
+    하나의 인스턴스를 만들어 재사용하고, 끝나면 close()로 정리해야 한다.
+    """
+
+    def __init__(self, cookie_storage_state_json=None, timeout_ms=20000):
+        self._timeout_ms = timeout_ms
+        self._cookie_state = None
+        if cookie_storage_state_json:
+            data = cookie_storage_state_json
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except json.JSONDecodeError:
+                    data = None
+            if isinstance(data, dict):
+                self._cookie_state = data
+        self._pw = None
+        self._browser = None
+        self._context = None
+        self._available = True
+        self._error = None
+        self._warned = False
+
+    def _ensure_started(self, log=None):
+        if self._browser is not None or not self._available:
+            return
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            self._available = False
+            self._error = ("playwright 패키지가 설치되어 있지 않습니다. 컨테이너에서 "
+                            "'pip install playwright && playwright install chromium --with-deps' "
+                            "실행 후 다시 시도해주세요.")
+            if log and not self._warned:
+                log("Playwright 폴백 비활성: %s" % self._error)
+                self._warned = True
+            return
+        try:
+            self._pw = sync_playwright().start()
+            self._browser = self._pw.chromium.launch(headless=True)
+            ctx_kwargs = {}
+            if self._cookie_state:
+                ctx_kwargs["storage_state"] = self._cookie_state
+            self._context = self._browser.new_context(**ctx_kwargs)
+        except Exception as e:  # noqa: BLE001
+            self._available = False
+            self._error = "Playwright 브라우저 실행 실패(Chromium 미설치 가능성): %s" % e
+            if log and not self._warned:
+                log("Playwright 폴백 비활성: %s" % self._error)
+                self._warned = True
+
+    def fetch_images(self, title_id, episode_no, log=None):
+        self._ensure_started(log=log)
+        if not self._available:
+            raise RuntimeError(self._error or "Playwright 사용 불가")
+
+        url = "%s?titleId=%s&no=%s" % (NAVER_DETAIL_URL, title_id, episode_no)
+        page = self._context.new_page()
+        collected = []
+        seen = set()
+
+        def _on_response(resp):
+            u = resp.url
+            if u not in seen and _IMAGE_CDN_HOST_RE.search(u):
+                seen.add(u)
+                collected.append(u)
+
+        page.on("response", _on_response)
+        try:
+            page.goto(url, wait_until="networkidle", timeout=self._timeout_ms)
+        except Exception:
+            pass  # 타임아웃이어도 그때까지 가로챈 이미지 요청은 그대로 사용
+        finally:
+            page.close()
+
+        path_marker = "/%s/%s/" % (title_id, episode_no)
+        narrowed = [u for u in collected if path_marker in u]
+        return narrowed or collected
+
+    def close(self):
+        try:
+            if self._context:
+                self._context.close()
+        except Exception:
+            pass
+        try:
+            if self._browser:
+                self._browser.close()
+        except Exception:
+            pass
+        try:
+            if self._pw:
+                self._pw.stop()
+        except Exception:
+            pass
 
 
 def build_session(cookie_storage_state_json=None, naver_id=None, naver_pw=None, timeout=10):
@@ -593,8 +701,10 @@ def episode_dir(download_root, title, title_id, episode_no, folder_zero_fill=4):
 
 def download_episode(session, download_root, title, title_id, episode_no,
                       image_zero_fill=4, folder_zero_fill=4,
-                      max_concurrent=5, delay_seconds=1.0, timeout=10, log=None):
-    """반환: (ok: bool, skipped: bool, image_count: int, error: str|None)"""
+                      max_concurrent=5, delay_seconds=1.0, timeout=10, log=None,
+                      playwright_fetcher=None):
+    """반환: (ok: bool, skipped: bool, image_count: int, error: str|None)
+    playwright_fetcher가 주어지면, regex 기반 추출이 실패했을 때만 폴백으로 사용한다."""
     target_dir = episode_dir(download_root, title, title_id, episode_no, folder_zero_fill)
     if os.path.isdir(target_dir) and any(
             f.lower().endswith((".jpg", ".jpeg", ".png", ".webp")) for f in os.listdir(target_dir)):
@@ -605,7 +715,16 @@ def download_episode(session, download_root, title, title_id, episode_no,
     except NaverAuthExpired:
         raise
     except Exception as e:  # noqa: BLE001
-        return False, False, 0, str(e)
+        if playwright_fetcher is None:
+            return False, False, 0, str(e)
+        if log:
+            log("titleId=%s no=%s: 기본 방식 실패, Playwright 폴백 시도" % (title_id, episode_no))
+        try:
+            images = playwright_fetcher.fetch_images(title_id, episode_no, log=log)
+        except Exception as e2:  # noqa: BLE001
+            return False, False, 0, "기본 방식 실패(%s) / Playwright 폴백도 실패(%s)" % (e, e2)
+        if not images:
+            return False, False, 0, "기본 방식 실패(%s) / Playwright 폴백도 이미지 0장" % e
 
     os.makedirs(target_dir, exist_ok=True)
     referer = "%s?titleId=%s&no=%s" % (NAVER_DETAIL_URL, title_id, episode_no)
@@ -859,6 +978,9 @@ def run_download_cycle(cfg, log=print):
     image_zero_fill = int(_cfg_num(cfg, "IMAGE_ZERO_FILL", 4))
     folder_zero_fill = int(_cfg_num(cfg, "FOLDER_ZERO_FILL", 4))
     timeout = int(_cfg_num(cfg, "REQUEST_TIMEOUT_SECONDS", 10))
+    use_playwright = str(cfg.get("ENABLE_PLAYWRIGHT_FALLBACK", "")).lower() in ("1", "true", "on", "y", "yes")
+    pw_fetcher = PlaywrightImageFetcher(cookie_storage_state_json=cfg.get("NAVER_COOKIE_JSON")) \
+        if use_playwright else None
 
     save_job_state({"stage": "downloading", "message": "구독 작품 회차 확인 중",
                      "progress": 0, "total": len(subscribed)})
@@ -867,63 +989,67 @@ def run_download_cycle(cfg, log=print):
     downloaded_count = 0
     cookie_expired = False
 
-    for i, (tid, t) in enumerate(subscribed.items()):
-        if load_job_state().get("cancel_requested"):
-            log("사용자 요청으로 다운로드 사이클 취소")
-            break
-
-        save_job_state({"progress": i, "message": "%s 새 회차 확인 중" % t.get("title", tid)})
-        try:
-            new_eps = _episodes_to_download(session, tid, t.get("last_downloaded_no"))
-        except Exception as e:  # noqa: BLE001
-            log("회차 목록 조회 실패 titleId=%s: %s" % (tid, e))
-            continue
-
-        if not new_eps:
-            continue
-
-        capped = new_eps if max_new <= 0 else new_eps[:max_new]
-        rest_needed = max_new > 0 and len(new_eps) > max_new
-
-        last_ok_no = t.get("last_downloaded_no")
-        for ep in capped:
-            try:
-                ok, skipped, img_count, err = download_episode(
-                    session, download_root, t.get("title", tid), tid, ep["no"],
-                    image_zero_fill=image_zero_fill, folder_zero_fill=folder_zero_fill,
-                    max_concurrent=max_concurrent, delay_seconds=delay_seconds,
-                    timeout=timeout, log=log)
-            except NaverAuthExpired as e:
-                log("인증 만료: %s" % e)
-                cookie_expired = True
+    try:
+        for i, (tid, t) in enumerate(subscribed.items()):
+            if load_job_state().get("cancel_requested"):
+                log("사용자 요청으로 다운로드 사이클 취소")
                 break
 
-            if ok:
-                last_ok_no = ep["no"]
-                if not skipped:
-                    downloaded_count += 1
+            save_job_state({"progress": i, "message": "%s 새 회차 확인 중" % t.get("title", tid)})
+            try:
+                new_eps = _episodes_to_download(session, tid, t.get("last_downloaded_no"))
+            except Exception as e:  # noqa: BLE001
+                log("회차 목록 조회 실패 titleId=%s: %s" % (tid, e))
+                continue
+
+            if not new_eps:
+                continue
+
+            capped = new_eps if max_new <= 0 else new_eps[:max_new]
+            rest_needed = max_new > 0 and len(new_eps) > max_new
+
+            last_ok_no = t.get("last_downloaded_no")
+            for ep in capped:
+                try:
+                    ok, skipped, img_count, err = download_episode(
+                        session, download_root, t.get("title", tid), tid, ep["no"],
+                        image_zero_fill=image_zero_fill, folder_zero_fill=folder_zero_fill,
+                        max_concurrent=max_concurrent, delay_seconds=delay_seconds,
+                        timeout=timeout, log=log, playwright_fetcher=pw_fetcher)
+                except NaverAuthExpired as e:
+                    log("인증 만료: %s" % e)
+                    cookie_expired = True
+                    break
+
+                if ok:
+                    last_ok_no = ep["no"]
+                    if not skipped:
+                        downloaded_count += 1
+                        append_history({
+                            "type": "download", "title_id": tid, "title": t.get("title", tid),
+                            "episode_no": ep["no"], "subtitle": ep.get("subtitle"),
+                            "image_count": img_count,
+                        })
+                else:
+                    failures.append({"title_id": tid, "title": t.get("title", tid),
+                                      "episode_no": ep["no"], "error": err})
                     append_history({
-                        "type": "download", "title_id": tid, "title": t.get("title", tid),
-                        "episode_no": ep["no"], "subtitle": ep.get("subtitle"),
-                        "image_count": img_count,
+                        "type": "download_fail", "title_id": tid, "title": t.get("title", tid),
+                        "episode_no": ep["no"], "error": err,
                     })
-            else:
-                failures.append({"title_id": tid, "title": t.get("title", tid),
-                                  "episode_no": ep["no"], "error": err})
-                append_history({
-                    "type": "download_fail", "title_id": tid, "title": t.get("title", tid),
-                    "episode_no": ep["no"], "error": err,
-                })
 
-        if last_ok_no != t.get("last_downloaded_no"):
-            upsert_title({tid: {"last_downloaded_no": last_ok_no, "up_flag": rest_needed}})
+            if last_ok_no != t.get("last_downloaded_no"):
+                upsert_title({tid: {"last_downloaded_no": last_ok_no, "up_flag": rest_needed}})
 
-        if cookie_expired:
-            break
+            if cookie_expired:
+                break
 
-        if rest_needed and batch_rest_min > 0:
-            log("titleId=%s 회차가 많이 밀려 다음 주기로 이어받음(휴식)" % tid)
-            time.sleep(min(batch_rest_min * 60, 60))
+            if rest_needed and batch_rest_min > 0:
+                log("titleId=%s 회차가 많이 밀려 다음 주기로 이어받음(휴식)" % tid)
+                time.sleep(min(batch_rest_min * 60, 60))
+    finally:
+        if pw_fetcher is not None:
+            pw_fetcher.close()
 
     save_job_state({"progress": len(subscribed), "message": "다운로드 사이클 종료"})
 
@@ -1056,6 +1182,9 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
          "type": "number", "default": 10},
         {"key": "FINISHED_MAX_PAGES", "label": "완결 목록 스캔 시 최대 페이지 수(낮출수록 스캔이 빠름)",
          "type": "number", "default": 40},
+        {"key": "ENABLE_PLAYWRIGHT_FALLBACK",
+         "label": "이미지 추출 실패 시 Playwright(헤드리스 브라우저) 폴백 사용 (별도 설치 필요)",
+         "type": "checkbox", "default": False},
         {"key": "BATCH_REST_MINUTES", "label": "상한 도달 시 휴식(분)", "type": "number", "default": 5},
         {"key": "MAX_CONCURRENT_DOWNLOADS", "label": "이미지 동시 다운로드 수", "type": "number", "default": 5},
         {"key": "DELAY_SECONDS", "label": "회차 간 대기(초)", "type": "number", "default": 1.0},
@@ -1158,6 +1287,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 "MAX_CONCURRENT_DOWNLOADS": cfg.get("MAX_CONCURRENT_DOWNLOADS"),
                 "DELAY_SECONDS": cfg.get("DELAY_SECONDS"),
                 "has_cookie": bool(cfg.get("NAVER_COOKIE_JSON")),
+                "playwright_fallback": bool(cfg.get("ENABLE_PLAYWRIGHT_FALLBACK")),
                 "has_discord": bool(cfg.get("DISCORD_WEBHOOK_URL") or
                                      (cfg.get("DISCORD_BOT_TOKEN") and cfg.get("DISCORD_CHANNEL_ID"))),
             },
@@ -1294,33 +1424,40 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
 
         def _runner():
             session = build_session_from_cfg(cfg)
+            use_pw = str(cfg.get("ENABLE_PLAYWRIGHT_FALLBACK", "")).lower() in ("1", "true", "on", "y", "yes")
+            pw_fetcher = PlaywrightImageFetcher(cookie_storage_state_json=cfg.get("NAVER_COOKIE_JSON")) \
+                if use_pw else None
             ok_count = 0
-            for i, no in enumerate(episode_nos):
-                if load_job_state().get("manual_cancel_requested"):
-                    append_log("수동 다운로드 취소됨")
-                    break
-                save_job_state({"manual_progress": i, "manual_message": "%s %s화 다운로드 중" % (title, no)})
-                try:
-                    ok, skipped, cnt, err = download_episode(
-                        session, cfg.get("DOWNLOAD_ROOT") or DOWNLOAD_DEFAULT_DIR,
-                        title, title_id, no,
-                        image_zero_fill=int(cfg.get("IMAGE_ZERO_FILL", 4)),
-                        folder_zero_fill=int(cfg.get("FOLDER_ZERO_FILL", 4)),
-                        max_concurrent=int(cfg.get("MAX_CONCURRENT_DOWNLOADS", 5)),
-                        delay_seconds=float(cfg.get("DELAY_SECONDS", 1.0)),
-                        timeout=int(cfg.get("REQUEST_TIMEOUT_SECONDS", 10)),
-                        log=append_log)
-                    if ok:
-                        ok_count += 1 if not skipped else 0
-                        append_history({"type": "manual_download", "title_id": title_id,
-                                         "title": title, "episode_no": no, "image_count": cnt})
-                    else:
-                        append_history({"type": "manual_download_fail", "title_id": title_id,
-                                         "title": title, "episode_no": no, "error": err})
-                except NaverAuthExpired as e:
-                    append_log("인증 만료: %s" % e)
-                    notify_cookie_expired(cfg)
-                    break
+            try:
+                for i, no in enumerate(episode_nos):
+                    if load_job_state().get("manual_cancel_requested"):
+                        append_log("수동 다운로드 취소됨")
+                        break
+                    save_job_state({"manual_progress": i, "manual_message": "%s %s화 다운로드 중" % (title, no)})
+                    try:
+                        ok, skipped, cnt, err = download_episode(
+                            session, cfg.get("DOWNLOAD_ROOT") or DOWNLOAD_DEFAULT_DIR,
+                            title, title_id, no,
+                            image_zero_fill=int(cfg.get("IMAGE_ZERO_FILL", 4)),
+                            folder_zero_fill=int(cfg.get("FOLDER_ZERO_FILL", 4)),
+                            max_concurrent=int(cfg.get("MAX_CONCURRENT_DOWNLOADS", 5)),
+                            delay_seconds=float(cfg.get("DELAY_SECONDS", 1.0)),
+                            timeout=int(cfg.get("REQUEST_TIMEOUT_SECONDS", 10)),
+                            log=append_log, playwright_fetcher=pw_fetcher)
+                        if ok:
+                            ok_count += 1 if not skipped else 0
+                            append_history({"type": "manual_download", "title_id": title_id,
+                                             "title": title, "episode_no": no, "image_count": cnt})
+                        else:
+                            append_history({"type": "manual_download_fail", "title_id": title_id,
+                                             "title": title, "episode_no": no, "error": err})
+                    except NaverAuthExpired as e:
+                        append_log("인증 만료: %s" % e)
+                        notify_cookie_expired(cfg)
+                        break
+            finally:
+                if pw_fetcher is not None:
+                    pw_fetcher.close()
             save_job_state({"manual_running": False,
                              "manual_message": "수동 다운로드 완료(%d화)" % ok_count})
 

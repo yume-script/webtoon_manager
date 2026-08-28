@@ -219,6 +219,7 @@
       ['다운로드 경로', cfg.DOWNLOAD_ROOT || '(기본값)'],
       ['자동 실행', cfg.ENABLE_SCHEDULER ? ('사용 / ' + cfg.INTERVAL_MINUTES + '분 주기') : '사용 안 함'],
       ['작품당 최대 신규 다운로드', cfg.MAX_NEW_EPISODES_PER_TITLE],
+      ['Playwright 폴백', cfg.playwright_fallback ? '사용' : '사용 안 함'],
       ['디스코드 알림', cfg.has_discord ? '설정됨' : '(미설정)']
     ];
     box.innerHTML = rows.map(function (r) {
