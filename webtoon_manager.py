@@ -15,16 +15,35 @@ GitHub murianwind/webtoon-manager(네이버웹툰 무료 회차 자동 구독/�
 범용 RPC 채널로 사용한다 (rclone_g2g_copy 플러그인과 동일한 패턴).
 """
 import json
+import os
+import sys
 import threading
 import time
 
 from plugins.metadata.base import BaseMetadataProvider
 
-from .core import state_store as ss
-from .core import pipeline
-from .core import scheduler
-from .core import discord_notify
-from .core import naver_api
+# core/ 하위 모듈 임포트: BookOasis 코어가 이 파일을 어떤 방식으로 로드하는지
+# (패키지 경로로 정식 임포트하는지, 파일 경로로 직접 로드하는지)가 문서화되어
+# 있지 않아 두 경우 모두 동작하도록 방어적으로 처리한다.
+#   1) 정식 패키지 임포트라면 상대 임포트(.core)가 그대로 동작
+#   2) 파일 경로 직접 로드라면 상대 임포트가 실패("attempted relative import
+#      with no known parent package")하므로, 이 파일이 있는 폴더를 sys.path에
+#      넣고 core를 최상위 패키지처럼 절대 임포트한다.
+try:
+    from .core import state_store as ss
+    from .core import pipeline
+    from .core import scheduler
+    from .core import discord_notify
+    from .core import naver_api
+except ImportError:
+    _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+    if _PLUGIN_DIR not in sys.path:
+        sys.path.insert(0, _PLUGIN_DIR)
+    from core import state_store as ss
+    from core import pipeline
+    from core import scheduler
+    from core import discord_notify
+    from core import naver_api
 
 PLUGIN_ID = "webtoon_manager"
 
