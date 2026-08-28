@@ -1263,8 +1263,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         session = build_session_from_cfg(cfg)
         try:
             meta = guess_title_meta(session, title_id)
-            episodes = fetch_episode_list(session, title_id, max_pages=3)
-            meta["episodes"] = episodes[:60]
+            episodes = fetch_episode_list(session, title_id, max_pages=50)
+            meta["episodes"] = episodes
             return True, json.dumps(meta, ensure_ascii=False)
         except Exception as e:  # noqa: BLE001
             return False, "조회 실패: %s" % e
