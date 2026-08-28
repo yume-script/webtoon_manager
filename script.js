@@ -10,14 +10,12 @@
 
   var DATA_URL = '/api/media/dashboard/widgets/' + pluginId + '/data?db_type=' + encodeURIComponent(dbType) + '&limit=5000';
 
-  // 액션 호출 엔드포인트는 코어 버전에 따라 다를 수 있어 후보를 순서대로 시도하고,
-  // 처음 성공한 방식을 이후 계속 재사용한다.
-  var ACTION_ENDPOINTS = [
-    { url: '/api/media/context-menu/book/plugins/action', mode: 'context-menu' },
-    { url: '/api/media/dashboard/widgets/' + pluginId + '/action', mode: 'widget-action' },
-    { url: '/api/media/metadata/apply', mode: 'apply' }
-  ];
-  var workingActionEndpoint = null;
+  // 코어 소스(api/routes/plugin_routes.py)를 직접 grep해서 확인된 유일한 진짜
+  // 액션 엔드포인트. run_context_menu_action(db_type, action_id, context)로
+  // 라우팅되며, 요청 바디는 최상위 필드로 type/plugin_id/action_id/context 만
+  // 읽는다(item_data, book_id, db_type 같은 이름은 서버가 읽지 않음 — 넣어도
+  // 무해하지만 무시됨).
+  var ACTION_URL = '/api/media/context-menu/book/plugins/action';
 
   function el(sel) { return container.querySelector(sel); }
   function els(sel) { return Array.prototype.slice.call(container.querySelectorAll(sel)); }
@@ -40,39 +38,35 @@
 
   async function callAction(actionId, payload) {
     payload = payload || {};
+    // 코어 라우트가 실제로 읽는 필드만 최상위에 둔다: type(=db_type), plugin_id,
+    // action_id, context. (예전엔 db_type이라는 이름으로 보내서 서버가 못 읽고
+    // 매번 general로 취급되던 버그가 있었음 — type으로 고침.)
     var body = {
+      type: dbType,
       plugin_id: pluginId,
       action_id: actionId,
-      action: actionId,
-      book_id: 0,
-      db_type: dbType,
-      item_data: Object.assign({ action: actionId }, payload),
-      context: Object.assign({ book_id: 0, action: actionId }, payload)
+      context: Object.assign({ action: actionId }, payload)
     };
 
-    var candidates = workingActionEndpoint ? [workingActionEndpoint] : ACTION_ENDPOINTS;
-    var lastErr = null;
-    for (var i = 0; i < candidates.length; i++) {
-      var ep = candidates[i];
-      try {
-        var resp = await fetch(ep.url, {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
-        });
-        if (!resp.ok) { lastErr = 'HTTP ' + resp.status; continue; }
-        var data = await resp.json();
-        var success = data.success !== undefined ? data.success : (Array.isArray(data) ? true : !!data.ok);
-        var message = data.message || data.error || '';
-        workingActionEndpoint = ep;
-        return { success: success, message: message, raw: data };
-      } catch (e) {
-        lastErr = e.message || String(e);
-      }
+    try {
+      var resp = await fetch(ACTION_URL, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      var data = await resp.json();
+      // 코어는 run_context_menu_action()이 {'success': bool, 'message'|'error': str}
+      // dict를 반환할 것으로 기대하고, success=false면 HTTP 400으로 내려준다.
+      // resp.ok(2xx) 여부가 아니라 data.success로 성공/실패를 판단해야 한다.
+      var success = !!data.success;
+      var message = data.message || data.error || '';
+      return { success: success, message: message, raw: data };
+    } catch (e) {
+      var errMsg = e.message || String(e);
+      console.error('[webtoon_manager] 액션 호출 실패:', errMsg);
+      return { success: false, message: '액션 호출 실패: ' + errMsg };
     }
-    console.error('[webtoon_manager] 액션 호출 실패(모든 엔드포인트 시도함):', lastErr);
-    return { success: false, message: '백엔드 액션 엔드포인트를 찾지 못했습니다: ' + lastErr };
   }
 
   function parseMaybeJson(text) {

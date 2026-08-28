@@ -108,9 +108,13 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         return {"success": True, "items": []}
 
     def apply(self, db_type, book_id, item_data):
-        """plugin_board(실제 동작 확인된 참조 플러그인) 기준: apply()가 카테고리탭
-        script.js의 실제 액션 RPC 진입점이다. book_id는 이 플러그인에서 의미
-        없는 값(0 등)으로 넘어오며, 실제 라우팅은 item_data['action']으로 한다."""
+        """BaseMetadataProvider 필수 계약(코드 grep으로 실제 확인됨: 코어의
+        apply_book_metadata_api(book_id)는 book_id 기반 메타데이터 검색-적용
+        흐름 전용이라 이 플러그인의 실제 액션 경로가 아니다). 카테고리탭의
+        진짜 액션 RPC 진입점은 run_context_menu_action()
+        (/api/media/context-menu/book/plugins/action)이며, apply()는 base
+        계약을 만족시키기 위한 동일 로직의 폴백일 뿐이다. base.py 계약대로
+        (bool, str) 튜플을 그대로 반환한다."""
         try:
             item_data = item_data or {}
             return self._dispatch(db_type, item_data.get("action"), item_data)
@@ -191,7 +195,14 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         return []
 
     def run_context_menu_action(self, db_type, action_id, context):
-        return self._dispatch(db_type, action_id, context or {})
+        """코어 라우트(/api/media/context-menu/book/plugins/action)는 이 메서드가
+        dict({'success': bool, 'message'|'error': str})를 반환할 것으로 기대한다
+        (튜플이면 '반환값 형식이 올바르지 않습니다'로 간주하고 HTTP 400을 내려버림).
+        apply()와 달리 _dispatch()의 (bool, str) 튜플을 여기서 dict로 감싸준다."""
+        ok, message = self._dispatch(db_type, action_id, context or {})
+        if ok:
+            return {"success": True, "message": message}
+        return {"success": False, "error": message}
 
     def _dispatch(self, db_type, action, payload):
         try:
