@@ -30,32 +30,26 @@
   Discord Gateway에 접속해 버튼 클릭을 처리합니다. 이 플러그인은 요청-응답형 웹 플러그인이라
   상시 접속이 불가능해 버튼 대신 "카테고리탭에서 처리하라"는 안내 임베드만 보냅니다.
 - ⚠️ 이미지 목록은 공식 공개 API가 없어 회차 상세 페이지 HTML에서 정규식으로 추출합니다.
-  네이버가 마크업을 바꾸면 `naver_api.py`의 `_IMG_RE` 부분만 고치면 됩니다.
+  네이버가 마크업을 바꾸면 `core/naver_api.py`의 `_IMG_RE` 부분만 고치면 됩니다.
 
 ## 프레임워크 관련 가정(중요, 오류 나면 여기부터 확인)
 
-실제 동작 중인 참조 플러그인(`plugin_board`)의 소스로 아래 계약을 확인했습니다.
+BookOasis 플러그인 가이드 문서에는 `get_dashboard_data()`(대시보드/카테고리탭 데이터 폴링)까지만
+명시되어 있고, 카테고리탭에서 "구독/제외/작가 등록" 같은 **쓰기 액션을 어떤 URL로 호출하는지는
+문서화되어 있지 않습니다.** 이번 코드는 이전에 만든 다른 카테고리탭 플러그인(예: jikji_sf,
+gd_poller4bookoasis, rclone_g2g_copy)에서 확인된 아래 두 가지 관례를 그대로 따랐습니다.
 
-- **`category_tab`은 `True`가 아니라 `dict`**여야 좌측 사이드바에 전용 탭이 등록됩니다.
-  `{"title": ..., "icon": ..., "order": ...}` 형태로 선언합니다. (`dashboard_widget`의
-  `all_desk_tab`은 "공통 데스크" 카드용 별개 메커니즘이라 `category_tab`과 함께 쓰지 않습니다.)
-- 데이터 조회: 카테고리탭 script.js가 `get_dashboard_data()`를 호출해 화면 데이터를 받습니다.
-- 쓰기 액션: `apply(db_type, book_id, item_data)`가 실제 액션 RPC 채널입니다.
-  `item_data["action"]`으로 분기하며, `book_id`는 이 플러그인에서는 의미 없는 값(0 등)으로
-  넘어옵니다. 동일 로직을 `run_context_menu_action()`으로도 노출해 컨텍스트 메뉴에서도
-  호출할 수 있게 합니다. (`run_action()`이라는 별도 메서드는 코어가 인식하지 않는
-  존재하지 않는 계약이라 삭제했습니다.)
-- `settings.html`은 **존재 자체가 "커스텀 설정 화면을 쓴다"는 신호**입니다(`plugin_board.py`의
-  `_has_settings_ui()` 참고: 파일이 있으면 코어가 `config_schema` 자동 폼 대신 이 파일을
-  설정 화면으로 씁니다). 안내 문구만 들어있는 `settings.html`을 두면 표준 폼이 안 뜨고
-  입력할 곳이 사라지므로, **`settings.html`은 아예 만들지 않고 `config_schema`가 표준 폼을
-  자동 생성**하도록 둡니다. 커스텀 폼이 정말 필요해지면 그때 실제 입력 필드를 갖춘
-  `settings.html`/`settings.css`/`settings.js`로 새로 만들어야 합니다.
+- 데이터 조회: `GET /api/media/dashboard/widgets/{plugin_id}/data` → `get_dashboard_data()` 호출
+- 쓰기 액션: `apply(db_type, book_id=0, item_data)`를 범용 RPC 채널로 사용(rclone_g2g_copy 방식)
+  + 동일 로직을 `run_context_menu_action()`으로도 노출(컨텍스트 메뉴 엔드포인트로도 호출되게)
+
+`script.js`의 `callAction()`은 실제 설치된 BookOasis 버전에서 어느 엔드포인트가 맞는지
+**여러 후보를 순서대로 시도**하도록 만들어 뒀습니다(`/api/media/context-menu/book/plugins/action`
+→ `/api/media/dashboard/widgets/{id}/action` → `/api/media/metadata/apply`). 버튼을 눌렀는데
+"백엔드 액션 엔드포인트를 찾지 못했습니다" 라는 알림이 뜨면, 브라우저 개발자도구 Network 탭에서
+실제 어떤 요청이 실패했는지(404/405 등) 캡처해서 알려주시면 정확한 엔드포인트로 바로 고쳐드립니다.
 
 ## 파일 구조
-
-이 저장소는 `core/` 같은 서브패키지 없이 모든 모듈이 플러그인 루트에 flat 하게 있습니다.
-`webtoon_manager.py`를 비롯한 모든 모듈은 `from . import xxx` 형태로 서로를 참조합니다.
 
 ```
 webtoon_manager/
@@ -64,18 +58,19 @@ webtoon_manager/
   VERSION
   requirements.txt        # 빈 파일(코어에 requests가 이미 있다는 전제)
   index.html / style.css / script.js   # 카테고리탭 풀페이지 UI
-  settings.html            # (사용 안 함 — 존재하면 config_schema 자동 폼이 꺼지므로 만들지 않음)
-  state_store.py            # 파일 기반 상태 저장(모듈 재로드에도 값 유지)
-  naver_api.py               # 목록/회차/이미지 스크래핑
-  downloader.py                # 이미지 다운로드/저장
-  discord_notify.py              # 웹훅/봇 알림
-  scheduler.py                     # 백그라운드 주기 실행
-  pipeline.py                        # 스캔→자동구독→다운로드→알림 파이프라인
+  settings.html            # 설정 모달 안내문(세부 입력은 config_schema 표준 폼 사용)
+  core/
+    state_store.py         # 파일 기반 상태 저장(모듈 재로드에도 값 유지)
+    naver_api.py            # 목록/회차/이미지 스크래핑
+    downloader.py            # 이미지 다운로드/저장
+    discord_notify.py         # 웹훅/봇 알림
+    scheduler.py               # 백그라운드 주기 실행
+    pipeline.py                  # 스캔→자동구독→다운로드→알림 파이프라인
 ```
 
 ## 의존성
 
 `requests` 모듈이 필요합니다(BookOasis 코어가 이미 쓰고 있어 별도 설치가 필요 없을 가능성이 높습니다).
 설치가 안 되어 있다는 오류가 나면 `requirements.txt`에 `requests` 한 줄만 추가해주세요
-(과거 경험상 슬래시로 나열한 설명 주석이 패키지명으로 잘못 파싱되는 문제가 있었으니, **실제 패키지명만
-한 줄에 하나씩** 넣어야 합니다).
+(과거 경험상 슬래시로 나열한 설명 주석이 패키지명으로 잘못 파싱되는 문제가 있었으니,
+**실제 패키지명만 한 줄에 하나씩** 넣어야 합니다).

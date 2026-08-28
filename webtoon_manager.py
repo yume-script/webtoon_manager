@@ -9,10 +9,8 @@ GitHub murianwind/webtoon-manager(네이버웹툰 무료 회차 자동 구독/�
 알림, 주기 실행 스케줄러, 구독해제/제외 관리, 수동 다운로드, 다운로드 이력.
 
 화면: index.html(카테고리탭 풀페이지) + script.js + style.css.
-
 데이터: get_dashboard_data()가 전체 상태를 한 번에 반환하고, 화면에서는
 탭별로 클라이언트 사이드 필터링만 한다(작품 수가 매우 많지 않다는 전제).
-
 액션(구독/다운로드/설정 등)은 apply(db_type, book_id=0, item_data)를
 범용 RPC 채널로 사용한다 (rclone_g2g_copy 플러그인과 동일한 패턴).
 """
@@ -22,14 +20,11 @@ import time
 
 from plugins.metadata.base import BaseMetadataProvider
 
-# NOTE: 이 저장소(yume-script/webtoon_manager)는 core/ 서브패키지 없이
-# 모든 모듈이 플러그인 루트에 flat 하게 있음. pipeline.py 등 다른 모듈들도
-# 전부 `from . import ...` 형태로 서로를 참조하므로 여기도 동일하게 맞춤.
-from . import state_store as ss
-from . import pipeline
-from . import scheduler
-from . import discord_notify
-from . import naver_api
+from .core import state_store as ss
+from .core import pipeline
+from .core import scheduler
+from .core import discord_notify
+from .core import naver_api
 
 PLUGIN_ID = "webtoon_manager"
 
@@ -76,26 +71,28 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         {"key": "DISCORD_CHANNEL_ID", "label": "디스코드 채널 ID(선택)", "type": "text"},
     ]
 
-    # plugin_board(실제 동작 중인 참조 플러그인) 기준: 좌측 사이드바 1등 시민
-    # 탭으로 등록하려면 category_tab이 True가 아니라 dict여야 한다
-    # (title/icon/order 필드로 사이드바 메뉴 항목을 구성). dashboard_widget은
-    # "공통 데스크" 카드용 별개 메커니즘이라 category_tab과 병행 선언하지 않는다.
-    category_tab = {
+    # 공식 가이드 문서 계약(all_desk_tab)과, 실제 배포 환경에서 좌측 사이드바
+    # 전용 탭으로 확인된 category_tab 속성을 함께 선언해 둘 다 호환.
+    dashboard_widget = {
         "title": "웹툰 관리",
+        "subtitle": "네이버웹툰 구독/자동 다운로드",
+        "provider": "Naver Webtoon",
         "icon": "fa-solid fa-book-open-reader",
-        "order": 50,
+        "limit": 5000,
+        "all_desk_tab": True,
+        "supported_types": ["general", "adult"],
     }
+    category_tab = True
 
     update_manifest = {
         "enabled": True,
         "provider": "github-raw",
         "raw_base_url": "https://raw.githubusercontent.com/yume-script/webtoon_manager/main",
         "files": ["webtoon_manager.py", "__init__.py", "VERSION",
-                  "index.html", "style.css", "script.js",
-                  "requirements.txt",
-                  "state_store.py", "naver_api.py",
-                  "downloader.py", "discord_notify.py", "scheduler.py",
-                  "pipeline.py"],
+                   "index.html", "style.css", "script.js",
+                   "core/__init__.py", "core/state_store.py", "core/naver_api.py",
+                   "core/downloader.py", "core/discord_notify.py", "core/scheduler.py",
+                   "core/pipeline.py"],
         "version_file": "VERSION",
         "version_key": "plugin version",
         "show_sample_update_button": True,
@@ -108,18 +105,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         return {"success": True, "items": []}
 
     def apply(self, db_type, book_id, item_data):
-        """BaseMetadataProvider 필수 계약(코드 grep으로 실제 확인됨: 코어의
-        apply_book_metadata_api(book_id)는 book_id 기반 메타데이터 검색-적용
-        흐름 전용이라 이 플러그인의 실제 액션 경로가 아니다). 카테고리탭의
-        진짜 액션 RPC 진입점은 run_context_menu_action()
-        (/api/media/context-menu/book/plugins/action)이며, apply()는 base
-        계약을 만족시키기 위한 동일 로직의 폴백일 뿐이다. base.py 계약대로
-        (bool, str) 튜플을 그대로 반환한다."""
-        try:
-            item_data = item_data or {}
-            return self._dispatch(db_type, item_data.get("action"), item_data)
-        except Exception as e:  # noqa: BLE001
-            return False, "예상치 못한 오류가 발생했습니다: %s" % e
+        return False, "이 플러그인은 메타데이터 적용 대상이 아닙니다. 카테고리탭에서 사용하세요."
 
     # ------------------------------------------------------------------
     # 설정 헬퍼
@@ -169,7 +155,6 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             "authors_tags": ss.load_authors_tags(),
             "history": ss.load_history(limit=200),
             "job": ss.load_job_state(),
-            "title_job": ss.load_title_job_state(),
             "log_tail": ss.tail_log(60),
             "config_public": {
                 "NAVER_ID": cfg.get("NAVER_ID", ""),
@@ -196,14 +181,15 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         return []
 
     def run_context_menu_action(self, db_type, action_id, context):
-        """코어 라우트(/api/media/context-menu/book/plugins/action)는 이 메서드가
-        dict({'success': bool, 'message'|'error': str})를 반환할 것으로 기대한다
-        (튜플이면 '반환값 형식이 올바르지 않습니다'로 간주하고 HTTP 400을 내려버림).
-        apply()와 달리 _dispatch()의 (bool, str) 튜플을 여기서 dict로 감싸준다."""
-        ok, message = self._dispatch(db_type, action_id, context or {})
-        if ok:
-            return {"success": True, "message": message}
-        return {"success": False, "error": message}
+        return self._dispatch(db_type, action_id, context or {})
+
+    def run_action(self, db_type, item_data):
+        """index.html/script.js가 직접 호출하는 액션 엔드포인트용 진입점.
+        코어가 apply()를 book_id 없는 범용 채널로 라우팅하지 않는 경우를 대비해
+        같은 이름의 헬퍼를 별도로 노출해둔다."""
+        item_data = item_data or {}
+        action = item_data.get("action")
+        return self._dispatch(db_type, action, item_data)
 
     def _dispatch(self, db_type, action, payload):
         try:
@@ -215,9 +201,6 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 return self._act_run_bg(db_type, pipeline.run_full_cycle, "전체 실행")
             if action == "cancel_job":
                 ss.save_job_state({"cancel_requested": True})
-                return True, "취소 요청됨"
-            if action == "cancel_title_job":
-                ss.save_title_job_state({"cancel_requested": True})
                 return True, "취소 요청됨"
             if action == "subscribe":
                 return self._act_set_flags(payload.get("titleId"), subscribed=True,
@@ -243,8 +226,6 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 return self._act_manual_lookup(db_type, payload.get("titleId"))
             if action == "manual_download":
                 return self._act_manual_download(db_type, payload)
-            if action == "download_title":
-                return self._act_download_title(db_type, payload.get("titleId"))
             if action == "test_discord":
                 return self._act_test_discord(db_type)
             return False, "알 수 없는 action: %s" % action
@@ -260,7 +241,6 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         job = ss.load_job_state()
         if job.get("running"):
             return False, "이미 실행 중인 작업이 있습니다"
-
         cfg = self._get_cfg(db_type)
         ss.save_job_state({"running": True, "stage": "starting", "message": "%s 시작" % label,
                             "started_at": time.time(), "cancel_requested": False,
@@ -319,30 +299,25 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         if not title_id or not episode_nos:
             return False, "titleId/episodeNos 필요"
 
-        # 스캔/전체실행(job_state)과는 독립된 락(title_job_state)을 쓴다 —
-        # 큰 작업이 도는 중에도 개별 작품 다운로드는 막히지 않게 하기 위함.
-        # 개별 작품 다운로드끼리는 여전히 한 번에 하나만 허용(순차 처리).
-        tjob = ss.load_title_job_state()
-        if tjob.get("running"):
-            return False, "이미 다른 작품을 다운로드 중입니다(%s). 완료 후 다시 시도해주세요." % (
-                tjob.get("title") or tjob.get("title_id") or "")
+        job = ss.load_job_state()
+        if job.get("running"):
+            return False, "이미 실행 중인 작업이 있습니다"
 
         cfg = self._get_cfg(db_type)
-        ss.save_title_job_state({"running": True, "title_id": title_id, "title": title,
-                                  "message": "수동 다운로드 시작", "started_at": time.time(),
-                                  "cancel_requested": False, "last_error": None,
-                                  "progress": 0, "total": len(episode_nos)})
+        ss.save_job_state({"running": True, "stage": "downloading",
+                            "message": "수동 다운로드 시작", "started_at": time.time(),
+                            "cancel_requested": False, "last_error": None,
+                            "progress": 0, "total": len(episode_nos)})
 
         def _runner():
-            from . import downloader as dl
+            from .core import downloader as dl
             session = pipeline.build_session_from_cfg(cfg)
             ok_count = 0
-            consecutive_fail = 0
             for i, no in enumerate(episode_nos):
-                if ss.load_title_job_state().get("cancel_requested"):
+                if ss.load_job_state().get("cancel_requested"):
                     ss.append_log("수동 다운로드 취소됨")
                     break
-                ss.save_title_job_state({"progress": i, "message": "%s %s화 다운로드 중" % (title, no)})
+                ss.save_job_state({"progress": i, "message": "%s %s화 다운로드 중" % (title, no)})
                 try:
                     ok, skipped, cnt, err = dl.download_episode(
                         session, cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR,
@@ -354,135 +329,23 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                         timeout=int(cfg.get("REQUEST_TIMEOUT_SECONDS", 10)),
                         log=ss.append_log)
                     if ok:
-                        consecutive_fail = 0
                         ok_count += 1 if not skipped else 0
                         ss.append_history({"type": "manual_download", "title_id": title_id,
                                             "title": title, "episode_no": no,
                                             "image_count": cnt})
                     else:
-                        consecutive_fail += 1
                         ss.append_history({"type": "manual_download_fail", "title_id": title_id,
                                             "title": title, "episode_no": no, "error": err})
-                        if consecutive_fail >= pipeline._MAX_CONSECUTIVE_FAILURES:
-                            ss.append_log("연속 %d회 실패 - 일시 차단 가능성으로 중단" % consecutive_fail)
-                            break
-                except naver_api.NaverPaidEpisode as e:
-                    ss.append_log("%s %s화: %s (건너뜀)" % (title, no, e))
-                    ss.append_history({"type": "skipped_paid", "title_id": title_id,
-                                        "title": title, "episode_no": no, "error": str(e)})
-                    continue
                 except naver_api.NaverAuthExpired as e:
                     ss.append_log("인증 만료: %s" % e)
                     discord_notify.notify_cookie_expired(cfg)
                     break
-            ss.save_title_job_state({"running": False, "finished_at": time.time(),
-                                      "message": "수동 다운로드 완료(%d화)" % ok_count})
+            ss.save_job_state({"running": False, "stage": "done", "finished_at": time.time(),
+                                "message": "수동 다운로드 완료(%d화)" % ok_count})
 
         t = threading.Thread(target=_runner, name="webtoon_manager_manual_dl", daemon=True)
         t.start()
         return True, "수동 다운로드 시작됨(백그라운드)"
-
-    def _act_download_title(self, db_type, title_id):
-        """구독중 카드의 '지금 다운로드' 버튼: 회차를 직접 선택하지 않고,
-        그 작품의 last_downloaded_no보다 새로운 회차를 자동으로 찾아 전부
-        받는다(run_download_cycle과 같은 로직을 titleId 하나로 축소한 버전).
-        스캔/전체실행(job_state)과는 독립된 title_job_state 락을 쓴다."""
-        if not title_id:
-            return False, "titleId 필요"
-        tjob = ss.load_title_job_state()
-        if tjob.get("running"):
-            return False, "이미 다른 작품을 다운로드 중입니다(%s). 완료 후 다시 시도해주세요." % (
-                tjob.get("title") or tjob.get("title_id") or "")
-
-        cfg = self._get_cfg(db_type)
-        titles = ss.load_titles()
-        t_info = titles.get(str(title_id))
-        if not t_info:
-            return False, "구독 목록에 없는 titleId입니다"
-
-        title_name = t_info.get("title", title_id)
-        ss.save_title_job_state({"running": True, "title_id": title_id, "title": title_name,
-                                  "message": "%s 새 회차 확인 중" % title_name,
-                                  "started_at": time.time(), "cancel_requested": False,
-                                  "last_error": None, "progress": 0, "total": 0})
-
-        def _runner():
-            from . import downloader as dl
-            session = pipeline.build_session_from_cfg(cfg)
-            try:
-                new_eps = pipeline._episodes_to_download(
-                    session, cfg, str(title_id), t_info.get("last_downloaded_no"))
-            except Exception as e:  # noqa: BLE001
-                ss.append_log("회차 목록 조회 실패: %s" % e)
-                ss.save_title_job_state({"running": False, "last_error": str(e)})
-                return
-
-            if not new_eps:
-                ss.save_title_job_state({"running": False, "finished_at": time.time(),
-                                          "message": "%s: 새 회차 없음" % title_name})
-                return
-
-            ss.save_title_job_state({"total": len(new_eps)})
-            last_ok_no = t_info.get("last_downloaded_no")
-            ok_count = 0
-            consecutive_fail = 0
-            for i, ep in enumerate(new_eps):
-                if ss.load_title_job_state().get("cancel_requested"):
-                    ss.append_log("다운로드 취소됨")
-                    break
-                if ep.get("charge"):
-                    ss.append_log("%s %s화: 유료(charge=true) 회차, 목록 API 기준 - 이후 회차도 유료로 보고 중단" % (title_name, ep["no"]))
-                    ss.append_history({"type": "skipped_paid", "title_id": title_id,
-                                        "title": title_name, "episode_no": ep["no"],
-                                        "error": "유료 회차(목록 API charge=true)"})
-                    break
-                ss.save_title_job_state({"progress": i, "message": "%s %s화 다운로드 중" % (title_name, ep["no"])})
-                try:
-                    ok, skipped, cnt, err = dl.download_episode(
-                        session, cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR,
-                        title_name, title_id, ep["no"],
-                        image_zero_fill=int(cfg.get("IMAGE_ZERO_FILL", 4)),
-                        folder_zero_fill=int(cfg.get("FOLDER_ZERO_FILL", 4)),
-                        max_concurrent=int(cfg.get("MAX_CONCURRENT_DOWNLOADS", 5)),
-                        delay_seconds=float(cfg.get("DELAY_SECONDS", 1.0)),
-                        timeout=int(cfg.get("REQUEST_TIMEOUT_SECONDS", 10)),
-                        log=ss.append_log)
-                except naver_api.NaverPaidEpisode as e:
-                    # 이후 회차도 순서대로 계속 유료일 가능성이 높아 여기서 중단
-                    # (다음 스캔/실행 때 다시 이 회차부터 확인).
-                    ss.append_log("%s %s화: %s (이후 회차도 유료로 보고 중단, 다음에 재시도)" % (title_name, ep["no"], e))
-                    ss.append_history({"type": "skipped_paid", "title_id": title_id,
-                                        "title": title_name, "episode_no": ep["no"], "error": str(e)})
-                    break
-                except naver_api.NaverAuthExpired as e:
-                    ss.append_log("인증 만료: %s" % e)
-                    discord_notify.notify_cookie_expired(cfg)
-                    break
-                if ok:
-                    consecutive_fail = 0
-                    last_ok_no = ep["no"]
-                    if not skipped:
-                        ok_count += 1
-                        ss.append_history({"type": "download", "title_id": title_id,
-                                            "title": title_name, "episode_no": ep["no"],
-                                            "image_count": cnt})
-                else:
-                    consecutive_fail += 1
-                    ss.append_history({"type": "download_fail", "title_id": title_id,
-                                        "title": title_name, "episode_no": ep["no"], "error": err})
-                    if consecutive_fail >= pipeline._MAX_CONSECUTIVE_FAILURES:
-                        ss.append_log("titleId=%s 연속 %d회 실패 - 일시 차단 가능성으로 중단" %
-                                       (title_id, consecutive_fail))
-                        break
-
-            if last_ok_no != t_info.get("last_downloaded_no"):
-                ss.upsert_title({str(title_id): {"last_downloaded_no": last_ok_no}})
-            ss.save_title_job_state({"running": False, "finished_at": time.time(),
-                                      "message": "%s 다운로드 완료(%d화)" % (title_name, ok_count)})
-
-        t = threading.Thread(target=_runner, name="webtoon_manager_dl_title", daemon=True)
-        t.start()
-        return True, "%s 다운로드 시작됨(백그라운드)" % title_name
 
     def _act_test_discord(self, db_type):
         cfg = self._get_cfg(db_type)
