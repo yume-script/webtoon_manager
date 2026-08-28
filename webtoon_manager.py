@@ -337,6 +337,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             from . import downloader as dl
             session = pipeline.build_session_from_cfg(cfg)
             ok_count = 0
+            consecutive_fail = 0
             for i, no in enumerate(episode_nos):
                 if ss.load_title_job_state().get("cancel_requested"):
                     ss.append_log("수동 다운로드 취소됨")
@@ -353,13 +354,18 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                         timeout=int(cfg.get("REQUEST_TIMEOUT_SECONDS", 10)),
                         log=ss.append_log)
                     if ok:
+                        consecutive_fail = 0
                         ok_count += 1 if not skipped else 0
                         ss.append_history({"type": "manual_download", "title_id": title_id,
                                             "title": title, "episode_no": no,
                                             "image_count": cnt})
                     else:
+                        consecutive_fail += 1
                         ss.append_history({"type": "manual_download_fail", "title_id": title_id,
                                             "title": title, "episode_no": no, "error": err})
+                        if consecutive_fail >= pipeline._MAX_CONSECUTIVE_FAILURES:
+                            ss.append_log("연속 %d회 실패 - 일시 차단 가능성으로 중단" % consecutive_fail)
+                            break
                 except naver_api.NaverAuthExpired as e:
                     ss.append_log("인증 만료: %s" % e)
                     discord_notify.notify_cookie_expired(cfg)
@@ -414,6 +420,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             ss.save_title_job_state({"total": len(new_eps)})
             last_ok_no = t_info.get("last_downloaded_no")
             ok_count = 0
+            consecutive_fail = 0
             for i, ep in enumerate(new_eps):
                 if ss.load_title_job_state().get("cancel_requested"):
                     ss.append_log("다운로드 취소됨")
@@ -434,6 +441,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                     discord_notify.notify_cookie_expired(cfg)
                     break
                 if ok:
+                    consecutive_fail = 0
                     last_ok_no = ep["no"]
                     if not skipped:
                         ok_count += 1
@@ -441,8 +449,13 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                                             "title": title_name, "episode_no": ep["no"],
                                             "image_count": cnt})
                 else:
+                    consecutive_fail += 1
                     ss.append_history({"type": "download_fail", "title_id": title_id,
                                         "title": title_name, "episode_no": ep["no"], "error": err})
+                    if consecutive_fail >= pipeline._MAX_CONSECUTIVE_FAILURES:
+                        ss.append_log("titleId=%s 연속 %d회 실패 - 일시 차단 가능성으로 중단" %
+                                       (title_id, consecutive_fail))
+                        break
 
             if last_ok_no != t_info.get("last_downloaded_no"):
                 ss.upsert_title({str(title_id): {"last_downloaded_no": last_ok_no}})

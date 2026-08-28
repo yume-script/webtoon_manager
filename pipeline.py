@@ -3,6 +3,10 @@ import time
 
 from . import naver_api, downloader, discord_notify, state_store as ss
 
+# 한 작품 안에서 연속으로 이 횟수만큼 다운로드가 실패하면(네이버 일시 차단/
+# 레이트리밋 가능성) 남은 회차는 포기하고 다음 작품으로 넘어간다.
+_MAX_CONSECUTIVE_FAILURES = 3
+
 
 def _cfg_num(cfg, key, default):
     try:
@@ -132,6 +136,7 @@ def run_download_cycle(cfg, log=print):
         rest_needed = max_new > 0 and len(new_eps) > max_new
 
         last_ok_no = t.get("last_downloaded_no")
+        consecutive_fail = 0
         for ep in capped:
             try:
                 ok, skipped, img_count, err = downloader.download_episode(
@@ -145,6 +150,7 @@ def run_download_cycle(cfg, log=print):
                 break
 
             if ok:
+                consecutive_fail = 0
                 last_ok_no = ep["no"]
                 if not skipped:
                     downloaded_count += 1
@@ -154,12 +160,21 @@ def run_download_cycle(cfg, log=print):
                         "image_count": img_count,
                     })
             else:
+                consecutive_fail += 1
                 failures.append({"title_id": tid, "title": t.get("title", tid),
                                   "episode_no": ep["no"], "error": err})
                 ss.append_history({
                     "type": "download_fail", "title_id": tid, "title": t.get("title", tid),
                     "episode_no": ep["no"], "error": err,
                 })
+                # 딜레이를 지켜도 연속으로 계속 실패하면(네이버 일시 차단/레이트리밋
+                # 가능성) 남은 회차를 전부 두들기지 말고 이 작품은 여기서 접고
+                # 다음 작품으로 넘어간다. 다음 스캔 주기에 last_downloaded_no부터
+                # 다시 이어서 시도한다.
+                if consecutive_fail >= _MAX_CONSECUTIVE_FAILURES:
+                    log("titleId=%s 연속 %d회 다운로드 실패 - 일시 차단 가능성으로 이 작품은 중단하고 다음으로 넘어감" %
+                        (tid, consecutive_fail))
+                    break
 
         if last_ok_no != t.get("last_downloaded_no"):
             ss.upsert_title({tid: {"last_downloaded_no": last_ok_no,
