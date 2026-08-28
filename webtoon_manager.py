@@ -53,6 +53,7 @@ DEFAULTS = {
     "ENABLE_SCHEDULER": False,
     "INTERVAL_MINUTES": 240,
     "MAX_NEW_EPISODES_PER_TITLE": 10,
+    "FINISHED_MAX_PAGES": 40,
     "BATCH_REST_MINUTES": 5.0,
     "MAX_CONCURRENT_DOWNLOADS": 5,
     "DELAY_SECONDS": 1.0,
@@ -378,7 +379,7 @@ def fetch_weekday_titles(session, cancel_check=None):
     return out
 
 
-def fetch_finished_titles(session, max_pages=200, cancel_check=None):
+def fetch_finished_titles(session, max_pages=200, cancel_check=None, log=None):
     """완결(finish) 탭을 페이지네이션하며 훑는다. 새로 나오는 titleId가 없어지면 중단."""
     out = {}
     page = 1
@@ -395,6 +396,8 @@ def fetch_finished_titles(session, max_pages=200, cancel_check=None):
         for item in items:
             item["status"] = "완결"
             out[item["titleId"]] = _merge_title(out.get(item["titleId"]), item)
+        if log and page % 5 == 0:
+            log("완결 목록 수집 진행: %d페이지, 누적 %d개" % (page, len(out)))
         page += 1
         time.sleep(0.2)
     return out
@@ -779,8 +782,10 @@ def run_scan(cfg, log=print):
 
     save_job_state({"message": "완결 목록 수집 중"})
     log("완결 목록 수집 시작")
+    finish_max_pages = int(_cfg_num(cfg, "FINISHED_MAX_PAGES", 40))
     try:
-        merged.update(fetch_finished_titles(session, cancel_check=_cancelled))
+        merged.update(fetch_finished_titles(session, max_pages=finish_max_pages,
+                                             cancel_check=_cancelled, log=log))
     except Exception as e:  # noqa: BLE001
         log("완결 목록 수집 실패: %s" % e)
 
@@ -1049,6 +1054,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         {"key": "INTERVAL_MINUTES", "label": "실행 주기(분, 최소 10)", "type": "number", "default": 240},
         {"key": "MAX_NEW_EPISODES_PER_TITLE", "label": "1회 실행당 작품별 최대 신규 다운로드 회차 수(0=무제한)",
          "type": "number", "default": 10},
+        {"key": "FINISHED_MAX_PAGES", "label": "완결 목록 스캔 시 최대 페이지 수(낮출수록 스캔이 빠름)",
+         "type": "number", "default": 40},
         {"key": "BATCH_REST_MINUTES", "label": "상한 도달 시 휴식(분)", "type": "number", "default": 5},
         {"key": "MAX_CONCURRENT_DOWNLOADS", "label": "이미지 동시 다운로드 수", "type": "number", "default": 5},
         {"key": "DELAY_SECONDS", "label": "회차 간 대기(초)", "type": "number", "default": 1.0},
