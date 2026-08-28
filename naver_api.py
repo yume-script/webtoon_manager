@@ -21,6 +21,15 @@ MOBILE_DETAIL_URL = "https://m.comic.naver.com/webtoon/detail"
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 _IMG_RE = re.compile(r'<img[^>]+class="[^"]*wt_viewer[^"]*"[^>]+src="([^"]+)"', re.I)
+# 실사용 예시(2026-08 확인)로 보니, 오래된/완결작 템플릿은 wt_viewer 클래스가
+# <img> 자체가 아니라 이를 감싸는 <div class="wt_viewer">에만 붙고, 정작
+# <img>에는 class가 전혀 없다(id="content_image_N"만 있음). 그래서 클래스
+# 유무에 기대지 않고, 페이지 전체의 <img src="..."> 를 다 뽑은 뒤 실제
+# 만화컷 CDN 경로(image-comic.pstatic.net)인지로 판별하는 방식을 기본으로
+# 쓴다. 연령고지 배너 이미지(.../static/agerate/...)는 명시적으로 제외한다.
+_ANY_IMG_SRC_RE = re.compile(r'<img\b[^>]*\bsrc="([^"]+)"', re.I)
+_AGE_BANNER_RE = re.compile(r'/static/agerate/', re.I)
+_COMIC_CDN_RE = re.compile(r'//image-comic\.pstatic\.net/', re.I)
 _TITLE_RE = re.compile(r'"titleName"\s*:\s*"([^"]*)"')
 # 유료(코인 결제) 회차는 실제 만화 이미지 대신 "미리보기/구매" 안내가 뜨는데,
 # 정확한 마크업은 자주 바뀔 수 있어 페이지 전역에서 이 키워드들 중 하나라도
@@ -247,6 +256,15 @@ def fetch_episode_list(session, title_id, max_pages=50):
     return episodes
 
 
+def _extract_comic_images(html):
+    """페이지 안의 <img src="...">를 전부 뽑은 뒤, 실제 만화컷 CDN 경로
+    (image-comic.pstatic.net)인 것만 남기고 연령고지 배너(/static/agerate/)는
+    제외한다. class="wt_viewer"가 <img> 자체에 붙는 템플릿/<div>에만 붙는
+    템플릿 둘 다 이 방식이면 구분 없이 처리된다."""
+    candidates = _ANY_IMG_SRC_RE.findall(html)
+    return [u for u in candidates if _COMIC_CDN_RE.search(u) and not _AGE_BANNER_RE.search(u)]
+
+
 def fetch_episode_images(session, title_id, episode_no):
     """회차 상세 페이지를 긁어서 이미지 URL 목록을 반환. 성인/미성년 인증이 필요한
     작품인데 쿠키가 없거나 만료되었으면 NaverAuthExpired를 던진다."""
@@ -256,15 +274,12 @@ def fetch_episode_images(session, title_id, episode_no):
 
     if "성인인증" in html or "adult_ok" in html or "만 19세" in html:
         # 이미지가 하나도 안 잡히면 인증 필요로 간주
-        imgs = _IMG_RE.findall(html)
-        if not imgs:
+        if not _extract_comic_images(html):
             raise NaverAuthExpired(
                 "titleId=%s no=%s: 성인 인증이 필요하거나 쿠키가 만료된 것으로 보임" %
                 (title_id, episode_no))
 
-    imgs = _IMG_RE.findall(html)
-    # 중복/썸네일성 이미지(광고 등) 제거를 위해 comicimage.naver.net 등 원본 CDN만 채택
-    imgs = [u for u in imgs if "image-comic" in u or "comicimage" in u or "cptoon" in u or u.startswith("http")]
+    imgs = _extract_comic_images(html)
     if not imgs:
         if any(marker in html for marker in _PAID_MARKERS):
             raise NaverPaidEpisode(
