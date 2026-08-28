@@ -221,7 +221,8 @@
       ['디스코드 알림', cfg.has_discord ? '설정됨' : '(미설정)']
     ];
     box.innerHTML = rows.map(function (r) {
-      return '<div><b>' + r[0] + '</b><br>' + escapeHtml(String(r[1])) + '</div>';
+      return '<div class="wtm-settings-row"><span class="wtm-settings-row-label">' + r[0] +
+        '</span><span class="wtm-settings-row-value">' + escapeHtml(String(r[1])) + '</span></div>';
     }).join('');
 
     var logBox = el('[data-el="log-tail"]');

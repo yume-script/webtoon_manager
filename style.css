@@ -81,8 +81,12 @@
 .wtm-history-item.fail { background: rgba(231,76,60,.12); }
 
 .wtm-hint { font-size: 12px; opacity: .65; margin: 6px 0 10px; }
-.wtm-settings-summary { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px,1fr));
-  gap: 8px; font-size: 12px; margin-bottom: 10px; }
-.wtm-settings-summary div { padding: 6px 8px; border-radius: 6px; background: rgba(127,127,127,.06); }
+.wtm-settings-summary { display: flex; flex-direction: column; gap: 1px; margin-bottom: 14px;
+  border-radius: 8px; overflow: hidden; border: 1px solid var(--border-color, rgba(127,127,127,.15)); }
+.wtm-settings-row { display: flex; align-items: baseline; gap: 14px; padding: 8px 12px;
+  background: rgba(127,127,127,.05); font-size: 13px; }
+.wtm-settings-row:nth-child(even) { background: rgba(127,127,127,.02); }
+.wtm-settings-row-label { flex: 0 0 150px; opacity: .65; font-size: 12px; }
+.wtm-settings-row-value { flex: 1; min-width: 0; word-break: break-all; overflow-wrap: anywhere; font-weight: 600; }
 .wtm-log { max-height: 260px; overflow: auto; font-size: 11px; background: rgba(127,127,127,.06);
   padding: 8px; border-radius: 8px; white-space: pre-wrap; }
