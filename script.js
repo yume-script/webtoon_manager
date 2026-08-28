@@ -131,15 +131,16 @@
 
   function cardActionsHtml(t) {
     var st = statusOf(t);
+    var manualBtn = '<button class="wtm-btn wtm-btn-small wtm-btn-secondary" data-card-action="manual_download_request" data-title-id="' + t.titleId + '" data-title="' + escapeHtml(t.title || '') + '">수동다운로드</button>';
     if (st === 'subscribed') {
       return '<button class="wtm-btn wtm-btn-small" data-card-action="unsubscribe" data-title-id="' + t.titleId + '">구독해제</button>' +
-        '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-card-action="exclude" data-title-id="' + t.titleId + '">제외</button>';
+        '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-card-action="exclude" data-title-id="' + t.titleId + '">제외</button>' + manualBtn;
     }
     if (st === 'unsubscribed' || st === 'excluded') {
-      return '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-card-action="restore" data-title-id="' + t.titleId + '">다시 구독</button>';
+      return '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-card-action="restore" data-title-id="' + t.titleId + '">다시 구독</button>' + manualBtn;
     }
     return '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-card-action="subscribe" data-title-id="' + t.titleId + '">구독</button>' +
-      '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-card-action="exclude" data-title-id="' + t.titleId + '">제외</button>';
+      '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-card-action="exclude" data-title-id="' + t.titleId + '">제외</button>' + manualBtn;
   }
 
   function renderGrid() {
@@ -369,6 +370,28 @@
         await refresh();
         return;
       }
+    }
+
+    var manualReqBtn = ev.target.closest('[data-card-action="manual_download_request"]');
+    if (manualReqBtn) {
+      var reqTitleId = manualReqBtn.getAttribute('data-title-id');
+      setTab('manual');
+      var idInput2 = el('[data-el="manual-title-id"]');
+      if (idInput2) {
+        idInput2.value = reqTitleId;
+        var resultBox2 = el('[data-el="manual-result"]');
+        if (resultBox2) resultBox2.innerHTML = '<div class="wtm-hint">조회 중...</div>';
+        callAction({ action: 'manual_lookup', titleId: reqTitleId }).then(function (r) {
+          var parsed = r.success ? parseMaybeJson(r.message) : null;
+          if (!r.success || !parsed) {
+            if (resultBox2) resultBox2.innerHTML = '<div class="wtm-hint">조회 실패: ' + escapeHtml(r.message || '') + '</div>';
+            return;
+          }
+          lookupResult = parsed;
+          renderManualResult();
+        });
+      }
+      return;
     }
 
     var cardAction = ev.target.closest('[data-card-action]');
