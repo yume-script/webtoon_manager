@@ -225,13 +225,18 @@ def tail_log(n=60):
 # 2. 네이버웹툰 목록/회차/이미지 접근
 # ============================================================================
 NAVER_BASE = "https://comic.naver.com"
-NAVER_API_BASE = NAVER_BASE + "/api/webtoon/titlelist"
+NAVER_WEBTOON_LIST_URL = NAVER_BASE + "/webtoon"
 NAVER_ARTICLE_LIST_API = NAVER_BASE + "/api/article/list"
 NAVER_DETAIL_URL = NAVER_BASE + "/webtoon/detail"
-NAVER_WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+# 사용자가 실제로 확인해준 탭 파라미터. 요일 7개 + dailyPlus(일일플러스) + finish(완결).
+NAVER_WEEKDAY_TABS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun", "dailyPlus"]
+NAVER_FINISH_TAB = "finish"
 
 _IMG_RE = re.compile(r'<img[^>]+class="[^"]*wt_viewer[^"]*"[^>]+src="([^"]+)"', re.I)
 _TITLE_RE = re.compile(r'"titleName"\s*:\s*"([^"]*)"')
+_NEXT_DATA_RE = re.compile(
+    r'<script[^>]+id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.I | re.S)
 
 
 class NaverAuthExpired(Exception):
@@ -281,39 +286,128 @@ def _naver_get(session, url, params=None, referer=None):
     return resp
 
 
-def _extract_title_list(body):
-    candidates = []
-    if isinstance(body, dict):
-        for path in (("titleList",), ("result", "titleList"), ("titleList", "titleList")):
-            cur = body
-            ok = True
-            for p in path:
-                if isinstance(cur, dict) and p in cur:
-                    cur = cur[p]
-                else:
-                    ok = False
-                    break
-            if ok and isinstance(cur, list):
-                candidates = cur
-                break
+def _extract_next_data(html):
+    """페이지 HTML에 박혀있는 <script id="__NEXT_DATA__">...JSON...</script>를 파싱한다.
+    없으면 None."""
+    m = _NEXT_DATA_RE.search(html)
+    if not m:
+        return None
+    try:
+        return json.loads(m.group(1))
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+def _walk_title_dicts(node, out, seen_ids):
+    """__NEXT_DATA__ JSON 트리를 재귀적으로 훑어 titleId를 가진 dict를 전부 모은다.
+    정확한 스키마(중첩 깊이/키 이름)를 알 수 없어, 있을 법한 키 이름 후보들을
+    폭넓게 시도하는 방어적 방식이다."""
+    if isinstance(node, dict):
+        title_id = node.get("titleId") or node.get("id")
+        title_name = node.get("titleName") or node.get("title") or node.get("name")
+        if title_id and title_name and isinstance(title_name, str):
+            tid = str(title_id)
+            if tid not in seen_ids:
+                seen_ids.add(tid)
+                author = node.get("author") or node.get("writer") or node.get("authorName") or ""
+                if isinstance(author, list):
+                    author = ", ".join(
+                        a.get("name", str(a)) if isinstance(a, dict) else str(a) for a in author)
+                thumbnail = (node.get("thumbnailUrl") or node.get("thumbnail") or
+                             node.get("imageUrl") or node.get("img") or "")
+                if isinstance(thumbnail, dict):
+                    thumbnail = thumbnail.get("url", "")
+                out.append({
+                    "titleId": tid,
+                    "title": title_name,
+                    "author": author,
+                    "thumbnail": thumbnail,
+                    "is_adult": bool(node.get("adult") or node.get("isAdult") or node.get("age19")),
+                    "rest": bool(node.get("rest") or node.get("isRest") or node.get("hiatus")),
+                    "new": bool(node.get("new") or node.get("isNew")),
+                    "tags": node.get("tags") or node.get("genres") or [],
+                })
+        for v in node.values():
+            _walk_title_dicts(v, out, seen_ids)
+    elif isinstance(node, list):
+        for v in node:
+            _walk_title_dicts(v, out, seen_ids)
+
+
+def _fetch_tab_titles(session, tab, page=None):
+    """comic.naver.com/webtoon?tab={tab}(&page=N) 페이지를 받아 __NEXT_DATA__에서
+    작품 목록을 추출한다. __NEXT_DATA__를 못 찾으면 빈 리스트(호출부에서 로그로
+    남기고 다음 탭으로 넘어가도록)."""
+    params = {"tab": tab}
+    if page:
+        params["page"] = page
+    resp = _naver_get(session, NAVER_WEBTOON_LIST_URL, params=params, referer=NAVER_BASE + "/")
+    data = _extract_next_data(resp.text)
+    if data is None:
+        return []
     out = []
-    for it in candidates:
-        if not isinstance(it, dict):
+    _walk_title_dicts(data, out, set())
+    return out
+
+
+def fetch_weekday_titles(session):
+    """요일별(mon~sun) + dailyPlus(일일플러스) 탭을 모두 훑어 병합한다."""
+    out = {}
+    for tab in NAVER_WEEKDAY_TABS:
+        try:
+            items = _fetch_tab_titles(session, tab)
+        except (requests.RequestException, ValueError):
             continue
-        title_id = it.get("titleId") or it.get("id")
-        if not title_id:
-            continue
-        out.append({
-            "titleId": title_id,
-            "title": it.get("titleName") or it.get("title") or "",
-            "author": ", ".join(it.get("author", [])) if isinstance(it.get("author"), list)
-                      else (it.get("author") or ""),
-            "thumbnail": it.get("thumbnailUrl") or it.get("thumbnail") or "",
-            "is_adult": bool(it.get("adult") or it.get("isAdult")),
-            "rest": bool(it.get("rest")),
-            "new": bool(it.get("new")),
-            "tags": it.get("tags", []) or [],
-        })
+        for item in items:
+            item["status"] = "연재"
+            item.setdefault("weekdays", [])
+            if tab not in item["weekdays"]:
+                item["weekdays"].append(tab)
+            out[item["titleId"]] = _merge_title(out.get(item["titleId"]), item)
+        time.sleep(0.2)
+    return out
+
+
+def fetch_finished_titles(session, max_pages=200):
+    """완결(finish) 탭을 페이지네이션하며 훑는다. 새로 나오는 titleId가 없어지면 중단."""
+    out = {}
+    page = 1
+    while page <= max_pages:
+        try:
+            items = _fetch_tab_titles(session, NAVER_FINISH_TAB, page=page)
+        except (requests.RequestException, ValueError):
+            break
+        new_items = [it for it in items if it["titleId"] not in out]
+        if not items or not new_items:
+            break
+        for item in items:
+            item["status"] = "완결"
+            out[item["titleId"]] = _merge_title(out.get(item["titleId"]), item)
+        page += 1
+        time.sleep(0.2)
+    return out
+
+
+def fetch_genre_titles(session, genre, max_pages=50):
+    """장르/태그 탭도 같은 URL 패턴(tab=장르코드)을 쓴다고 가정하고 동일하게 처리한다.
+    실제 장르 탭 파라미터 이름이 다르면(예: genreTab, genre=...) 이 함수만 고치면 된다."""
+    out = {}
+    page = 1
+    while page <= max_pages:
+        try:
+            items = _fetch_tab_titles(session, genre, page=page if page > 1 else None)
+        except (requests.RequestException, ValueError):
+            break
+        new_items = [it for it in items if it["titleId"] not in out]
+        if not items or not new_items:
+            break
+        for item in items:
+            tags = set(item.get("tags", []))
+            tags.add(genre)
+            item["tags"] = sorted(tags)
+            out[item["titleId"]] = _merge_title(out.get(item["titleId"]), item)
+        page += 1
+        time.sleep(0.2)
     return out
 
 
@@ -331,66 +425,6 @@ def _merge_title(old, new):
     if old_tags or new_tags:
         merged["tags"] = sorted(old_tags | new_tags)
     return merged
-
-
-def fetch_weekday_titles(session):
-    out = {}
-    for wd in NAVER_WEEKDAYS:
-        try:
-            resp = _naver_get(session, NAVER_API_BASE + "/weekday", params={"week": wd})
-            body = resp.json()
-        except (requests.RequestException, ValueError):
-            continue
-        for item in _extract_title_list(body):
-            item["status"] = item.get("status") or "연재"
-            item.setdefault("weekdays", [])
-            if wd not in item["weekdays"]:
-                item["weekdays"].append(wd)
-            out[str(item["titleId"])] = _merge_title(out.get(str(item["titleId"])), item)
-        time.sleep(0.2)
-    return out
-
-
-def fetch_finished_titles(session, max_pages=200):
-    out = {}
-    page = 1
-    while page <= max_pages:
-        try:
-            resp = _naver_get(session, NAVER_API_BASE + "/finished", params={"page": page})
-            body = resp.json()
-        except (requests.RequestException, ValueError):
-            break
-        items = _extract_title_list(body)
-        if not items:
-            break
-        for item in items:
-            item["status"] = "완결"
-            out[str(item["titleId"])] = _merge_title(out.get(str(item["titleId"])), item)
-        page += 1
-        time.sleep(0.2)
-    return out
-
-
-def fetch_genre_titles(session, genre, max_pages=50):
-    out = {}
-    page = 1
-    while page <= max_pages:
-        try:
-            resp = _naver_get(session, NAVER_API_BASE + "/genre", params={"genre": genre, "page": page})
-            body = resp.json()
-        except (requests.RequestException, ValueError):
-            break
-        items = _extract_title_list(body)
-        if not items:
-            break
-        for item in items:
-            tags = set(item.get("tags", []))
-            tags.add(genre)
-            item["tags"] = sorted(tags)
-            out[str(item["titleId"])] = _merge_title(out.get(str(item["titleId"])), item)
-        page += 1
-        time.sleep(0.2)
-    return out
 
 
 def fetch_episode_list(session, title_id, max_pages=50):
