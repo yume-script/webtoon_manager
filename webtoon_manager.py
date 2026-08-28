@@ -495,21 +495,41 @@ def fetch_episode_images(session, title_id, episode_no):
     resp = _naver_get(session, url, referer=NAVER_BASE + "/")
     html = resp.text
 
-    # 1차: 구방식(정적 <img class="wt_viewer"> 태그) 시도
-    imgs = _IMG_RE.findall(html)
-    imgs = [u for u in imgs if _IMAGE_CDN_HOST_RE.search(u) or u.startswith("http")]
+    # 1차(가장 확실함): 페이지 전체 텍스트에서 알려진 CDN 호스트
+    # (image-comic.pstatic.net 등) 패턴에 맞는 이미지 URL을 직접 정규식으로 긁는다.
+    # <img> 태그 클래스명이나 JSON 구조에 의존하지 않아 페이지 구조가 바뀌어도 안정적.
+    imgs = []
+    seen = set()
+    for m in _IMAGE_URL_RE.finditer(html):
+        u = m.group(0)
+        if u in seen:
+            continue
+        if _IMAGE_CDN_HOST_RE.search(u):
+            seen.add(u)
+            imgs.append(u)
 
-    # 2차: 목록 페이지와 동일하게, 페이지가 Next.js로 바뀌어 정적 태그가 없는
-    # 경우 __NEXT_DATA__ JSON 트리 안에서 이미지 URL을 직접 추출한다.
+    # 다른 화(예: 관련 회차 추천 위젯) 썸네일이 같은 CDN 도메인으로 섞여 들어올
+    # 수 있어, URL 경로에 "/titleId/회차번호/"가 포함된 것만 우선 추린다.
+    # (좁혀서 결과가 아예 없어지면 원래 목록을 그대로 둔다 — 경로 규칙이 다를 수도 있으니)
+    path_marker = "/%s/%s/" % (title_id, episode_no)
+    narrowed = [u for u in imgs if path_marker in u]
+    if narrowed:
+        imgs = narrowed
+
+    # 2차: 구방식(정적 <img class="wt_viewer"> 태그)
+    if not imgs:
+        old_style = _IMG_RE.findall(html)
+        imgs = [u for u in old_style if u.startswith("http")]
+
+    # 3차: __NEXT_DATA__가 있는 페이지 유형이면 그 안에서도 시도
     if not imgs:
         data = _extract_next_data(html)
         if data is not None:
             found = []
-            seen = set()
-            _walk_image_urls(data, found, seen, require_cdn_host=True)
+            seen2 = set()
+            _walk_image_urls(data, found, seen2, require_cdn_host=True)
             if not found:
-                # CDN 호스트 패턴이 바뀌었을 가능성 — 필터를 풀고 한 번 더 시도
-                _walk_image_urls(data, found, seen, require_cdn_host=False)
+                _walk_image_urls(data, found, seen2, require_cdn_host=False)
             imgs = found
 
     if not imgs:
@@ -517,11 +537,8 @@ def fetch_episode_images(session, title_id, episode_no):
             raise NaverAuthExpired(
                 "titleId=%s no=%s: 성인 인증이 필요하거나 쿠키가 만료된 것으로 보임" %
                 (title_id, episode_no))
-        next_data_found = _extract_next_data(html) is not None
-        raise ValueError(
-            "titleId=%s no=%s: 이미지 목록을 찾지 못함(페이지 구조 변경 가능성, "
-            "__NEXT_DATA__ %s)" % (title_id, episode_no,
-                                    "발견됨(이미지 매칭 실패)" if next_data_found else "없음"))
+        raise ValueError("titleId=%s no=%s: 이미지 목록을 찾지 못함(페이지 구조 변경 가능성)" %
+                          (title_id, episode_no))
     return imgs
 
 
