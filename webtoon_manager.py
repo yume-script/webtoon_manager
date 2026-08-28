@@ -431,11 +431,11 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                     ss.append_log("다운로드 취소됨")
                     break
                 if ep.get("charge"):
-                    ss.append_log("%s %s화: 유료(charge=true) 회차, 목록 API 기준 건너뜀" % (title_name, ep["no"]))
+                    ss.append_log("%s %s화: 유료(charge=true) 회차, 목록 API 기준 - 이후 회차도 유료로 보고 중단" % (title_name, ep["no"]))
                     ss.append_history({"type": "skipped_paid", "title_id": title_id,
                                         "title": title_name, "episode_no": ep["no"],
                                         "error": "유료 회차(목록 API charge=true)"})
-                    continue
+                    break
                 ss.save_title_job_state({"progress": i, "message": "%s %s화 다운로드 중" % (title_name, ep["no"])})
                 try:
                     ok, skipped, cnt, err = dl.download_episode(
@@ -448,10 +448,12 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                         timeout=int(cfg.get("REQUEST_TIMEOUT_SECONDS", 10)),
                         log=ss.append_log)
                 except naver_api.NaverPaidEpisode as e:
-                    ss.append_log("%s %s화: %s (이번엔 건너뜀, 다음 스캔 때 재시도)" % (title_name, ep["no"], e))
+                    # 이후 회차도 순서대로 계속 유료일 가능성이 높아 여기서 중단
+                    # (다음 스캔/실행 때 다시 이 회차부터 확인).
+                    ss.append_log("%s %s화: %s (이후 회차도 유료로 보고 중단, 다음에 재시도)" % (title_name, ep["no"], e))
                     ss.append_history({"type": "skipped_paid", "title_id": title_id,
                                         "title": title_name, "episode_no": ep["no"], "error": str(e)})
-                    continue
+                    break
                 except naver_api.NaverAuthExpired as e:
                     ss.append_log("인증 만료: %s" % e)
                     discord_notify.notify_cookie_expired(cfg)

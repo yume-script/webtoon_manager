@@ -139,15 +139,17 @@ def run_download_cycle(cfg, log=print):
         consecutive_fail = 0
         for ep in capped:
             if ep.get("charge"):
-                # 목록 API가 이미 유료(charge=true)라고 알려주는 회차는 상세페이지
-                # 요청 자체를 보내지 않고 건너뛴다 - "매일 하나씩 무료로 풀리는"
-                # 방식일 수 있어 last_ok_no는 그대로 둬서 다음 스캔 때 다시 확인한다.
-                log("titleId=%s %s화: 유료(charge=true) 회차, 목록 API 기준 건너뜀" % (tid, ep["no"]))
+                # 목록 API가 이미 유료(charge=true)라고 알려주는 회차를 만나면,
+                # 그 뒤 회차들도 순서대로 계속 유료일 가능성이 매우 높다("매일
+                # 하나씩 풀기" 방식은 오래된 순서대로 풀리므로). 남은 회차를
+                # 하나씩 다 확인하지 말고 이 작품은 여기서 접고 다음 작품으로.
+                # last_ok_no는 그대로 둬서 다음 스캔 때 이 회차부터 다시 확인한다.
+                log("titleId=%s %s화: 유료(charge=true) 회차, 목록 API 기준 - 이후 회차도 유료로 보고 이 작품은 중단" % (tid, ep["no"]))
                 ss.append_history({
                     "type": "skipped_paid", "title_id": tid, "title": t.get("title", tid),
                     "episode_no": ep["no"], "error": "유료 회차(목록 API charge=true)",
                 })
-                continue
+                break
             try:
                 ok, skipped, img_count, err = downloader.download_episode(
                     session, download_root, t.get("title", tid), tid, ep["no"],
@@ -159,16 +161,15 @@ def run_download_cycle(cfg, log=print):
                 cookie_expired = True
                 break
             except naver_api.NaverPaidEpisode as e:
-                # "24시간마다 무료" 로테이션 방식일 수 있어 지금은 유료로 잠겨
-                # 있어도 나중에 다시 무료로 풀릴 수 있다. 그래서 last_ok_no는
-                # 건드리지 않는다(= 다음 스캔 때 이 회차부터 다시 시도됨).
-                # 이번 실행에서만 건너뛰고 다음 회차로 넘어간다.
-                log("titleId=%s %s화: %s (이번엔 건너뜀, 다음 스캔 때 재시도)" % (tid, ep["no"], e))
+                # 마찬가지로 이후 회차도 계속 유료일 가능성이 높아 이 작품은
+                # 여기서 접고 다음 작품으로 넘어간다("24시간마다 무료" 로테이션이
+                # 있으니 last_ok_no는 안 건드려서 다음 스캔 때 다시 확인함).
+                log("titleId=%s %s화: %s (이후 회차도 유료로 보고 이 작품은 중단, 다음 스캔 때 재시도)" % (tid, ep["no"], e))
                 ss.append_history({
                     "type": "skipped_paid", "title_id": tid, "title": t.get("title", tid),
                     "episode_no": ep["no"], "error": str(e),
                 })
-                continue
+                break
 
             if ok:
                 consecutive_fail = 0
