@@ -37,6 +37,8 @@ def download_episode(session, download_root, title, title_id, episode_no,
             images = naver_api.fetch_episode_images(session, title_id, episode_no)
         except naver_api.NaverAuthExpired:
             raise
+        except naver_api.NaverPaidEpisode:
+            raise
         except Exception as e:  # noqa: BLE001
             return False, False, 0, str(e)
 

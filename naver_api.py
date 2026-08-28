@@ -22,10 +22,22 @@ WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 _IMG_RE = re.compile(r'<img[^>]+class="[^"]*wt_viewer[^"]*"[^>]+src="([^"]+)"', re.I)
 _TITLE_RE = re.compile(r'"titleName"\s*:\s*"([^"]*)"')
+# 유료(코인 결제) 회차는 실제 만화 이미지 대신 "미리보기/구매" 안내가 뜨는데,
+# 정확한 마크업은 자주 바뀔 수 있어 페이지 전역에서 이 키워드들 중 하나라도
+# 보이면 유료 회차로 의심한다(이미지가 0장일 때만 확인하는 보조 판단이라
+# 오탐이어도 에러 메시지만 더 정확해질 뿐 동작이 나빠지지는 않음). 흔한 UI
+# 문구와 겹칠 수 있는 애매한 단어(미리보기, 쿠키 등)는 오탐 위험이 커서 뺐다.
+_PAID_MARKERS = ("코인 사용", "코인으로 보기", "구매하기", "소장하기", "결제하기", "이용권 사용")
 
 
 class NaverAuthExpired(Exception):
     """쿠키(성인/로그인)가 만료되어 인증이 필요한 콘텐츠 접근이 막힌 경우"""
+
+
+class NaverPaidEpisode(Exception):
+    """유료(코인 결제) 회차라 미리보기만 제공되고 실제 이미지는 못 가져오는 경우.
+    구조 변경/일시 차단과는 원인이 달라 재시도해도 해결되지 않으므로 별도
+    예외로 구분해, 호출 측이 이 회차를 건너뛰고 계속 진행할 수 있게 한다."""
 
 
 def build_session(cookie_storage_state_json=None, naver_id=None, naver_pw=None,
@@ -254,6 +266,10 @@ def fetch_episode_images(session, title_id, episode_no):
     # 중복/썸네일성 이미지(광고 등) 제거를 위해 comicimage.naver.net 등 원본 CDN만 채택
     imgs = [u for u in imgs if "image-comic" in u or "comicimage" in u or "cptoon" in u or u.startswith("http")]
     if not imgs:
+        if any(marker in html for marker in _PAID_MARKERS):
+            raise NaverPaidEpisode(
+                "titleId=%s no=%s: 유료(코인 결제) 회차로 보여 이미지를 못 가져옴" %
+                (title_id, episode_no))
         raise ValueError("titleId=%s no=%s: 이미지 목록을 찾지 못함(페이지 구조 변경 가능성)" %
                           (title_id, episode_no))
     return imgs

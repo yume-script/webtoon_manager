@@ -366,6 +366,11 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                         if consecutive_fail >= pipeline._MAX_CONSECUTIVE_FAILURES:
                             ss.append_log("연속 %d회 실패 - 일시 차단 가능성으로 중단" % consecutive_fail)
                             break
+                except naver_api.NaverPaidEpisode as e:
+                    ss.append_log("%s %s화: %s (건너뜀)" % (title, no, e))
+                    ss.append_history({"type": "skipped_paid", "title_id": title_id,
+                                        "title": title, "episode_no": no, "error": str(e)})
+                    continue
                 except naver_api.NaverAuthExpired as e:
                     ss.append_log("인증 만료: %s" % e)
                     discord_notify.notify_cookie_expired(cfg)
@@ -425,6 +430,12 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 if ss.load_title_job_state().get("cancel_requested"):
                     ss.append_log("다운로드 취소됨")
                     break
+                if ep.get("charge"):
+                    ss.append_log("%s %s화: 유료(charge=true) 회차, 목록 API 기준 건너뜀" % (title_name, ep["no"]))
+                    ss.append_history({"type": "skipped_paid", "title_id": title_id,
+                                        "title": title_name, "episode_no": ep["no"],
+                                        "error": "유료 회차(목록 API charge=true)"})
+                    continue
                 ss.save_title_job_state({"progress": i, "message": "%s %s화 다운로드 중" % (title_name, ep["no"])})
                 try:
                     ok, skipped, cnt, err = dl.download_episode(
@@ -436,6 +447,11 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                         delay_seconds=float(cfg.get("DELAY_SECONDS", 1.0)),
                         timeout=int(cfg.get("REQUEST_TIMEOUT_SECONDS", 10)),
                         log=ss.append_log)
+                except naver_api.NaverPaidEpisode as e:
+                    ss.append_log("%s %s화: %s (이번엔 건너뜀, 다음 스캔 때 재시도)" % (title_name, ep["no"], e))
+                    ss.append_history({"type": "skipped_paid", "title_id": title_id,
+                                        "title": title_name, "episode_no": ep["no"], "error": str(e)})
+                    continue
                 except naver_api.NaverAuthExpired as e:
                     ss.append_log("인증 만료: %s" % e)
                     discord_notify.notify_cookie_expired(cfg)
