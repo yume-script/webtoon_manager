@@ -809,7 +809,7 @@ def discord_notify(cfg, title, description, color=COLOR_INFO, fields=None, menti
     if fields:
         embed["fields"] = [{"name": k, "value": str(v), "inline": True} for k, v in fields.items()]
     if mention_manage_tab:
-        embed.setdefault("footer", {"text": "BookOasis > 웹툰 관리 카테고리탭에서 확인/처리하세요."})
+        embed.setdefault("footer", {"text": "BookOasis > 웹툰 다운로더 카테고리탭에서 확인/처리하세요."})
 
     ok_any = False
     errs = []
@@ -1181,7 +1181,7 @@ def _action_slug(label):
 # ============================================================================
 class WebtoonManagerMetadataProvider(BaseMetadataProvider):
     id = PLUGIN_ID
-    name = "웹툰 관리"
+    name = "웹툰 다운로더"
     is_searchable = False
 
     config_schema = [
@@ -1213,7 +1213,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
     # 좌측 사이드바 카테고리 메뉴로 등록 (plugin_board 등 기존 카테고리탭
     # 플러그인에서 확인된 실제 규격 — dict여야 사이드바에 항목이 생긴다)
     category_tab = {
-        "title": "웹툰 관리",
+        "title": "웹툰 다운로더",
         "icon": "fa-solid fa-book-open-reader",
         "order": 50,
     }
@@ -1481,5 +1481,5 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
 
     def _act_test_discord(self, db_type):
         cfg = self._get_cfg(db_type)
-        return discord_notify(cfg, "🔔 웹툰 관리 플러그인 테스트",
+        return discord_notify(cfg, "🔔 웹툰 다운로더 플러그인 테스트",
                                "이 메시지가 보이면 디스코드 알림 설정이 정상입니다.")
