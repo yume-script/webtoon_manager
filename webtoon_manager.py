@@ -933,16 +933,13 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         {"key": "DISCORD_CHANNEL_ID", "label": "디스코드 채널 ID(선택)", "type": "text"},
     ]
 
-    dashboard_widget = {
+    # 좌측 사이드바 카테고리 메뉴로 등록 (plugin_board 등 기존 카테고리탭
+    # 플러그인에서 확인된 실제 규격 — dict여야 사이드바에 항목이 생긴다)
+    category_tab = {
         "title": "웹툰 관리",
-        "subtitle": "네이버웹툰 구독/자동 다운로드",
-        "provider": "Naver Webtoon",
         "icon": "fa-solid fa-book-open-reader",
-        "limit": 5000,
-        "all_desk_tab": True,
-        "supported_types": ["general", "adult"],
+        "order": 50,
     }
-    category_tab = True
 
     update_manifest = {
         "enabled": True,

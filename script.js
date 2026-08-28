@@ -11,11 +11,14 @@
   var DATA_URL = '/api/media/dashboard/widgets/' + pluginId + '/data?db_type=' + encodeURIComponent(dbType) + '&limit=5000';
 
   // 액션 호출 엔드포인트는 코어 버전에 따라 다를 수 있어 후보를 순서대로 시도하고,
-  // 처음 성공한 방식을 이후 계속 재사용한다.
+  // 처음 성공한 방식을 이후 계속 재사용한다. plugin_board(실제 동작 확인된
+  // 카테고리탭 플러그인)의 apply(db_type, book_id, item_data) 계약을 기준으로,
+  // item_data는 action/plugin_id 등을 평평하게(flat) 담아 보낸다.
   var ACTION_ENDPOINTS = [
-    { url: '/api/media/context-menu/book/plugins/action', mode: 'context-menu' },
     { url: '/api/media/dashboard/widgets/' + pluginId + '/action', mode: 'widget-action' },
-    { url: '/api/media/metadata/apply', mode: 'apply' }
+    { url: '/api/media/metadata/plugins/action', mode: 'plugins-action' },
+    { url: '/api/media/metadata/apply', mode: 'apply' },
+    { url: '/api/media/context-menu/book/plugins/action', mode: 'context-menu' }
   ];
   var workingActionEndpoint = null;
 
@@ -40,15 +43,16 @@
 
   async function callAction(actionId, payload) {
     payload = payload || {};
-    var body = {
+    // plugin_board 확인 결과 item_data는 평평한(flat) dict: {action, plugin_id, ...}.
+    // 코어가 이 dict 전체를 apply(db_type, book_id, item_data)의 item_data로 넘기는
+    // 구조로 보이므로, 최상위 body 자체를 그 모양대로 맞춘다(불필요한 이중 래핑 제거).
+    var body = Object.assign({
       plugin_id: pluginId,
       action_id: actionId,
       action: actionId,
       book_id: 0,
-      db_type: dbType,
-      item_data: Object.assign({ action: actionId }, payload),
-      context: Object.assign({ book_id: 0, action: actionId }, payload)
-    };
+      db_type: dbType
+    }, payload);
 
     var candidates = workingActionEndpoint ? [workingActionEndpoint] : ACTION_ENDPOINTS;
     var lastErr = null;

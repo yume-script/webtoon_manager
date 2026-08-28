@@ -32,22 +32,26 @@
 - ⚠️ 이미지 목록은 공식 공개 API가 없어 회차 상세 페이지 HTML에서 정규식으로 추출합니다.
   네이버가 마크업을 바꾸면 `core/naver_api.py`의 `_IMG_RE` 부분만 고치면 됩니다.
 
-## 프레임워크 관련 가정(중요, 오류 나면 여기부터 확인)
+## 프레임워크 관련 확인/가정
 
-BookOasis 플러그인 가이드 문서에는 `get_dashboard_data()`(대시보드/카테고리탭 데이터 폴링)까지만
-명시되어 있고, 카테고리탭에서 "구독/제외/작가 등록" 같은 **쓰기 액션을 어떤 URL로 호출하는지는
-문서화되어 있지 않습니다.** 이번 코드는 이전에 만든 다른 카테고리탭 플러그인(예: jikji_sf,
-gd_poller4bookoasis, rclone_g2g_copy)에서 확인된 아래 두 가지 관례를 그대로 따랐습니다.
-
-- 데이터 조회: `GET /api/media/dashboard/widgets/{plugin_id}/data` → `get_dashboard_data()` 호출
-- 쓰기 액션: `apply(db_type, book_id=0, item_data)`를 범용 RPC 채널로 사용(rclone_g2g_copy 방식)
-  + 동일 로직을 `run_context_menu_action()`으로도 노출(컨텍스트 메뉴 엔드포인트로도 호출되게)
-
-`script.js`의 `callAction()`은 실제 설치된 BookOasis 버전에서 어느 엔드포인트가 맞는지
-**여러 후보를 순서대로 시도**하도록 만들어 뒀습니다(`/api/media/context-menu/book/plugins/action`
-→ `/api/media/dashboard/widgets/{id}/action` → `/api/media/metadata/apply`). 버튼을 눌렀는데
-"백엔드 액션 엔드포인트를 찾지 못했습니다" 라는 알림이 뜨면, 브라우저 개발자도구 Network 탭에서
-실제 어떤 요청이 실패했는지(404/405 등) 캡처해서 알려주시면 정확한 엔드포인트로 바로 고쳐드립니다.
+- **`category_tab`은 dict여야 좌측 메뉴에 등록됩니다.** 실제 동작 중인 `plugin_board`
+  플러그인 소스로 확인함: `category_tab = {"title": ..., "icon": ..., "order": ...}`.
+  (처음에 `category_tab = True`로 잘못 선언해서 사이드바에 안 떴던 적이 있었습니다.)
+- **`settings.html`을 만들면 `config_schema` 자동 생성 폼을 완전히 대체합니다.**
+  실제 입력 필드 없이 안내 문구만 넣었더니 설정 화면에 아무 입력창도 안 뜨는 문제가
+  있었습니다 — 그래서 이 버전에는 `settings.html`이 없고, `config_schema`가 표준 폼을
+  그대로 그리도록 뒀습니다.
+- **데이터 조회**: `GET /api/media/dashboard/widgets/{plugin_id}/data` → `get_dashboard_data()` 호출
+  (jikji_sf 등에서 확인됨)
+- **쓰기 액션**: `apply(db_type, book_id, item_data)`을 범용 RPC 채널로 사용하며, `item_data`는
+  `{"action": "...", "plugin_id": "...", ...}` 형태로 **평평하게(flat)** 담아 보냅니다
+  (`plugin_board.py`의 `apply()`/`_dispatch_apply()`에서 확인됨). 다만 이 액션을 실제로
+  호출하는 **정확한 엔드포인트 URL**은 아직 확인 못 했습니다 — `script.js`의 `callAction()`이
+  여러 후보(`/api/media/dashboard/widgets/{id}/action`, `/api/media/metadata/plugins/action`,
+  `/api/media/metadata/apply`, `/api/media/context-menu/book/plugins/action`)를 순서대로
+  시도하도록 만들어 뒀습니다. 버튼을 눌렀는데 "백엔드 액션 엔드포인트를 찾지 못했습니다"가 뜨면,
+  브라우저 개발자도구 Network 탭에서 실제 요청 URL/응답 코드를 캡처해서 알려주시면 바로
+  정확한 엔드포인트로 고쳐드립니다.
 
 ## 파일 구조
 
