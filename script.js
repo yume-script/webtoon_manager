@@ -85,6 +85,7 @@
   // ------------------------------------------------------------------
   var state = { titles: [], authors_tags: { authors: [], tags: [] }, history: [], job: {}, log_tail: [] };
   var currentTab = 'all';
+  var currentWeekday = 'all';
   var searchQuery = '';
   var lookupResult = null;
   var pollTimer = null;
@@ -102,6 +103,12 @@
     if (currentTab === 'subscribed') list = list.filter(function (t) { return t.subscribed && !t.excluded && !t.unsubscribed; });
     else if (currentTab === 'unsubscribed') list = list.filter(function (t) { return t.unsubscribed; });
     else if (currentTab === 'excluded') list = list.filter(function (t) { return t.excluded; });
+
+    if (currentWeekday === 'finish') {
+      list = list.filter(function (t) { return t.status === '완결'; });
+    } else if (currentWeekday !== 'all') {
+      list = list.filter(function (t) { return (t.weekdays || []).indexOf(currentWeekday) >= 0; });
+    }
 
     if (searchQuery) {
       var q = searchQuery.toLowerCase();
@@ -149,7 +156,8 @@
           '<div class="wtm-card-thumb"></div>') +
         '<div class="wtm-card-body">' +
         '<div class="wtm-card-title">' + escapeHtml(t.title || t.titleId) + '</div>' +
-        '<div class="wtm-card-author">' + escapeHtml(t.author || '') + '</div>' +
+        '<div class="wtm-card-author">' + escapeHtml(t.author || '') +
+        ' <span class="wtm-card-id">[' + escapeHtml(t.titleId) + ']</span></div>' +
         '<div class="wtm-badges">' + badgeHtml(t) + '</div>' +
         '<div class="wtm-card-actions">' + cardActionsHtml(t) + '</div>' +
         '</div></div>';
@@ -286,8 +294,8 @@
       var views = p.getAttribute('data-panel-view').split(',');
       p.style.display = views.indexOf(tab) >= 0 ? '' : 'none';
     });
-    var toolbar = el('[data-panel="all,subscribed,unsubscribed,excluded"]');
-    if (toolbar) toolbar.style.display = isListTab ? '' : 'none';
+    var toolbars = els('[data-panel="all,subscribed,unsubscribed,excluded"]');
+    toolbars.forEach(function (t) { t.style.display = isListTab ? '' : 'none'; });
 
     renderGrid();
   }
@@ -298,6 +306,14 @@
   container.addEventListener('click', async function (ev) {
     var tabBtn = ev.target.closest('.wtm-tab');
     if (tabBtn) { setTab(tabBtn.getAttribute('data-tab')); return; }
+
+    var weekdayBtn = ev.target.closest('.wtm-weekday-btn');
+    if (weekdayBtn) {
+      currentWeekday = weekdayBtn.getAttribute('data-weekday');
+      els('.wtm-weekday-btn').forEach(function (b) { b.classList.toggle('active', b === weekdayBtn); });
+      renderGrid();
+      return;
+    }
 
     var headerAction = ev.target.closest('[data-action]');
     if (headerAction) {

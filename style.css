@@ -43,6 +43,13 @@
 .wtm-input { flex: 1; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border-color, rgba(127,127,127,.25));
   background: var(--input-bg, transparent); color: inherit; font-size: 13px; }
 
+.wtm-weekday-bar { display: flex; gap: 6px; flex-wrap: wrap; padding: 2px 0 4px; }
+.wtm-weekday-btn { border: none; background: transparent; color: inherit; opacity: .6;
+  padding: 3px 8px; font-size: 12px; cursor: pointer; border-radius: 6px; }
+.wtm-weekday-btn + .wtm-weekday-btn { border-left: 1px solid var(--border-color, rgba(127,127,127,.2)); }
+.wtm-weekday-btn.active { opacity: 1; font-weight: 700; background: rgba(127,127,127,.15); }
+.wtm-weekday-btn:hover { opacity: .9; }
+
 .wtm-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
 .wtm-card { border: 1px solid var(--border-color, rgba(127,127,127,.18)); border-radius: 10px;
   overflow: hidden; background: var(--card-bg, rgba(127,127,127,.05)); display: flex; flex-direction: column; }
@@ -50,6 +57,7 @@
 .wtm-card-body { padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; flex: 1; }
 .wtm-card-title { font-size: 13px; font-weight: 600; line-height: 1.3; }
 .wtm-card-author { font-size: 11px; opacity: .65; }
+.wtm-card-id { opacity: .55; }
 .wtm-badges { display: flex; gap: 4px; flex-wrap: wrap; }
 .wtm-badge { font-size: 10px; padding: 1px 6px; border-radius: 999px; background: rgba(127,127,127,.2); }
 .wtm-badge.new { background: #4a7dfc; color: #fff; }
