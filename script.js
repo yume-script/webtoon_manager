@@ -2,25 +2,63 @@
   // 이 파일은 코어에 의해 new Function('pluginId', 'container', js)(pluginId, container)
   // 형태로 실행되는 것으로 확인됨(RCLONE_MANAGER 등 기존 플러그인과 동일 컨벤션).
   // pluginId, container 는 바깥 스코프에서 주입됨.
+  //
+  // 엔드포인트는 plugin_board(yume-script/plugin_board)의 실제 동작 중인
+  // script.js에서 그대로 확인한 규격을 사용한다:
+  //   - 데이터 조회: GET /api/media/dashboard/widgets/{pluginId}/data?type={dbType}
+  //   - 액션 호출:   POST /api/media/books/0/apply-metadata
+  //                  body: { type: dbType, source: pluginId, item_data: {...} }
+  //                  (book_id=0이 URL 경로에 고정, item_data가 apply()의 item_data로 그대로 전달됨)
 
-  var dbType = (container.dataset && container.dataset.dbType) ||
-    (window.currentDbType) ||
-    (window.BookOasisDbType) ||
-    'general';
+  function getDbType() {
+    var params = new URLSearchParams(window.location.search);
+    return params.get('db_type') || 'general';
+  }
 
-  var DATA_URL = '/api/media/dashboard/widgets/' + pluginId + '/data?db_type=' + encodeURIComponent(dbType) + '&limit=5000';
+  function dataUrl() {
+    return '/api/media/dashboard/widgets/' + pluginId + '/data?type=' + encodeURIComponent(getDbType());
+  }
 
-  // 액션 호출 엔드포인트는 코어 버전에 따라 다를 수 있어 후보를 순서대로 시도하고,
-  // 처음 성공한 방식을 이후 계속 재사용한다. plugin_board(실제 동작 확인된
-  // 카테고리탭 플러그인)의 apply(db_type, book_id, item_data) 계약을 기준으로,
-  // item_data는 action/plugin_id 등을 평평하게(flat) 담아 보낸다.
-  var ACTION_ENDPOINTS = [
-    { url: '/api/media/dashboard/widgets/' + pluginId + '/action', mode: 'widget-action' },
-    { url: '/api/media/metadata/plugins/action', mode: 'plugins-action' },
-    { url: '/api/media/metadata/apply', mode: 'apply' },
-    { url: '/api/media/context-menu/book/plugins/action', mode: 'context-menu' }
-  ];
-  var workingActionEndpoint = null;
+  async function callAction(actionData, timeoutMs) {
+    timeoutMs = timeoutMs || 60000;
+    var dbType = getDbType();
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); }, timeoutMs);
+    var resp;
+    try {
+      resp = await fetch('/api/media/books/0/apply-metadata', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: dbType, source: pluginId, item_data: actionData }),
+        signal: controller.signal
+      });
+    } catch (e) {
+      clearTimeout(timer);
+      if (e && e.name === 'AbortError') {
+        return { success: false, message: '요청이 시간 내에 응답하지 않았습니다.' };
+      }
+      return { success: false, message: '서버에 연결하지 못했습니다: ' + (e && e.message ? e.message : e) };
+    }
+    clearTimeout(timer);
+
+    var text = '';
+    try { text = await resp.text(); } catch (e) { /* ignore */ }
+    var data = null;
+    if (text) {
+      try { data = JSON.parse(text); } catch (e) { /* not json */ }
+    }
+    if (!data) {
+      return { success: false, message: '서버가 올바른 응답을 반환하지 않았습니다 (HTTP ' + resp.status + ').' };
+    }
+    var success = data.success !== undefined ? !!data.success : false;
+    var message = data.message !== undefined ? data.message : (data.error || '');
+    return { success: success, message: message, raw: data };
+  }
+
+  function parseMaybeJson(text) {
+    if (typeof text !== 'string') return text;
+    try { return JSON.parse(text); } catch (e) { return null; }
+  }
 
   function el(sel) { return container.querySelector(sel); }
   function els(sel) { return Array.prototype.slice.call(container.querySelectorAll(sel)); }
@@ -34,54 +72,12 @@
   }
 
   async function fetchData() {
-    var resp = await fetch(DATA_URL, { credentials: 'same-origin' });
+    var resp = await fetch(dataUrl(), { credentials: 'same-origin' });
     if (!resp.ok) throw new Error('데이터 조회 실패: HTTP ' + resp.status);
     var body = await resp.json();
-    var items = body.items || (body.data && body.data.items) || [];
+    if (body && body.success === false) throw new Error(body.error || '데이터 조회 실패');
+    var items = body.items || [];
     return items[0] || { titles: [], authors_tags: { authors: [], tags: [] }, history: [], job: {}, log_tail: [] };
-  }
-
-  async function callAction(actionId, payload) {
-    payload = payload || {};
-    // plugin_board 확인 결과 item_data는 평평한(flat) dict: {action, plugin_id, ...}.
-    // 코어가 이 dict 전체를 apply(db_type, book_id, item_data)의 item_data로 넘기는
-    // 구조로 보이므로, 최상위 body 자체를 그 모양대로 맞춘다(불필요한 이중 래핑 제거).
-    var body = Object.assign({
-      plugin_id: pluginId,
-      action_id: actionId,
-      action: actionId,
-      book_id: 0,
-      db_type: dbType
-    }, payload);
-
-    var candidates = workingActionEndpoint ? [workingActionEndpoint] : ACTION_ENDPOINTS;
-    var lastErr = null;
-    for (var i = 0; i < candidates.length; i++) {
-      var ep = candidates[i];
-      try {
-        var resp = await fetch(ep.url, {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
-        });
-        if (!resp.ok) { lastErr = 'HTTP ' + resp.status; continue; }
-        var data = await resp.json();
-        var success = data.success !== undefined ? data.success : (Array.isArray(data) ? true : !!data.ok);
-        var message = data.message || data.error || '';
-        workingActionEndpoint = ep;
-        return { success: success, message: message, raw: data };
-      } catch (e) {
-        lastErr = e.message || String(e);
-      }
-    }
-    console.error('[webtoon_manager] 액션 호출 실패(모든 엔드포인트 시도함):', lastErr);
-    return { success: false, message: '백엔드 액션 엔드포인트를 찾지 못했습니다: ' + lastErr };
-  }
-
-  function parseMaybeJson(text) {
-    if (typeof text !== 'string') return text;
-    try { return JSON.parse(text); } catch (e) { return null; }
   }
 
   // ------------------------------------------------------------------
@@ -106,7 +102,6 @@
     if (currentTab === 'subscribed') list = list.filter(function (t) { return t.subscribed && !t.excluded && !t.unsubscribed; });
     else if (currentTab === 'unsubscribed') list = list.filter(function (t) { return t.unsubscribed; });
     else if (currentTab === 'excluded') list = list.filter(function (t) { return t.excluded; });
-    // 'all' 은 필터 없이 전체
 
     if (searchQuery) {
       var q = searchQuery.toLowerCase();
@@ -310,7 +305,7 @@
       if (action === 'refresh') { await refresh(); return; }
       if (action === 'scan_now' || action === 'run_full_cycle_now' || action === 'cancel_job' || action === 'test_discord') {
         headerAction.disabled = true;
-        var r = await callAction(action, {});
+        var r = await callAction({ action: action });
         headerAction.disabled = false;
         if (!r.success) alert(r.message || '실패');
         await refresh();
@@ -320,7 +315,7 @@
         var key = action === 'add_author' ? 'author-input' : 'tag-input';
         var input = el('[data-el="' + key + '"]');
         if (!input || !input.value.trim()) return;
-        var r2 = await callAction(action, { value: input.value.trim() });
+        var r2 = await callAction({ action: action, value: input.value.trim() });
         if (r2.success) { input.value = ''; await refresh(); } else { alert(r2.message); }
         return;
       }
@@ -330,7 +325,7 @@
         if (!titleId) return;
         var resultBox = el('[data-el="manual-result"]');
         if (resultBox) resultBox.innerHTML = '<div class="wtm-hint">조회 중...</div>';
-        var r3 = await callAction('manual_lookup', { titleId: titleId });
+        var r3 = await callAction({ action: 'manual_lookup', titleId: titleId });
         var parsed = r3.success ? parseMaybeJson(r3.message) : null;
         if (!r3.success || !parsed) {
           if (resultBox) resultBox.innerHTML = '<div class="wtm-hint">조회 실패: ' + escapeHtml(r3.message || '') + '</div>';
@@ -344,7 +339,7 @@
         if (!lookupResult) return;
         var checked = els('[data-ep-checkbox]:checked').map(function (c) { return parseInt(c.getAttribute('data-ep-checkbox'), 10); });
         if (!checked.length) { alert('회차를 선택하세요'); return; }
-        var r4 = await callAction('manual_download', { titleId: lookupResult.titleId, title: lookupResult.title, episodeNos: checked });
+        var r4 = await callAction({ action: 'manual_download', titleId: lookupResult.titleId, title: lookupResult.title, episodeNos: checked });
         alert(r4.message || (r4.success ? '시작됨' : '실패'));
         await refresh();
         return;
@@ -356,7 +351,7 @@
       var actName = cardAction.getAttribute('data-card-action');
       var titleId2 = cardAction.getAttribute('data-title-id');
       cardAction.disabled = true;
-      var r5 = await callAction(actName, { titleId: titleId2 });
+      var r5 = await callAction({ action: actName, titleId: titleId2 });
       cardAction.disabled = false;
       if (!r5.success) alert(r5.message || '실패');
       await refresh();
@@ -368,7 +363,7 @@
       var kind = chipRemove.getAttribute('data-chip-remove');
       var value = chipRemove.getAttribute('data-value');
       var act = kind === 'author' ? 'remove_author' : 'remove_tag';
-      var r6 = await callAction(act, { value: value });
+      var r6 = await callAction({ action: act, value: value });
       if (r6.success) await refresh(); else alert(r6.message);
       return;
     }

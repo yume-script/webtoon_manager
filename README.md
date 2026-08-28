@@ -42,22 +42,15 @@
 
 - **`category_tab`은 dict여야 좌측 메뉴에 등록됩니다.** 실제 동작 중인 `plugin_board`
   플러그인 소스로 확인함: `category_tab = {"title": ..., "icon": ..., "order": ...}`.
-  (처음에 `category_tab = True`로 잘못 선언해서 사이드바에 안 떴던 적이 있었습니다.)
 - **`settings.html`을 만들면 `config_schema` 자동 생성 폼을 완전히 대체합니다.**
-  실제 입력 필드 없이 안내 문구만 넣었더니 설정 화면에 아무 입력창도 안 뜨는 문제가
-  있었습니다 — 그래서 이 버전에는 `settings.html`이 없고, `config_schema`가 표준 폼을
-  그대로 그리도록 뒀습니다.
-- **데이터 조회**: `GET /api/media/dashboard/widgets/{plugin_id}/data` → `get_dashboard_data()` 호출
-  (jikji_sf 등에서 확인됨)
-- **쓰기 액션**: `apply(db_type, book_id, item_data)`을 범용 RPC 채널로 사용하며, `item_data`는
-  `{"action": "...", "plugin_id": "...", ...}` 형태로 **평평하게(flat)** 담아 보냅니다
-  (`plugin_board.py`의 `apply()`/`_dispatch_apply()`에서 확인됨). 다만 이 액션을 실제로
-  호출하는 **정확한 엔드포인트 URL**은 아직 확인 못 했습니다 — `script.js`의 `callAction()`이
-  여러 후보(`/api/media/dashboard/widgets/{id}/action`, `/api/media/metadata/plugins/action`,
-  `/api/media/metadata/apply`, `/api/media/context-menu/book/plugins/action`)를 순서대로
-  시도하도록 만들어 뒀습니다. 버튼을 눌렀는데 "백엔드 액션 엔드포인트를 찾지 못했습니다"가 뜨면,
-  브라우저 개발자도구 Network 탭에서 실제 요청 URL/응답 코드를 캡처해서 알려주시면 바로
-  정확한 엔드포인트로 고쳐드립니다.
+  그래서 이 버전에는 `settings.html`이 없고, `config_schema`가 표준 폼을 그대로 그리도록 뒀습니다.
+- **데이터 조회**: `GET /api/media/dashboard/widgets/{plugin_id}/data?type={dbType}`
+  (쿼리 파라미터 이름이 `db_type`이 아니라 `type`) — `plugin_board`의 실제 `script.js`에서 확인.
+- **쓰기 액션**: `POST /api/media/books/0/apply-metadata`,
+  body `{ type: dbType, source: plugin_id, item_data: {action, ...} }`.
+  `book_id=0`이 URL 경로(`/books/0/...`)에 고정되어 있고, `item_data`가 파이썬
+  `apply(db_type, book_id, item_data)`의 `item_data` 인자로 그대로 전달됩니다.
+  (역시 `plugin_board`의 실제 `script.js`에서 확인 — 더 이상 추측이 아닙니다.)
 
 ## 파일 구조
 
