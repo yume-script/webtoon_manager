@@ -300,28 +300,34 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         return True, "작업 상태를 초기화했습니다."
 
     def _cleanup_legacy_job(self, cfg, log=print):
-        """다운로드 경로 안의 모든 시리즈 폴더를 훑어서 예전 형식 잔재
+        """다운로드 경로 안의 시리즈 폴더들을 훑어서 예전 형식 잔재
         (.cbz/.cbz.tmp, 압축 기능 추가 전 낱장 이미지 폴더, 중단된 임시 폴더)를
-        정리한다. _act_run_bg를 통해 백그라운드에서 실행된다."""
+        정리한다. _act_run_bg를 통해 백그라운드에서 실행된다.
+
+        다운로드 경로 자체를 os.listdir()로 통째로 훑지 않고, titles.json에
+        기록된 작품 목록에서 각 작품의 경로를 직접 계산해서 하나씩 접근한다 -
+        일부 NAS/원격 마운트는 상위 폴더의 목록 조회 결과를 한동안 캐시해서
+        최근에 생긴 하위 폴더가 안 보일 수 있는데(실사용 중 확인됨), 특정
+        경로를 이름으로 직접 지정해서 접근하는 건 이 문제의 영향을 안 받기
+        때문이다."""
         download_root = cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR
         if not os.path.isdir(download_root):
             log("정리 대상 없음: 다운로드 경로가 존재하지 않습니다(%s)" % download_root)
             return
         total = {"removed": 0, "converted": 0, "kept": 0}
-        try:
-            names = sorted(os.listdir(download_root))
-        except Exception as e:  # noqa: BLE001
-            log("다운로드 경로를 읽지 못했습니다: %s" % e)
-            return
-        for name in names:
-            series_dir = os.path.join(download_root, name)
+        checked = 0
+        titles = ss.load_titles()
+        for tid, t in titles.items():
+            title = t.get("title") or tid
+            series_dir = downloader.title_dir(download_root, title, tid)
             if not os.path.isdir(series_dir):
                 continue
+            checked += 1
             result = downloader.cleanup_legacy_artifacts(series_dir, log=log)
             for k in total:
                 total[k] += result[k]
-        log("예전 파일 정리 완료: 삭제 %d개, 변환(보존) %d개, 유지 %d개" %
-            (total["removed"], total["converted"], total["kept"]))
+        log("예전 파일 정리 완료(작품 %d개 확인): 삭제 %d개, 변환(보존) %d개, 유지 %d개" %
+            (checked, total["removed"], total["converted"], total["kept"]))
 
     def _act_run_bg(self, db_type, func, label):
         job = ss.load_job_state()
