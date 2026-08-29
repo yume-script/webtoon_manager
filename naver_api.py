@@ -163,10 +163,14 @@ def fetch_genre_titles(session, genre, max_pages=50):
 
 
 def _extract_title_list(body):
-    """응답 스키마가 titleList / result.titleList 등으로 버전에 따라 다를 수 있어
-    가능한 경로를 모두 시도한다."""
+    """응답 스키마가 body 자체가 배열이거나, titleList / result.titleList 등으로
+    감싸진 형태이거나 버전에 따라 다를 수 있어 가능한 경로를 모두 시도한다."""
     candidates = []
-    if isinstance(body, dict):
+    if isinstance(body, list):
+        # 실사용 응답 예시(2026-08 확인, "신작 업뎃" 목록)로 보니 감싸는 객체 없이
+        # 배열 자체로 오는 응답 형태도 있다.
+        candidates = body
+    elif isinstance(body, dict):
         for path in (("titleList",), ("result", "titleList"), ("titleList", "titleList")):
             cur = body
             ok = True
