@@ -386,6 +386,11 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                                   "message": "수동 다운로드 시작", "started_at": time.time(),
                                   "cancel_requested": False, "last_error": None,
                                   "progress": 0, "total": len(episode_nos)})
+        _dl_root = cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR
+        if cfg.get("DOWNLOAD_ROOT"):
+            ss.append_log("이번 다운로드 경로(설정값): %s" % _dl_root)
+        else:
+            ss.append_log("이번 다운로드 경로(설정 안 됨 - 기본 경로 사용): %s" % _dl_root)
 
         def _runner():
             from . import downloader as dl
@@ -459,6 +464,11 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                                   "message": "%s 새 회차 확인 중" % title_name,
                                   "started_at": time.time(), "cancel_requested": False,
                                   "last_error": None, "progress": 0, "total": 0})
+        _dl_root = cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR
+        if cfg.get("DOWNLOAD_ROOT"):
+            ss.append_log("이번 다운로드 경로(설정값): %s" % _dl_root)
+        else:
+            ss.append_log("이번 다운로드 경로(설정 안 됨 - 기본 경로 사용): %s" % _dl_root)
 
         def _runner():
             from . import downloader as dl

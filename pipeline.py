@@ -153,6 +153,10 @@ def run_download_cycle(cfg, log=print):
                   if t.get("subscribed") and not t.get("excluded") and not t.get("unsubscribed")}
 
     download_root = cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR
+    if cfg.get("DOWNLOAD_ROOT"):
+        log("이번 다운로드 경로(설정값): %s" % download_root)
+    else:
+        log("이번 다운로드 경로(설정 안 됨 - 기본 경로 사용): %s" % download_root)
     max_new = int(_cfg_num(cfg, "MAX_NEW_EPISODES_PER_TITLE", 10))
     batch_rest_min = _cfg_num(cfg, "BATCH_REST_MINUTES", 5.0)
     max_concurrent = int(_cfg_num(cfg, "MAX_CONCURRENT_DOWNLOADS", 5))
