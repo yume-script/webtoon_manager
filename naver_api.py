@@ -234,6 +234,7 @@ def _merge_title(old, new):
 def fetch_episode_list(session, title_id, max_pages=200):
     """최신 -> 과거 순으로 반환되는 회차 목록. [{no, subtitle, thumbnail, charge}]"""
     episodes = []
+    seen_nos = set()
     page = 1
     while page <= max_pages:
         try:
@@ -259,14 +260,25 @@ def fetch_episode_list(session, title_id, max_pages=200):
                     break
         if not items:
             break
+        new_count = 0
         for it in items:
+            no = it.get("no")
+            if no in seen_nos:
+                # 이미 본 회차가 다시 나온다 - isLastPage 신호를 못 믿을 때가
+                # 있어서(실사용 중 같은 페이지가 반복 응답되는 케이스 확인됨),
+                # 새 회차가 하나도 없는 페이지를 만나면 그 자리에서 멈춘다.
+                continue
+            seen_nos.add(no)
             episodes.append({
-                "no": it.get("no"),
+                "no": no,
                 "subtitle": it.get("subtitle", ""),
                 "thumbnail": it.get("thumbnailUrl", ""),
                 "charge": bool(it.get("charge")),
                 "up_type": it.get("serviceUpType", ""),
             })
+            new_count += 1
+        if new_count == 0:
+            break
         # articleList가 더 없으면 종료 (isLastPage 필드가 있으면 우선 사용)
         is_last = body.get("result", {}).get("isLastPage") if isinstance(body.get("result"), dict) else None
         if is_last is True or len(items) == 0:
