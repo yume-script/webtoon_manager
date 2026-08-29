@@ -243,6 +243,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             if action == "cancel_title_job":
                 ss.save_title_job_state({"cancel_requested": True})
                 return True, "취소 요청됨"
+            if action == "force_reset_job":
+                return self._act_force_reset()
             if action == "subscribe":
                 return self._act_set_flags(payload.get("titleId"), subscribed=True,
                                             excluded=False, unsubscribed=False)
@@ -279,6 +281,17 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         patch = {k: v for k, v in payload.items() if k not in ("action",)}
         self._save_cfg_patch(db_type, patch)
         return True, "설정 저장됨"
+
+    def _act_force_reset(self):
+        """job_state/title_job_state가 컨테이너 재시작 등으로 running=true인
+        채 멈춘 "유령 상태"일 때, 실제 스레드가 죽어있어 취소 요청도 안 먹히는
+        경우를 위한 최후 수단. 무조건 대기 상태로 되돌린다."""
+        ss.save_job_state({"running": False, "stage": "idle", "message": "",
+                            "cancel_requested": False, "last_error": None})
+        ss.save_title_job_state({"running": False, "message": "",
+                                  "cancel_requested": False, "last_error": None})
+        ss.append_log("작업 상태가 강제로 초기화되었습니다.")
+        return True, "작업 상태를 초기화했습니다."
 
     def _act_run_bg(self, db_type, func, label):
         job = ss.load_job_state()

@@ -344,7 +344,8 @@
       var action = headerAction.getAttribute('data-action');
       if (action === 'refresh') { await refresh(); return; }
       if (action === 'scan_now' || action === 'scan_finished_now' || action === 'run_full_cycle_now' || action === 'cancel_job' ||
-          action === 'cancel_title_job' || action === 'test_discord') {
+          action === 'cancel_title_job' || action === 'test_discord' || action === 'force_reset_job') {
+        if (action === 'force_reset_job' && !confirm('정말로 작업 상태를 강제 초기화할까요? 지금 실제로 뭔가 진행 중이라면 중간에 끊길 수 있습니다.')) return;
         headerAction.disabled = true;
         var r = await callAction(action, {});
         headerAction.disabled = false;

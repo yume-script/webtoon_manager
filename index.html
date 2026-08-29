@@ -36,6 +36,7 @@
     <button class="wtm-tab" data-tab="authors">작가·태그 관리</button>
     <button class="wtm-tab" data-tab="history">다운로드 이력</button>
     <button class="wtm-tab" data-tab="settings">설정</button>
+    <button class="wtm-tab" data-tab="help">도움말</button>
   </div>
 
   <div class="wtm-toolbar" data-panel="all,subscribed,unsubscribed,excluded">
@@ -110,6 +111,43 @@
     <div class="wtm-box">
       <div class="wtm-box-title">실행 로그(최근)</div>
       <pre class="wtm-log" data-el="log-tail"></pre>
+    </div>
+  </div>
+
+  <div class="wtm-panel" data-panel-view="help" style="display:none">
+    <div class="wtm-box">
+      <div class="wtm-box-title">⚠️ "이미 실행 중인 작업이 있습니다"가 계속 뜰 때</div>
+      <p class="wtm-hint">
+        BookOasis 컨테이너가 재시작되거나 스캔 도중 오류가 나면, 실제로는 아무것도
+        안 도는데 상태 파일에만 "실행 중"이 남아있는 경우가 있습니다(유령 상태).
+        이럴 땐 "취소" 버튼이 반응하지 않을 수 있습니다.
+      </p>
+      <p class="wtm-hint">
+        아래 <b>"작업 상태 강제 초기화"</b> 버튼을 누르면 실행 중/취소 요청
+        상태를 전부 대기 상태로 되돌립니다. 실제로 뭔가 다운로드 중이었다면
+        그 작업은 중간에 끊길 수 있으니, 정말 아무것도 안 도는 것 같을 때만
+        눌러주세요.
+      </p>
+      <button class="wtm-btn wtm-btn-danger" data-action="force_reset_job">작업 상태 강제 초기화</button>
+    </div>
+    <div class="wtm-box">
+      <div class="wtm-box-title">스캔 관련</div>
+      <p class="wtm-hint">
+        <b>"지금 스캔"</b>은 요일별 연재 목록만 빠르게 가져옵니다(수 초~수십 초).
+        <b>"완결 목록 수집"</b>은 완결작 전체 목록(최대 200페이지)을 훑어서
+        느립니다 - 하루 중 설정한 시각(환경설정의 "완결 전체 목록 수집 시각")에
+        스케줄러가 자동으로 한 번 실행하며, 필요하면 이 버튼으로 수동 실행도
+        가능합니다.
+      </p>
+    </div>
+    <div class="wtm-box">
+      <div class="wtm-box-title">유료 회차</div>
+      <p class="wtm-hint">
+        "24시간마다 무료" 같은 로테이션 작품은 지금 유료로 잠긴 회차라도
+        나중에 무료로 풀릴 수 있어 영구적으로 건너뛰지 않고 다음 스캔 때
+        다시 확인합니다. "수동 다운로드" 탭에서는 유료 회차 체크박스가
+        비활성화되어 선택할 수 없습니다.
+      </p>
     </div>
   </div>
 </div>
