@@ -20,6 +20,13 @@ def episode_dir(download_root, title, title_id, episode_no, folder_zero_fill=4):
     return os.path.join(download_root, folder, ep_name)
 
 
+def title_dir(download_root, title, title_id):
+    """작품(시리즈) 단위 폴더 경로 - BookOasis 라이브러리 자동등록 시
+    /api/webhook/scan 에 넘길 path는 회차 폴더가 아니라 이 시리즈 폴더
+    단위로 호출하는 게 API 문서가 권장하는 방식이다."""
+    return os.path.join(download_root, safe_name("%s (%s)" % (title, title_id)))
+
+
 def download_episode(session, download_root, title, title_id, episode_no,
                       image_zero_fill=4, folder_zero_fill=4,
                       max_concurrent=5, delay_seconds=1.0, timeout=10, log=None):

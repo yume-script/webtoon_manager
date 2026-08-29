@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
+import os
 import time
+
+import requests
 
 from . import naver_api, downloader, discord_notify, state_store as ss
 
@@ -23,6 +26,55 @@ def build_session_from_cfg(cfg):
         naver_pw=cfg.get("NAVER_PW"),
         timeout=int(_cfg_num(cfg, "REQUEST_TIMEOUT_SECONDS", 10)),
     )
+
+
+def register_library_scan(cfg, download_root, title, title_id, log=print):
+    """다운로드가 끝난 작품 폴더를 BookOasis 라이브러리에 자동 등록한다.
+    /api/webhook/scan (docs/api_endpoints.md §6)을 토큰 인증으로 호출 -
+    /api/media/libraries/<id>/scan-path와 달리 관리자 세션 쿠키(=비밀번호
+    저장)가 필요 없다. 시리즈 폴더 하나 단위로 호출하는 게 API 문서 권장
+    방식이라 회차 폴더가 아니라 작품(시리즈) 폴더 경로를 넘긴다.
+    설정이 비어있거나 실패해도 다운로드 자체는 이미 끝난 상태라 조용히
+    로그만 남기고 예외를 올리지 않는다."""
+    if not cfg.get("AUTO_REGISTER_LIBRARY"):
+        return
+    library_id = cfg.get("LIBRARY_ID")
+    token = cfg.get("WEBHOOK_TOKEN")
+    root = cfg.get("LIBRARY_PHYSICAL_PATH_ROOT")
+    if not library_id or not token or not root:
+        log("라이브러리 자동등록: LIBRARY_ID/WEBHOOK_TOKEN/LIBRARY_PHYSICAL_PATH_ROOT 설정이 "
+            "비어있어 건너뜀")
+        return
+
+    series_dir = downloader.title_dir(download_root, title, title_id)
+    try:
+        rel_path = os.path.relpath(series_dir, root)
+    except ValueError as e:  # noqa: BLE001 (윈도우 드라이브 문자 다를 때 등)
+        log("라이브러리 자동등록 실패: 상대경로 계산 불가(%s)" % e)
+        return
+    if rel_path.startswith(".."):
+        log("라이브러리 자동등록 실패: 다운로드 경로(%s)가 LIBRARY_PHYSICAL_PATH_ROOT(%s) 바깥에 있음" %
+            (series_dir, root))
+        return
+
+    base_url = (cfg.get("WEBHOOK_BASE_URL") or "http://localhost:5930").rstrip("/")
+    try:
+        resp = requests.post(
+            base_url + "/api/webhook/scan",
+            data={
+                "token": token,
+                "library_id": library_id,
+                "type": cfg.get("LIBRARY_DB_TYPE") or "general",
+                "path": rel_path,
+            },
+            timeout=60,
+        )
+        if resp.status_code >= 300:
+            log("라이브러리 자동등록 실패: HTTP %s %s" % (resp.status_code, resp.text[:200]))
+        else:
+            log("라이브러리 자동등록 요청 완료: %s" % rel_path)
+    except Exception as e:  # noqa: BLE001
+        log("라이브러리 자동등록 중 오류: %s" % e)
 
 
 def _autosubscribe_patch(item, old, author_names):
@@ -235,6 +287,9 @@ def run_download_cycle(cfg, log=print):
         if last_ok_no != t.get("last_downloaded_no"):
             ss.upsert_title({tid: {"last_downloaded_no": last_ok_no,
                                     "up_flag": rest_needed}})
+            # 새로 받은 회차가 있을 때만(=폴더에 실제 변화가 있을 때만) 라이브러리
+            # 자동등록을 시도한다.
+            register_library_scan(cfg, download_root, t.get("title", tid), tid, log=log)
 
         if cookie_expired:
             break
