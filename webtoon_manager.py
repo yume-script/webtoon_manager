@@ -330,8 +330,10 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         session = pipeline.build_session_from_cfg(cfg)
         try:
             meta = naver_api.guess_title_meta(session, title_id)
-            episodes = naver_api.fetch_episode_list(session, title_id, max_pages=3)
-            meta["episodes"] = episodes[:60]
+            # 회차가 많은 장기 연재작(10페이지 이상)도 전부 가져오도록 상한을
+            # 넉넉히 잡는다. 화면은 스크롤 가능한 박스라 개수 제한이 필요 없다.
+            episodes = naver_api.fetch_episode_list(session, title_id, max_pages=200)
+            meta["episodes"] = episodes
             return True, json.dumps(meta, ensure_ascii=False)
         except Exception as e:  # noqa: BLE001
             return False, "조회 실패: %s" % e

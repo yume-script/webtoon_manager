@@ -231,7 +231,7 @@ def _merge_title(old, new):
     return merged
 
 
-def fetch_episode_list(session, title_id, max_pages=50):
+def fetch_episode_list(session, title_id, max_pages=200):
     """최신 -> 과거 순으로 반환되는 회차 목록. [{no, subtitle, thumbnail, charge}]"""
     episodes = []
     page = 1
