@@ -186,6 +186,16 @@ def _extract_title_list(body):
         title_id = it.get("titleId") or it.get("id")
         if not title_id:
             continue
+        rating = None
+        # 응답 스키마마다 필드명이 다를 수 있어 흔히 쓰이는 후보를 순서대로 시도
+        for key in ("starScore", "star", "starAverage", "score", "rating"):
+            v = it.get(key)
+            if v is not None:
+                try:
+                    rating = round(float(v), 2)
+                except (TypeError, ValueError):
+                    rating = None
+                break
         out.append({
             "titleId": title_id,
             "title": it.get("titleName") or it.get("title") or "",
@@ -195,6 +205,7 @@ def _extract_title_list(body):
             "is_adult": bool(it.get("adult") or it.get("isAdult")),
             "rest": bool(it.get("rest")),
             "new": bool(it.get("new")),
+            "rating": rating,
             "tags": it.get("tags", []) or [],
         })
     return out

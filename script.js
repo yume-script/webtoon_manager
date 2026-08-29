@@ -81,6 +81,7 @@
   var currentTab = 'all';
   var searchQuery = '';
   var dayFilter = 'all';
+  var sortMode = 'default';
   var lookupResult = null;
   var pollTimer = null;
   var pollFastUntil = 0;
@@ -112,6 +113,14 @@
           (t.author || '').toLowerCase().indexOf(q) >= 0;
       });
     }
+
+    if (sortMode === 'rating') {
+      list.sort(function (a, b) { return (b.rating == null ? -1 : b.rating) - (a.rating == null ? -1 : a.rating); });
+    } else if (sortMode === 'title') {
+      list.sort(function (a, b) { return (a.title || '').localeCompare(b.title || '', 'ko'); });
+    }
+    // 'default' 는 이미 last_seen_at 내림차순으로 정렬된 state.titles 순서 그대로 사용
+
     return list;
   }
 
@@ -153,6 +162,7 @@
         '<div class="wtm-card-body">' +
         '<div class="wtm-card-title">' + escapeHtml(t.title || t.titleId) + '</div>' +
         '<div class="wtm-card-author">' + escapeHtml(t.author || '') + '</div>' +
+        (t.rating != null ? '<div class="wtm-card-rating">★ ' + t.rating.toFixed(2) + '</div>' : '') +
         '<div class="wtm-badges">' + badgeHtml(t) + '</div>' +
         '<div class="wtm-card-actions">' + cardActionsHtml(t) + '</div>' +
         '</div></div>';
@@ -415,6 +425,14 @@
   if (searchInput) {
     searchInput.addEventListener('input', function () {
       searchQuery = searchInput.value.trim();
+      renderGrid();
+    });
+  }
+
+  var sortSelect = el('[data-el="sort-select"]');
+  if (sortSelect) {
+    sortSelect.addEventListener('change', function () {
+      sortMode = sortSelect.value;
       renderGrid();
     });
   }

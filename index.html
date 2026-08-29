@@ -40,6 +40,11 @@
 
   <div class="wtm-toolbar" data-panel="all,subscribed,unsubscribed,excluded">
     <input type="text" class="wtm-input" data-el="search-input" placeholder="제목/작가로 검색">
+    <select class="wtm-input" style="flex:0 0 auto;width:auto" data-el="sort-select">
+      <option value="default">기본순(최근 발견순)</option>
+      <option value="rating">평점순</option>
+      <option value="title">가나다순</option>
+    </select>
     <div class="wtm-daytabs" data-el="day-tabs">
       <button class="wtm-daytab active" data-day="all">전체</button>
       <button class="wtm-daytab" data-day="mon">월</button>
