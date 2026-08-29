@@ -31,6 +31,7 @@ from . import pipeline
 from . import scheduler
 from . import discord_notify
 from . import naver_api
+from . import downloader
 
 PLUGIN_ID = "webtoon_manager"
 
