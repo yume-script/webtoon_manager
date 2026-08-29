@@ -2,12 +2,13 @@
   <div class="wtm-header">
     <div class="wtm-header-icon"><i class="fa-solid fa-book-open-reader"></i></div>
     <div class="wtm-header-text">
-      <div class="wtm-title">웹툰 다운로더</div>
+      <div class="wtm-title">웹툰 관리</div>
       <div class="wtm-subtitle">네이버웹툰 무료 회차 자동 구독 &middot; 다운로드</div>
     </div>
     <div class="wtm-header-actions">
       <button class="wtm-btn wtm-btn-ghost" data-action="refresh"><i class="fa-solid fa-rotate"></i> 새로고침</button>
-      <button class="wtm-btn wtm-btn-primary" data-action="scan_now"><i class="fa-solid fa-magnifying-glass"></i> 지금 스캔</button>
+      <button class="wtm-btn wtm-btn-primary" data-action="scan_now"><i class="fa-solid fa-magnifying-glass"></i> 지금 스캔(요일별)</button>
+      <button class="wtm-btn wtm-btn-secondary" data-action="scan_finished_now" title="완결 전체 목록은 페이지가 많아 오래 걸릴 수 있습니다"><i class="fa-solid fa-flag-checkered"></i> 완결 목록 수집</button>
       <button class="wtm-btn wtm-btn-primary" data-action="run_full_cycle_now"><i class="fa-solid fa-play"></i> 지금 전체 실행</button>
     </div>
   </div>
@@ -19,7 +20,11 @@
       <div class="wtm-progress-bar" data-el="progress-bar"></div>
     </div>
     <button class="wtm-btn wtm-btn-small wtm-btn-danger" data-action="cancel_job" data-el="cancel-btn" style="display:none">취소</button>
-    <button class="wtm-btn wtm-btn-small wtm-btn-ghost" data-action="force_reset_job">강제 초기화</button>
+  </div>
+  <div class="wtm-status-bar" data-el="title-job-bar" style="display:none">
+    <span class="wtm-status-pill running">작품 다운로드 중</span>
+    <span data-el="title-job-message"></span>
+    <button class="wtm-btn wtm-btn-small wtm-btn-danger" data-action="cancel_title_job">취소</button>
   </div>
 
   <div class="wtm-tabs" data-el="tabs">
@@ -35,18 +40,6 @@
 
   <div class="wtm-toolbar" data-panel="all,subscribed,unsubscribed,excluded">
     <input type="text" class="wtm-input" data-el="search-input" placeholder="제목/작가로 검색">
-  </div>
-
-  <div class="wtm-weekday-bar" data-panel="all,subscribed,unsubscribed,excluded" data-el="weekday-bar">
-    <button class="wtm-weekday-btn active" data-weekday="all">전체</button>
-    <button class="wtm-weekday-btn" data-weekday="mon">월요일</button>
-    <button class="wtm-weekday-btn" data-weekday="tue">화요일</button>
-    <button class="wtm-weekday-btn" data-weekday="wed">수요일</button>
-    <button class="wtm-weekday-btn" data-weekday="thu">목요일</button>
-    <button class="wtm-weekday-btn" data-weekday="fri">금요일</button>
-    <button class="wtm-weekday-btn" data-weekday="sat">토요일</button>
-    <button class="wtm-weekday-btn" data-weekday="sun">일요일</button>
-    <button class="wtm-weekday-btn" data-weekday="finish">완결</button>
   </div>
 
   <div class="wtm-panel" data-panel-view="all,subscribed,unsubscribed,excluded">
@@ -92,7 +85,7 @@
       <div class="wtm-settings-summary" data-el="settings-summary"></div>
       <p class="wtm-hint">
         네이버 아이디/비밀번호/쿠키, 디스코드, 다운로드 경로 등 세부 값은
-        환경설정 &gt; 플러그인 설정 &gt; 웹툰 다운로더 화면에서 입력합니다.
+        환경설정 &gt; 플러그인 설정 &gt; 웹툰 관리 화면에서 입력합니다.
         여기서는 확인 및 디스코드 테스트만 가능합니다.
       </p>
       <button class="wtm-btn wtm-btn-secondary" data-action="test_discord">디스코드 테스트 알림 보내기</button>

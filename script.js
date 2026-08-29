@@ -2,63 +2,20 @@
   // 이 파일은 코어에 의해 new Function('pluginId', 'container', js)(pluginId, container)
   // 형태로 실행되는 것으로 확인됨(RCLONE_MANAGER 등 기존 플러그인과 동일 컨벤션).
   // pluginId, container 는 바깥 스코프에서 주입됨.
-  //
-  // 엔드포인트는 plugin_board(yume-script/plugin_board)의 실제 동작 중인
-  // script.js에서 그대로 확인한 규격을 사용한다:
-  //   - 데이터 조회: GET /api/media/dashboard/widgets/{pluginId}/data?type={dbType}
-  //   - 액션 호출:   POST /api/media/books/0/apply-metadata
-  //                  body: { type: dbType, source: pluginId, item_data: {...} }
-  //                  (book_id=0이 URL 경로에 고정, item_data가 apply()의 item_data로 그대로 전달됨)
 
-  function getDbType() {
-    var params = new URLSearchParams(window.location.search);
-    return params.get('db_type') || 'general';
-  }
+  var dbType = (container.dataset && container.dataset.dbType) ||
+    (window.currentDbType) ||
+    (window.BookOasisDbType) ||
+    'general';
 
-  function dataUrl() {
-    return '/api/media/dashboard/widgets/' + pluginId + '/data?type=' + encodeURIComponent(getDbType());
-  }
+  var DATA_URL = '/api/media/dashboard/widgets/' + pluginId + '/data?db_type=' + encodeURIComponent(dbType) + '&limit=5000';
 
-  async function callAction(actionData, timeoutMs) {
-    timeoutMs = timeoutMs || 60000;
-    var dbType = getDbType();
-    var controller = new AbortController();
-    var timer = setTimeout(function () { controller.abort(); }, timeoutMs);
-    var resp;
-    try {
-      resp = await fetch('/api/media/books/0/apply-metadata', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: dbType, source: pluginId, item_data: actionData }),
-        signal: controller.signal
-      });
-    } catch (e) {
-      clearTimeout(timer);
-      if (e && e.name === 'AbortError') {
-        return { success: false, message: '요청이 시간 내에 응답하지 않았습니다.' };
-      }
-      return { success: false, message: '서버에 연결하지 못했습니다: ' + (e && e.message ? e.message : e) };
-    }
-    clearTimeout(timer);
-
-    var text = '';
-    try { text = await resp.text(); } catch (e) { /* ignore */ }
-    var data = null;
-    if (text) {
-      try { data = JSON.parse(text); } catch (e) { /* not json */ }
-    }
-    if (!data) {
-      return { success: false, message: '서버가 올바른 응답을 반환하지 않았습니다 (HTTP ' + resp.status + ').' };
-    }
-    var success = data.success !== undefined ? !!data.success : false;
-    var message = data.message !== undefined ? data.message : (data.error || '');
-    return { success: success, message: message, raw: data };
-  }
-
-  function parseMaybeJson(text) {
-    if (typeof text !== 'string') return text;
-    try { return JSON.parse(text); } catch (e) { return null; }
-  }
+  // 코어 소스(api/routes/plugin_routes.py)를 직접 grep해서 확인된 유일한 진짜
+  // 액션 엔드포인트. run_context_menu_action(db_type, action_id, context)로
+  // 라우팅되며, 요청 바디는 최상위 필드로 type/plugin_id/action_id/context 만
+  // 읽는다(item_data, book_id, db_type 같은 이름은 서버가 읽지 않음 — 넣어도
+  // 무해하지만 무시됨).
+  var ACTION_URL = '/api/media/context-menu/book/plugins/action';
 
   function el(sel) { return container.querySelector(sel); }
   function els(sel) { return Array.prototype.slice.call(container.querySelectorAll(sel)); }
@@ -72,12 +29,49 @@
   }
 
   async function fetchData() {
-    var resp = await fetch(dataUrl(), { credentials: 'same-origin' });
+    var resp = await fetch(DATA_URL, { credentials: 'same-origin' });
     if (!resp.ok) throw new Error('데이터 조회 실패: HTTP ' + resp.status);
     var body = await resp.json();
-    if (body && body.success === false) throw new Error(body.error || '데이터 조회 실패');
-    var items = body.items || [];
+    var items = body.items || (body.data && body.data.items) || [];
     return items[0] || { titles: [], authors_tags: { authors: [], tags: [] }, history: [], job: {}, log_tail: [] };
+  }
+
+  async function callAction(actionId, payload) {
+    payload = payload || {};
+    // 코어 라우트가 실제로 읽는 필드만 최상위에 둔다: type(=db_type), plugin_id,
+    // action_id, context. (예전엔 db_type이라는 이름으로 보내서 서버가 못 읽고
+    // 매번 general로 취급되던 버그가 있었음 — type으로 고침.)
+    var body = {
+      type: dbType,
+      plugin_id: pluginId,
+      action_id: actionId,
+      context: Object.assign({ action: actionId }, payload)
+    };
+
+    try {
+      var resp = await fetch(ACTION_URL, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      var data = await resp.json();
+      // 코어는 run_context_menu_action()이 {'success': bool, 'message'|'error': str}
+      // dict를 반환할 것으로 기대하고, success=false면 HTTP 400으로 내려준다.
+      // resp.ok(2xx) 여부가 아니라 data.success로 성공/실패를 판단해야 한다.
+      var success = !!data.success;
+      var message = data.message || data.error || '';
+      return { success: success, message: message, raw: data };
+    } catch (e) {
+      var errMsg = e.message || String(e);
+      console.error('[webtoon_manager] 액션 호출 실패:', errMsg);
+      return { success: false, message: '액션 호출 실패: ' + errMsg };
+    }
+  }
+
+  function parseMaybeJson(text) {
+    if (typeof text !== 'string') return text;
+    try { return JSON.parse(text); } catch (e) { return null; }
   }
 
   // ------------------------------------------------------------------
@@ -85,7 +79,6 @@
   // ------------------------------------------------------------------
   var state = { titles: [], authors_tags: { authors: [], tags: [] }, history: [], job: {}, log_tail: [] };
   var currentTab = 'all';
-  var currentWeekday = 'all';
   var searchQuery = '';
   var lookupResult = null;
   var pollTimer = null;
@@ -103,12 +96,7 @@
     if (currentTab === 'subscribed') list = list.filter(function (t) { return t.subscribed && !t.excluded && !t.unsubscribed; });
     else if (currentTab === 'unsubscribed') list = list.filter(function (t) { return t.unsubscribed; });
     else if (currentTab === 'excluded') list = list.filter(function (t) { return t.excluded; });
-
-    if (currentWeekday === 'finish') {
-      list = list.filter(function (t) { return t.status === '완결'; });
-    } else if (currentWeekday !== 'all') {
-      list = list.filter(function (t) { return (t.weekdays || []).indexOf(currentWeekday) >= 0; });
-    }
+    // 'all' 은 필터 없이 전체
 
     if (searchQuery) {
       var q = searchQuery.toLowerCase();
@@ -131,16 +119,16 @@
 
   function cardActionsHtml(t) {
     var st = statusOf(t);
-    var manualBtn = '<button class="wtm-btn wtm-btn-small wtm-btn-secondary" data-card-action="manual_download_request" data-title-id="' + t.titleId + '" data-title="' + escapeHtml(t.title || '') + '">수동다운로드</button>';
     if (st === 'subscribed') {
-      return '<button class="wtm-btn wtm-btn-small" data-card-action="unsubscribe" data-title-id="' + t.titleId + '">구독해제</button>' +
-        '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-card-action="exclude" data-title-id="' + t.titleId + '">제외</button>' + manualBtn;
+      return '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-card-action="download_title" data-title-id="' + t.titleId + '">지금 다운로드</button>' +
+        '<button class="wtm-btn wtm-btn-small" data-card-action="unsubscribe" data-title-id="' + t.titleId + '">구독해제</button>' +
+        '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-card-action="exclude" data-title-id="' + t.titleId + '">제외</button>';
     }
     if (st === 'unsubscribed' || st === 'excluded') {
-      return '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-card-action="restore" data-title-id="' + t.titleId + '">다시 구독</button>' + manualBtn;
+      return '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-card-action="restore" data-title-id="' + t.titleId + '">다시 구독</button>';
     }
     return '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-card-action="subscribe" data-title-id="' + t.titleId + '">구독</button>' +
-      '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-card-action="exclude" data-title-id="' + t.titleId + '">제외</button>' + manualBtn;
+      '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-card-action="exclude" data-title-id="' + t.titleId + '">제외</button>';
   }
 
   function renderGrid() {
@@ -157,8 +145,7 @@
           '<div class="wtm-card-thumb"></div>') +
         '<div class="wtm-card-body">' +
         '<div class="wtm-card-title">' + escapeHtml(t.title || t.titleId) + '</div>' +
-        '<div class="wtm-card-author">' + escapeHtml(t.author || '') +
-        ' <span class="wtm-card-id">[' + escapeHtml(t.titleId) + ']</span></div>' +
+        '<div class="wtm-card-author">' + escapeHtml(t.author || '') + '</div>' +
         '<div class="wtm-badges">' + badgeHtml(t) + '</div>' +
         '<div class="wtm-card-actions">' + cardActionsHtml(t) + '</div>' +
         '</div></div>';
@@ -196,12 +183,9 @@
     if (!list.length) { box.innerHTML = '<div class="wtm-hint">다운로드 이력이 없습니다.</div>'; return; }
     box.innerHTML = list.map(function (h) {
       var isFail = (h.type || '').indexOf('fail') >= 0;
-      var isSkipPaid = h.type === 'download_skip_paid';
       var text = '';
       if (h.type === 'download' || h.type === 'manual_download') {
         text = escapeHtml(h.title) + ' - ' + h.episode_no + '화 (' + (h.image_count || 0) + '장)';
-      } else if (isSkipPaid) {
-        text = escapeHtml(h.title) + ' - ' + h.episode_no + '화 (유료라 건너뜀)';
       } else if (isFail) {
         text = escapeHtml(h.title) + ' - ' + h.episode_no + '화 실패: ' + escapeHtml(h.error || '');
       } else {
@@ -222,12 +206,10 @@
       ['다운로드 경로', cfg.DOWNLOAD_ROOT || '(기본값)'],
       ['자동 실행', cfg.ENABLE_SCHEDULER ? ('사용 / ' + cfg.INTERVAL_MINUTES + '분 주기') : '사용 안 함'],
       ['작품당 최대 신규 다운로드', cfg.MAX_NEW_EPISODES_PER_TITLE],
-      ['Playwright 폴백', cfg.playwright_fallback ? '사용' : '사용 안 함'],
       ['디스코드 알림', cfg.has_discord ? '설정됨' : '(미설정)']
     ];
     box.innerHTML = rows.map(function (r) {
-      return '<div class="wtm-settings-row"><span class="wtm-settings-row-label">' + r[0] +
-        '</span><span class="wtm-settings-row-value">' + escapeHtml(String(r[1])) + '</span></div>';
+      return '<div><b>' + r[0] + '</b><br>' + escapeHtml(String(r[1])) + '</div>';
     }).join('');
 
     var logBox = el('[data-el="log-tail"]');
@@ -258,6 +240,14 @@
     if (cancelBtn) cancelBtn.style.display = job.running ? '' : 'none';
 
     pollFastUntil = job.running ? (Date.now() + 30000) : pollFastUntil;
+
+    // 스캔/전체실행과 독립된 개별 작품 다운로드 상태(title_job)도 함께 표시
+    var tjob = state.title_job || {};
+    var tbar = el('[data-el="title-job-bar"]');
+    var tmsg = el('[data-el="title-job-message"]');
+    if (tbar) tbar.style.display = tjob.running ? '' : 'none';
+    if (tmsg) tmsg.textContent = tjob.message || '';
+    if (tjob.running) pollFastUntil = Date.now() + 30000;
   }
 
   function renderAll() {
@@ -300,8 +290,8 @@
       var views = p.getAttribute('data-panel-view').split(',');
       p.style.display = views.indexOf(tab) >= 0 ? '' : 'none';
     });
-    var toolbars = els('[data-panel="all,subscribed,unsubscribed,excluded"]');
-    toolbars.forEach(function (t) { t.style.display = isListTab ? '' : 'none'; });
+    var toolbar = el('[data-panel="all,subscribed,unsubscribed,excluded"]');
+    if (toolbar) toolbar.style.display = isListTab ? '' : 'none';
 
     renderGrid();
   }
@@ -309,33 +299,18 @@
   // ------------------------------------------------------------------
   // 이벤트 바인딩
   // ------------------------------------------------------------------
-  container.addEventListener('change', function (ev) {
-    var selectAll = ev.target.closest('[data-ep-select-all]');
-    if (selectAll) {
-      var checked = selectAll.checked;
-      els('[data-ep-checkbox]').forEach(function (c) { c.checked = checked; });
-    }
-  });
-
   container.addEventListener('click', async function (ev) {
     var tabBtn = ev.target.closest('.wtm-tab');
     if (tabBtn) { setTab(tabBtn.getAttribute('data-tab')); return; }
-
-    var weekdayBtn = ev.target.closest('.wtm-weekday-btn');
-    if (weekdayBtn) {
-      currentWeekday = weekdayBtn.getAttribute('data-weekday');
-      els('.wtm-weekday-btn').forEach(function (b) { b.classList.toggle('active', b === weekdayBtn); });
-      renderGrid();
-      return;
-    }
 
     var headerAction = ev.target.closest('[data-action]');
     if (headerAction) {
       var action = headerAction.getAttribute('data-action');
       if (action === 'refresh') { await refresh(); return; }
-      if (action === 'scan_now' || action === 'run_full_cycle_now' || action === 'cancel_job' || action === 'force_reset_job' || action === 'test_discord') {
+      if (action === 'scan_now' || action === 'scan_finished_now' || action === 'run_full_cycle_now' || action === 'cancel_job' ||
+          action === 'cancel_title_job' || action === 'test_discord') {
         headerAction.disabled = true;
-        var r = await callAction({ action: action });
+        var r = await callAction(action, {});
         headerAction.disabled = false;
         if (!r.success) alert(r.message || '실패');
         await refresh();
@@ -345,7 +320,7 @@
         var key = action === 'add_author' ? 'author-input' : 'tag-input';
         var input = el('[data-el="' + key + '"]');
         if (!input || !input.value.trim()) return;
-        var r2 = await callAction({ action: action, value: input.value.trim() });
+        var r2 = await callAction(action, { value: input.value.trim() });
         if (r2.success) { input.value = ''; await refresh(); } else { alert(r2.message); }
         return;
       }
@@ -355,7 +330,7 @@
         if (!titleId) return;
         var resultBox = el('[data-el="manual-result"]');
         if (resultBox) resultBox.innerHTML = '<div class="wtm-hint">조회 중...</div>';
-        var r3 = await callAction({ action: 'manual_lookup', titleId: titleId });
+        var r3 = await callAction('manual_lookup', { titleId: titleId });
         var parsed = r3.success ? parseMaybeJson(r3.message) : null;
         if (!r3.success || !parsed) {
           if (resultBox) resultBox.innerHTML = '<div class="wtm-hint">조회 실패: ' + escapeHtml(r3.message || '') + '</div>';
@@ -369,33 +344,11 @@
         if (!lookupResult) return;
         var checked = els('[data-ep-checkbox]:checked').map(function (c) { return parseInt(c.getAttribute('data-ep-checkbox'), 10); });
         if (!checked.length) { alert('회차를 선택하세요'); return; }
-        var r4 = await callAction({ action: 'manual_download', titleId: lookupResult.titleId, title: lookupResult.title, episodeNos: checked });
+        var r4 = await callAction('manual_download', { titleId: lookupResult.titleId, title: lookupResult.title, episodeNos: checked });
         alert(r4.message || (r4.success ? '시작됨' : '실패'));
         await refresh();
         return;
       }
-    }
-
-    var manualReqBtn = ev.target.closest('[data-card-action="manual_download_request"]');
-    if (manualReqBtn) {
-      var reqTitleId = manualReqBtn.getAttribute('data-title-id');
-      setTab('manual');
-      var idInput2 = el('[data-el="manual-title-id"]');
-      if (idInput2) {
-        idInput2.value = reqTitleId;
-        var resultBox2 = el('[data-el="manual-result"]');
-        if (resultBox2) resultBox2.innerHTML = '<div class="wtm-hint">조회 중...</div>';
-        callAction({ action: 'manual_lookup', titleId: reqTitleId }).then(function (r) {
-          var parsed = r.success ? parseMaybeJson(r.message) : null;
-          if (!r.success || !parsed) {
-            if (resultBox2) resultBox2.innerHTML = '<div class="wtm-hint">조회 실패: ' + escapeHtml(r.message || '') + '</div>';
-            return;
-          }
-          lookupResult = parsed;
-          renderManualResult();
-        });
-      }
-      return;
     }
 
     var cardAction = ev.target.closest('[data-card-action]');
@@ -403,7 +356,7 @@
       var actName = cardAction.getAttribute('data-card-action');
       var titleId2 = cardAction.getAttribute('data-title-id');
       cardAction.disabled = true;
-      var r5 = await callAction({ action: actName, titleId: titleId2 });
+      var r5 = await callAction(actName, { titleId: titleId2 });
       cardAction.disabled = false;
       if (!r5.success) alert(r5.message || '실패');
       await refresh();
@@ -415,7 +368,7 @@
       var kind = chipRemove.getAttribute('data-chip-remove');
       var value = chipRemove.getAttribute('data-value');
       var act = kind === 'author' ? 'remove_author' : 'remove_tag';
-      var r6 = await callAction({ action: act, value: value });
+      var r6 = await callAction(act, { value: value });
       if (r6.success) await refresh(); else alert(r6.message);
       return;
     }
@@ -436,18 +389,11 @@
     box.innerHTML =
       '<div class="wtm-box" style="margin-top:10px">' +
       '<div class="wtm-box-title">' + escapeHtml(lookupResult.title) + ' (titleId=' + lookupResult.titleId + ')</div>' +
-      '<label style="display:flex;gap:8px;padding:3px 0 8px;font-size:12px;font-weight:600">' +
-      '<input type="checkbox" data-ep-select-all> 전체 선택</label>' +
       '<div style="max-height:260px;overflow:auto">' +
       eps.map(function (e) {
-        if (e.charge) {
-          return '<div style="display:flex;gap:8px;padding:3px 0;font-size:12px;opacity:.45">' +
-            '<span style="width:13px"></span>' +
-            e.no + '화 - ' + escapeHtml(e.subtitle || '') + ' (유료 · 다운로드 불가)</div>';
-        }
         return '<label style="display:flex;gap:8px;padding:3px 0;font-size:12px">' +
           '<input type="checkbox" data-ep-checkbox="' + e.no + '"> ' +
-          e.no + '화 - ' + escapeHtml(e.subtitle || '') + '</label>';
+          e.no + '화 - ' + escapeHtml(e.subtitle || '') + (e.charge ? ' (유료)' : '') + '</label>';
       }).join('') +
       '</div>' +
       '<button class="wtm-btn wtm-btn-primary" style="margin-top:8px" data-action="manual_download_selected">선택 회차 다운로드</button>' +
