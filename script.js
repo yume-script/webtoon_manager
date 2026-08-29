@@ -115,9 +115,20 @@
     }
 
     if (sortMode === 'rating') {
-      list.sort(function (a, b) { return (b.rating == null ? -1 : b.rating) - (a.rating == null ? -1 : a.rating); });
+      list.sort(function (a, b) {
+        var diff = (b.rating == null ? -1 : b.rating) - (a.rating == null ? -1 : a.rating);
+        if (diff !== 0) return diff;
+        // 평점이 같으면(=동점) titleId로 순서를 고정한다. 서버가 주는 원래
+        // 배열 순서(last_seen_at)로 동점자를 처리하면, 스캔이 진행 중일 때
+        // last_seen_at이 계속 바뀌면서 화면이 매번 흔들리기 때문.
+        return String(a.titleId).localeCompare(String(b.titleId));
+      });
     } else if (sortMode === 'title') {
-      list.sort(function (a, b) { return (a.title || '').localeCompare(b.title || '', 'ko'); });
+      list.sort(function (a, b) {
+        var diff = (a.title || '').localeCompare(b.title || '', 'ko');
+        if (diff !== 0) return diff;
+        return String(a.titleId).localeCompare(String(b.titleId));
+      });
     }
     // 'default' 는 이미 last_seen_at 내림차순으로 정렬된 state.titles 순서 그대로 사용
 
