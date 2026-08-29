@@ -2,7 +2,7 @@
   <div class="wtm-header">
     <div class="wtm-header-icon"><i class="fa-solid fa-book-open-reader"></i></div>
     <div class="wtm-header-text">
-      <div class="wtm-title">웹툰 관리</div>
+      <div class="wtm-title">웹툰 다운로더</div>
       <div class="wtm-subtitle">네이버웹툰 무료 회차 자동 구독 &middot; 다운로드</div>
     </div>
     <div class="wtm-header-actions">
@@ -103,7 +103,7 @@
       <div class="wtm-settings-summary" data-el="settings-summary"></div>
       <p class="wtm-hint">
         네이버 아이디/비밀번호/쿠키, 디스코드, 다운로드 경로 등 세부 값은
-        환경설정 &gt; 플러그인 설정 &gt; 웹툰 관리 화면에서 입력합니다.
+        환경설정 &gt; 플러그인 설정 &gt; 웹툰 다운로더 화면에서 입력합니다.
         여기서는 확인 및 디스코드 테스트만 가능합니다.
       </p>
       <button class="wtm-btn wtm-btn-secondary" data-action="test_discord">디스코드 테스트 알림 보내기</button>
@@ -115,6 +115,36 @@
   </div>
 
   <div class="wtm-panel" data-panel-view="help" style="display:none">
+    <div class="wtm-box">
+      <div class="wtm-box-title">🍪 네이버 쿠키 등록 방법 (Cookie-Editor 사용법)</div>
+      <p class="wtm-hint">
+        1. 크롬 웹스토어에서 <b>Cookie-Editor</b> 확장 프로그램을 설치합니다.
+      </p>
+      <p class="wtm-hint">
+        2. 크롬에서 <b>comic.naver.com</b>에 접속해 정상적으로 로그인합니다.
+        성인 작품을 받으실 계획이면 이때 성인인증도 미리 완료해두세요.
+      </p>
+      <p class="wtm-hint">
+        3. comic.naver.com 페이지를 보고 있는 상태에서 툴바의 <b>Cookie-Editor
+        아이콘</b>을 클릭합니다.
+      </p>
+      <p class="wtm-hint">
+        4. 창 하단(또는 우측 상단)의 <b>Export</b> 버튼을 누르고
+        <b>"Export as JSON"</b>을 선택합니다 - 클립보드로 자동 복사됩니다.
+      </p>
+      <p class="wtm-hint">
+        5. BookOasis <b>환경설정 &gt; 플러그인 설정 &gt; 웹툰 다운로더</b>로 가서
+        <b>"네이버 쿠키(JSON)"</b> 입력란에 그대로 붙여넣고 저장합니다.
+        Cookie-Editor가 내보내는 형식(감싸는 객체 없는 배열 `[...]`)과
+        예전 Playwright storage_state 형식(`{"cookies":[...]}`) 둘 다
+        그대로 지원하니, 형식을 따로 손볼 필요 없습니다.
+      </p>
+      <p class="wtm-hint">
+        ⚠️ 쿠키는 시간이 지나면 만료됩니다. 다운로드가 갑자기 실패하고
+        "인증 만료"나 "성인 인증이 필요" 로그가 뜨면, 이 과정을 그대로
+        반복해서 쿠키를 새로 발급받아 다시 붙여넣어 주세요.
+      </p>
+    </div>
     <div class="wtm-box">
       <div class="wtm-box-title">⚠️ "이미 실행 중인 작업이 있습니다"가 계속 뜰 때</div>
       <p class="wtm-hint">

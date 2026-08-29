@@ -57,8 +57,13 @@ class NaverPaidEpisode(Exception):
 def build_session(cookie_storage_state_json=None, naver_id=None, naver_pw=None,
                    timeout=10):
     """
-    cookie_storage_state_json: Playwright storage_state 형식(JSON 문자열 또는 dict)
-      {"cookies": [{"name": "NID_AUT", "domain": ".naver.com", "value": "..."}, ...]}
+    cookie_storage_state_json: 아래 두 형식 모두 지원(JSON 문자열 또는 이미 파싱된 값):
+      1) Playwright storage_state 형식: {"cookies": [{"name": ..., "domain": ..., "value": ...}, ...]}
+      2) Cookie-Editor 확장(크롬) "Export" JSON 기본 형식: 감싸는 객체 없이
+         [{"name": ..., "domain": ..., "value": ...}, ...] 배열 그대로.
+         Cookie-Editor 사용자가 압도적으로 많아서, 감싸지 않은 배열도 그대로
+         받아들이도록 만들었다 - 이전엔 dict가 아니면 조용히 무시되어 로그인이
+         하나도 안 먹히는 원인이었다.
     naver_id/naver_pw는 현재는 세션에 직접 로그인시키지 않고(캡차/보안문자 이슈로
     자동 로그인은 불안정), 쿠키가 없을 때 참고용 메타데이터로만 보관한다.
     실제 로그인은 사용자가 브라우저 확장(Cookie-Editor 등)으로 내보낸 쿠키를
@@ -80,13 +85,20 @@ def build_session(cookie_storage_state_json=None, naver_id=None, naver_pw=None,
                 data = json.loads(data)
             except json.JSONDecodeError:
                 data = None
-        if isinstance(data, dict):
-            for c in data.get("cookies", []):
-                name = c.get("name")
-                value = c.get("value")
-                domain = (c.get("domain") or ".naver.com").lstrip(".")
-                if name and value is not None:
-                    sess.cookies.set(name, value, domain="." + domain)
+        if isinstance(data, list):
+            cookie_list = data
+        elif isinstance(data, dict):
+            cookie_list = data.get("cookies", [])
+        else:
+            cookie_list = []
+        for c in cookie_list:
+            if not isinstance(c, dict):
+                continue
+            name = c.get("name")
+            value = c.get("value")
+            domain = (c.get("domain") or ".naver.com").lstrip(".")
+            if name and value is not None:
+                sess.cookies.set(name, value, domain="." + domain)
     return sess
 
 

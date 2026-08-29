@@ -42,7 +42,7 @@ def notify(cfg, title, description, color=COLOR_INFO, fields=None, mention_manag
     if fields:
         embed["fields"] = [{"name": k, "value": str(v), "inline": True} for k, v in fields.items()]
     if mention_manage_tab:
-        embed.setdefault("footer", {"text": "BookOasis > 웹툰 관리 카테고리탭에서 확인/처리하세요."})
+        embed.setdefault("footer", {"text": "BookOasis > 웹툰 다운로더 카테고리탭에서 확인/처리하세요."})
 
     ok_any = False
     errs = []

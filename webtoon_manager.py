@@ -52,7 +52,7 @@ DEFAULTS = {
 
 class WebtoonManagerMetadataProvider(BaseMetadataProvider):
     id = PLUGIN_ID
-    name = "웹툰 관리"
+    name = "웹툰 다운로더"
     is_searchable = False
 
     config_schema = [
@@ -100,7 +100,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
     # (title/icon/order 필드로 사이드바 메뉴 항목을 구성). dashboard_widget은
     # "공통 데스크" 카드용 별개 메커니즘이라 category_tab과 병행 선언하지 않는다.
     category_tab = {
-        "title": "웹툰 관리",
+        "title": "웹툰 다운로더",
         "icon": "fa-solid fa-book-open-reader",
         "order": 50,
     }
@@ -541,7 +541,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
 
     def _act_test_discord(self, db_type):
         cfg = self._get_cfg(db_type)
-        ok, msg = discord_notify.notify(cfg, "🔔 웹툰 관리 플러그인 테스트",
+        ok, msg = discord_notify.notify(cfg, "🔔 웹툰 다운로더 플러그인 테스트",
                                          "이 메시지가 보이면 디스코드 알림 설정이 정상입니다.")
         return ok, msg
 

@@ -8,7 +8,7 @@
 1. 이 폴더 전체를 `plugins/metadata/webtoon_manager/` 로 복사
    (BookOasis_stable 컨테이너 기준: `~/docker/BookOasis_stable/plugins/metadata/webtoon_manager/`)
 2. BookOasis 재시작
-3. 환경설정 > 플러그인 설정 > **웹툰 관리** 활성화
+3. 환경설정 > 플러그인 설정 > **웹툰 다운로더** 활성화
 4. 아래 값을 입력 후 저장
    - 네이버 아이디/비밀번호(참고용, 자동 로그인에는 쓰지 않음)
    - **네이버 쿠키(JSON)**: 브라우저 확장(Cookie-Editor 등)으로 `comic.naver.com` 로그인 상태에서
@@ -17,7 +17,7 @@
    - 다운로드 저장 경로(비우면 `plugins/data/webtoon_manager/downloads` 사용)
    - 자동 실행 여부/주기, 회차 상한, 동시 다운로드 수 등
    - (선택) 디스코드 웹훅 URL 또는 봇 토큰+채널ID
-5. 좌측 메뉴 **웹툰 관리** 탭에서 "지금 스캔" → "지금 전체 실행"으로 동작 확인
+5. 좌측 메뉴 **웹툰 다운로더** 탭에서 "지금 스캔" → "지금 전체 실행"으로 동작 확인
 
 ## 구현 범위 (원본 대비)
 
