@@ -257,6 +257,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             if action == "restore":
                 return self._act_set_flags(payload.get("titleId"), subscribed=True,
                                             excluded=False, unsubscribed=False)
+            if action == "resync_title":
+                return self._act_resync_title(payload.get("titleId"))
             if action == "add_author":
                 return self._act_authors_tags("authors", payload.get("value"), add=True)
             if action == "remove_author":
@@ -329,6 +331,24 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             return False, "titleId 필요"
         ss.upsert_title({str(title_id): flags})
         return True, "적용됨"
+
+    def _act_resync_title(self, title_id):
+        """카드의 '다시 확인' 버튼: 이 작품의 '마지막으로 받은 회차 번호'
+        기록을 지운다. 사용자가 다운로드 받은 파일을 직접 지운 경우, 자동
+        다운로드는 이 번호보다 큰 회차만 확인하기 때문에 지워진 옛날 회차를
+        다시 잡지 못하는데, 번호를 없애면 다음 확인 때 전체 회차를 다시
+        훑는다 - 이미 있는 파일(디스크에 실제로 존재)은 빠르게 스킵되고,
+        지워진 파일만 실제로 다시 다운로드된다."""
+        if not title_id:
+            return False, "titleId 필요"
+        titles = ss.load_titles()
+        t = titles.get(str(title_id))
+        if not t:
+            return False, "구독 목록에 없는 titleId입니다"
+        ss.upsert_title({str(title_id): {"last_downloaded_no": None}})
+        ss.append_log("%s: '다시 확인' 요청 - 다음 다운로드 때 전체 회차를 재확인합니다." %
+                       t.get("title", title_id))
+        return True, "다음 다운로드부터 전체 회차를 다시 확인합니다(이미 있는 파일은 스킵됨)"
 
     def _act_authors_tags(self, key, value, add):
         value = (value or "").strip()
