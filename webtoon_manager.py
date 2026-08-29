@@ -86,9 +86,9 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         {"key": "LIBRARY_ID", "label": "등록할 라이브러리 ID(숫자)", "type": "number"},
         {"key": "LIBRARY_DB_TYPE", "label": "라이브러리 DB 스코프", "type": "text", "default": "general",
          "description": "general 또는 adult"},
-        {"key": "LIBRARY_PHYSICAL_PATH_ROOT", "label": "라이브러리 physical_path 루트 경로", "type": "text",
-         "description": "그 라이브러리 등록 시 입력했던 physical_path와 동일한 값. "
-                         "다운로드 경로가 이 루트 밑에 있어야 상대경로를 계산할 수 있습니다."},
+        {"key": "LIBRARY_PHYSICAL_PATH_ROOT", "label": "라이브러리 physical_path 루트 경로(선택)", "type": "text",
+         "description": "비워두면 위 다운로드 저장 경로를 그대로 사용합니다. 라이브러리의 "
+                         "physical_path가 다운로드 경로와 다르면 그 값을 입력하세요."},
         {"key": "WEBHOOK_BASE_URL", "label": "BookOasis 서버 주소(내부 호출용)", "type": "text",
          "default": "http://localhost:5930",
          "description": "플러그인이 자기 자신의 웹훅 API를 호출할 때 쓰는 주소"},

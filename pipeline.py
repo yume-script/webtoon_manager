@@ -40,10 +40,12 @@ def register_library_scan(cfg, download_root, title, title_id, log=print):
         return
     library_id = cfg.get("LIBRARY_ID")
     token = cfg.get("WEBHOOK_TOKEN")
-    root = cfg.get("LIBRARY_PHYSICAL_PATH_ROOT")
+    # 비워두면 다운로드 경로(download_root) 자체를 라이브러리 physical_path
+    # 루트로 간주한다 - 라이브러리를 다운로드 경로와 동일하게 등록해둔 경우
+    # 별도 입력 없이도 바로 동작하도록.
+    root = cfg.get("LIBRARY_PHYSICAL_PATH_ROOT") or download_root
     if not library_id or not token or not root:
-        log("라이브러리 자동등록: LIBRARY_ID/WEBHOOK_TOKEN/LIBRARY_PHYSICAL_PATH_ROOT 설정이 "
-            "비어있어 건너뜀")
+        log("라이브러리 자동등록: LIBRARY_ID/WEBHOOK_TOKEN/다운로드 경로 설정이 비어있어 건너뜀")
         return
 
     series_dir = downloader.title_dir(download_root, title, title_id)
