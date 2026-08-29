@@ -120,7 +120,7 @@
   function cardActionsHtml(t) {
     var st = statusOf(t);
     if (st === 'subscribed') {
-      return '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-card-action="download_title" data-title-id="' + t.titleId + '">지금 다운로드</button>' +
+      return '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-goto-manual="' + t.titleId + '">수동 다운로드</button>' +
         '<button class="wtm-btn wtm-btn-small" data-card-action="unsubscribe" data-title-id="' + t.titleId + '">구독해제</button>' +
         '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-card-action="exclude" data-title-id="' + t.titleId + '">제외</button>';
     }
@@ -351,6 +351,17 @@
       }
     }
 
+    var gotoManual = ev.target.closest('[data-goto-manual]');
+    if (gotoManual) {
+      var tidForManual = gotoManual.getAttribute('data-goto-manual');
+      setTab('manual');
+      var idInputForManual = el('[data-el="manual-title-id"]');
+      if (idInputForManual) idInputForManual.value = tidForManual;
+      var lookupBtn = document.querySelector('[data-action="manual_lookup"]');
+      if (lookupBtn) lookupBtn.click();
+      return;
+    }
+
     var cardAction = ev.target.closest('[data-card-action]');
     if (cardAction) {
       var actName = cardAction.getAttribute('data-card-action');
@@ -391,9 +402,10 @@
       '<div class="wtm-box-title">' + escapeHtml(lookupResult.title) + ' (titleId=' + lookupResult.titleId + ')</div>' +
       '<div style="max-height:260px;overflow:auto">' +
       eps.map(function (e) {
-        return '<label style="display:flex;gap:8px;padding:3px 0;font-size:12px">' +
-          '<input type="checkbox" data-ep-checkbox="' + e.no + '"> ' +
-          e.no + '화 - ' + escapeHtml(e.subtitle || '') + (e.charge ? ' (유료)' : '') + '</label>';
+        var isPaid = !!e.charge;
+        return '<label style="display:flex;gap:8px;padding:3px 0;font-size:12px;' + (isPaid ? 'opacity:.5' : '') + '">' +
+          '<input type="checkbox" data-ep-checkbox="' + e.no + '"' + (isPaid ? ' disabled title="유료 회차는 선택할 수 없습니다"' : '') + '> ' +
+          e.no + '화 - ' + escapeHtml(e.subtitle || '') + (isPaid ? ' <b>(유료 - 선택불가)</b>' : '') + '</label>';
       }).join('') +
       '</div>' +
       '<button class="wtm-btn wtm-btn-primary" style="margin-top:8px" data-action="manual_download_selected">선택 회차 다운로드</button>' +
