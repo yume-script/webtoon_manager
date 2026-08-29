@@ -349,6 +349,17 @@
         await refresh();
         return;
       }
+      if (action === 'manual_download_all') {
+        if (!lookupResult) return;
+        var freeEps = (lookupResult.episodes || []).filter(function (e) { return !e.charge; })
+          .map(function (e) { return e.no; });
+        if (!freeEps.length) { alert('다운로드 가능한(무료) 회차가 없습니다'); return; }
+        if (!confirm('무료 회차 ' + freeEps.length + '개를 전부 다운로드할까요?')) return;
+        var r4b = await callAction('manual_download', { titleId: lookupResult.titleId, title: lookupResult.title, episodeNos: freeEps });
+        alert(r4b.message || (r4b.success ? '시작됨' : '실패'));
+        await refresh();
+        return;
+      }
     }
 
     var gotoManual = ev.target.closest('[data-goto-manual]');
@@ -408,7 +419,10 @@
           e.no + '화 - ' + escapeHtml(e.subtitle || '') + (isPaid ? ' <b>(유료 - 선택불가)</b>' : '') + '</label>';
       }).join('') +
       '</div>' +
-      '<button class="wtm-btn wtm-btn-primary" style="margin-top:8px" data-action="manual_download_selected">선택 회차 다운로드</button>' +
+      '<div style="display:flex;gap:8px;margin-top:8px">' +
+      '<button class="wtm-btn wtm-btn-primary" data-action="manual_download_selected">선택 회차 다운로드</button>' +
+      '<button class="wtm-btn wtm-btn-secondary" data-action="manual_download_all">전체 다운로드(무료만)</button>' +
+      '</div>' +
       '</div>';
   }
 
