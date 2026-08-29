@@ -87,6 +87,9 @@ def _zip_and_cleanup_named(target_dir, download_root, title, title_id, episode_n
 _LEGACY_FOLDER_RE = re.compile(r'^\d{3,}$')
 _ZIP_EPISODE_RE = re.compile(r'^(?:.*\s)?(\d+)화#\d+\.zip$', re.I)
 _CBZ_EPISODE_RE = re.compile(r'^(?:.*\s)?(\d+)화#(\d+)\.cbz$', re.I)
+# 아주 초기 버전(첫 zip 구현)은 '화#장수' 없이 그냥 4자리 순번 + .cbz였다
+# (예: 0089.cbz). 이것도 정리 대상으로 인식해야 한다.
+_CBZ_LEGACY_RE = re.compile(r'^(\d{3,})\.cbz$', re.I)
 
 
 def cleanup_legacy_artifacts(series_dir, log=None):
@@ -159,6 +162,38 @@ def cleanup_legacy_artifacts(series_dir, log=None):
                 except Exception as e:  # noqa: BLE001
                     if log:
                         log("정리 실패(cbz 이름변경) %s: %s" % (f, e))
+            continue
+
+        # 2-2) 더 오래된 초기 버전의 .cbz(순번만, '화#장수' 표기 없음 - 예: 0089.cbz)
+        m2 = _CBZ_LEGACY_RE.match(f)
+        if m2:
+            ep_no = str(int(m2.group(1)))
+            if ep_no in zip_episode_nos:
+                try:
+                    os.remove(fpath)
+                    removed += 1
+                    if log:
+                        log("정리: 최신 zip이 있어 예전(순번만) cbz 삭제 - %s" % f)
+                except Exception as e:  # noqa: BLE001
+                    if log:
+                        log("정리 실패(예전 cbz 삭제) %s: %s" % (f, e))
+            else:
+                try:
+                    with zipfile.ZipFile(fpath) as zf:
+                        count = len(zf.namelist())
+                    new_name = "%s화#%d.zip" % (ep_no, count)
+                    new_path = os.path.join(series_dir, new_name)
+                    if not os.path.exists(new_path):
+                        os.rename(fpath, new_path)
+                        zip_episode_nos.add(ep_no)
+                        converted += 1
+                        if log:
+                            log("정리: 예전(순번만) cbz -> 새 이름으로 변경 - %s -> %s" % (f, new_name))
+                    else:
+                        kept += 1
+                except Exception as e:  # noqa: BLE001
+                    if log:
+                        log("정리 실패(예전 cbz 이름변경) %s: %s" % (f, e))
             continue
 
         # 3) 낡은 낱장 이미지 폴더(순수 숫자 이름)
