@@ -19,6 +19,11 @@ DETAIL_URL = BASE + "/webtoon/detail"
 MOBILE_DETAIL_URL = "https://m.comic.naver.com/webtoon/detail"
 
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+# "매일+" 탭. 사용자가 확인해준 실제 네이버 페이지 URL(comic.naver.com/webtoon?tab=dailyPlus)의
+# 쿼리값과 동일한 값으로 API도 호출되길 기대하고 추가함(다른 요일 파라미터와 동일 패턴).
+# 목록이 비어서 오면 이 값 자체가 API에서는 다른 이름일 수 있다는 뜻이니 확인 필요.
+DAILY_PLUS = "dailyPlus"
+WEEKDAYS_WITH_DAILY_PLUS = WEEKDAYS + [DAILY_PLUS]
 
 _IMG_RE = re.compile(r'<img[^>]+class="[^"]*wt_viewer[^"]*"[^>]+src="([^"]+)"', re.I)
 # 실사용 예시(2026-08 확인)로 보니, 오래된/완결작 템플릿은 wt_viewer 클래스가
@@ -96,9 +101,9 @@ def _get(session, url, params=None, referer=None):
 
 
 def fetch_weekday_titles(session):
-    """요일별 연재중 웹툰 전체 목록. {titleId: {...}} 형태로 병합해서 반환."""
+    """요일별 연재중 웹툰 전체 목록 + 매일+(dailyPlus). {titleId: {...}} 형태로 병합해서 반환."""
     out = {}
-    for wd in WEEKDAYS:
+    for wd in WEEKDAYS_WITH_DAILY_PLUS:
         try:
             resp = _get(session, API_BASE + "/weekday", params={"week": wd})
             body = resp.json()

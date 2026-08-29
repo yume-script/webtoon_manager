@@ -80,6 +80,7 @@
   var state = { titles: [], authors_tags: { authors: [], tags: [] }, history: [], job: {}, log_tail: [] };
   var currentTab = 'all';
   var searchQuery = '';
+  var dayFilter = 'all';
   var lookupResult = null;
   var pollTimer = null;
   var pollFastUntil = 0;
@@ -97,6 +98,12 @@
     else if (currentTab === 'unsubscribed') list = list.filter(function (t) { return t.unsubscribed; });
     else if (currentTab === 'excluded') list = list.filter(function (t) { return t.excluded; });
     // 'all' 은 필터 없이 전체
+
+    if (dayFilter === 'finished') {
+      list = list.filter(function (t) { return t.status === '완결'; });
+    } else if (dayFilter !== 'all') {
+      list = list.filter(function (t) { return (t.weekdays || []).indexOf(dayFilter) >= 0; });
+    }
 
     if (searchQuery) {
       var q = searchQuery.toLowerCase();
@@ -302,6 +309,14 @@
   container.addEventListener('click', async function (ev) {
     var tabBtn = ev.target.closest('.wtm-tab');
     if (tabBtn) { setTab(tabBtn.getAttribute('data-tab')); return; }
+
+    var dayBtn = ev.target.closest('.wtm-daytab');
+    if (dayBtn) {
+      dayFilter = dayBtn.getAttribute('data-day');
+      els('.wtm-daytab').forEach(function (b) { b.classList.toggle('active', b === dayBtn); });
+      renderGrid();
+      return;
+    }
 
     var headerAction = ev.target.closest('[data-action]');
     if (headerAction) {
