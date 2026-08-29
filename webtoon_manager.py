@@ -17,6 +17,7 @@ GitHub murianwind/webtoon-manager(네이버웹툰 무료 회차 자동 구독/�
 범용 RPC 채널로 사용한다 (rclone_g2g_copy 플러그인과 동일한 패턴).
 """
 import json
+import os
 import threading
 import time
 
@@ -245,6 +246,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 return True, "취소 요청됨"
             if action == "force_reset_job":
                 return self._act_force_reset()
+            if action == "cleanup_legacy_now":
+                return self._act_run_bg(db_type, self._cleanup_legacy_job, "예전 파일 정리")
             if action == "subscribe":
                 return self._act_set_flags(payload.get("titleId"), subscribed=True,
                                             excluded=False, unsubscribed=False)
@@ -294,6 +297,30 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                                   "cancel_requested": False, "last_error": None})
         ss.append_log("작업 상태가 강제로 초기화되었습니다.")
         return True, "작업 상태를 초기화했습니다."
+
+    def _cleanup_legacy_job(self, cfg, log=print):
+        """다운로드 경로 안의 모든 시리즈 폴더를 훑어서 예전 형식 잔재
+        (.cbz/.cbz.tmp, 압축 기능 추가 전 낱장 이미지 폴더, 중단된 임시 폴더)를
+        정리한다. _act_run_bg를 통해 백그라운드에서 실행된다."""
+        download_root = cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR
+        if not os.path.isdir(download_root):
+            log("정리 대상 없음: 다운로드 경로가 존재하지 않습니다(%s)" % download_root)
+            return
+        total = {"removed": 0, "converted": 0, "kept": 0}
+        try:
+            names = sorted(os.listdir(download_root))
+        except Exception as e:  # noqa: BLE001
+            log("다운로드 경로를 읽지 못했습니다: %s" % e)
+            return
+        for name in names:
+            series_dir = os.path.join(download_root, name)
+            if not os.path.isdir(series_dir):
+                continue
+            result = downloader.cleanup_legacy_artifacts(series_dir, log=log)
+            for k in total:
+                total[k] += result[k]
+        log("예전 파일 정리 완료: 삭제 %d개, 변환(보존) %d개, 유지 %d개" %
+            (total["removed"], total["converted"], total["kept"]))
 
     def _act_run_bg(self, db_type, func, label):
         job = ss.load_job_state()

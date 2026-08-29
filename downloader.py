@@ -84,6 +84,132 @@ def _zip_and_cleanup_named(target_dir, download_root, title, title_id, episode_n
     return count, archive_path
 
 
+_LEGACY_FOLDER_RE = re.compile(r'^\d{3,}$')
+_ZIP_EPISODE_RE = re.compile(r'^(?:.*\s)?(\d+)화#\d+\.zip$', re.I)
+_CBZ_EPISODE_RE = re.compile(r'^(?:.*\s)?(\d+)화#(\d+)\.cbz$', re.I)
+
+
+def cleanup_legacy_artifacts(series_dir, log=None):
+    """시리즈 폴더 안의 예전 형식 잔재를 정리한다:
+    - `.cbz.tmp`/`.zip.tmp`/중단된 임시 폴더(`.NNNN.tmp`): 미완성 데이터라 항상 삭제
+    - `.cbz` 확장자 파일(확장자를 .zip으로 바꾸기 전 버전의 산물): 같은 회차의 최신
+      `.zip`이 이미 있으면 삭제, 없으면 이름만 `.zip`으로 바꿔서 보존
+    - 순수 숫자 이름의 낱장 이미지 폴더(압축 기능 추가 전 버전의 산물): 같은 회차의
+      최신 `.zip`이 이미 있으면 삭제, 없으면 압축해서 `.zip`으로 만들고 폴더는 삭제
+    데이터 손실 없이 정리하는 게 목적이라, 이미 최신 형식으로 존재하는 회차만
+    삭제 대상으로 삼고 그렇지 않으면 항상 변환(보존)한다.
+    반환: {"removed": 삭제한 개수, "converted": 새 형식으로 변환한 개수, "kept": 그대로 둔 개수}
+    """
+    if not os.path.isdir(series_dir):
+        return {"removed": 0, "converted": 0, "kept": 0}
+
+    entries = os.listdir(series_dir)
+    zip_episode_nos = set()
+    for f in entries:
+        m = _ZIP_EPISODE_RE.match(f)
+        if m:
+            zip_episode_nos.add(m.group(1))
+
+    removed = converted = kept = 0
+
+    for f in entries:
+        fpath = os.path.join(series_dir, f)
+
+        # 1) 미완성 임시 항목은 항상 삭제
+        if f.endswith(".cbz.tmp") or f.endswith(".zip.tmp") or \
+                (f.startswith(".") and f.endswith(".tmp") and os.path.isdir(fpath)):
+            try:
+                if os.path.isdir(fpath):
+                    shutil.rmtree(fpath, ignore_errors=True)
+                else:
+                    os.remove(fpath)
+                removed += 1
+                if log:
+                    log("정리: 미완성 임시 항목 삭제 - %s" % f)
+            except Exception as e:  # noqa: BLE001
+                if log:
+                    log("정리 실패(임시 항목) %s: %s" % (f, e))
+            continue
+
+        # 2) 예전 .cbz 확장자
+        m = _CBZ_EPISODE_RE.match(f)
+        if m:
+            ep_no = m.group(1)
+            if ep_no in zip_episode_nos:
+                try:
+                    os.remove(fpath)
+                    removed += 1
+                    if log:
+                        log("정리: 최신 zip이 있어 예전 cbz 삭제 - %s" % f)
+                except Exception as e:  # noqa: BLE001
+                    if log:
+                        log("정리 실패(cbz 삭제) %s: %s" % (f, e))
+            else:
+                new_name = re.sub(r'\.cbz$', '.zip', f, flags=re.I)
+                new_path = os.path.join(series_dir, new_name)
+                try:
+                    if not os.path.exists(new_path):
+                        os.rename(fpath, new_path)
+                        zip_episode_nos.add(ep_no)
+                        converted += 1
+                        if log:
+                            log("정리: cbz -> zip 이름 변경 - %s -> %s" % (f, new_name))
+                    else:
+                        kept += 1
+                except Exception as e:  # noqa: BLE001
+                    if log:
+                        log("정리 실패(cbz 이름변경) %s: %s" % (f, e))
+            continue
+
+        # 3) 낡은 낱장 이미지 폴더(순수 숫자 이름)
+        if os.path.isdir(fpath) and _LEGACY_FOLDER_RE.match(f):
+            try:
+                images = sorted(fn for fn in os.listdir(fpath) if fn.lower().endswith(_IMAGE_EXTS))
+            except Exception:  # noqa: BLE001
+                images = []
+            if not images:
+                try:
+                    shutil.rmtree(fpath, ignore_errors=True)
+                    removed += 1
+                    if log:
+                        log("정리: 빈 폴더 삭제 - %s" % f)
+                except Exception as e:  # noqa: BLE001
+                    if log:
+                        log("정리 실패(빈 폴더) %s: %s" % (f, e))
+                continue
+
+            ep_no = str(int(f))
+            if ep_no in zip_episode_nos:
+                try:
+                    shutil.rmtree(fpath, ignore_errors=True)
+                    removed += 1
+                    if log:
+                        log("정리: 최신 zip이 있어 낡은 폴더 삭제 - %s" % f)
+                except Exception as e:  # noqa: BLE001
+                    if log:
+                        log("정리 실패(낡은 폴더 삭제) %s: %s" % (f, e))
+            else:
+                try:
+                    count = len(images)
+                    archive_path = os.path.join(series_dir, "%s화#%d.zip" % (ep_no, count))
+                    tmp_path = archive_path + ".tmp"
+                    with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for fn in images:
+                            zf.write(os.path.join(fpath, fn), arcname=fn)
+                    os.replace(tmp_path, archive_path)
+                    shutil.rmtree(fpath, ignore_errors=True)
+                    zip_episode_nos.add(ep_no)
+                    converted += 1
+                    if log:
+                        log("정리: 낡은 폴더 압축 - %s -> %s" % (f, os.path.basename(archive_path)))
+                except Exception as e:  # noqa: BLE001
+                    if log:
+                        log("정리 실패(낡은 폴더 압축) %s: %s" % (f, e))
+            continue
+
+    return {"removed": removed, "converted": converted, "kept": kept}
+
+
 def download_episode(session, download_root, title, title_id, episode_no,
                       image_zero_fill=4, folder_zero_fill=4,
                       max_concurrent=5, delay_seconds=1.0, timeout=10, log=None):
