@@ -296,6 +296,15 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             except Exception as e:  # noqa: BLE001
                 ss.append_log("%s 실행 실패: %s" % (label, e))
                 ss.save_job_state({"running": False, "stage": "error", "last_error": str(e)})
+            else:
+                # func 중 일부(run_scan_weekday, run_scan_finished 등)는 스스로
+                # running을 내리지 않으므로, 여기서 항상 안전망으로 내려준다.
+                # (이게 없으면 성공적으로 끝난 뒤에도 running이 계속 true로 남아
+                # 다음 실행 시 "이미 실행 중인 작업이 있습니다"만 반복되는 버그가 있었음)
+                job_now = ss.load_job_state()
+                if job_now.get("running"):
+                    ss.save_job_state({"running": False,
+                                        "stage": "done" if not job_now.get("cancel_requested") else "cancelled"})
 
         t = threading.Thread(target=_runner, name="webtoon_manager_%s" % action_slug(label),
                               daemon=True)

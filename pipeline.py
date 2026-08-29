@@ -103,31 +103,41 @@ def run_scan_weekday(cfg, log=print):
     수집한다. 완결 전체 목록(최대 200페이지라 느림)은 포함하지 않는다 -
     그건 run_scan_finished()가 별도 스케줄로 처리한다. 초기 설치 시 이 스캔만
     먼저 빠르게 끝나서 카테고리탭이 바로 쓸만해지도록 하기 위해 분리했다."""
+    def _cancelled():
+        return bool(ss.load_job_state().get("cancel_requested"))
+
     session = build_session_from_cfg(cfg)
     ss.save_job_state({"stage": "scanning", "message": "요일별 목록 수집 중"})
     log("요일별 연재 목록 수집 시작")
     merged = {}
     try:
-        merged.update(naver_api.fetch_weekday_titles(session))
+        merged.update(naver_api.fetch_weekday_titles(session, should_cancel=_cancelled))
     except Exception as e:  # noqa: BLE001
         log("요일별 목록 수집 실패: %s" % e)
 
-    at = ss.load_authors_tags()
-    for tag in at.get("tags", []):
-        ss.save_job_state({"message": "태그 '%s' 목록 수집 중" % tag})
-        try:
-            merged.update(naver_api.fetch_genre_titles(session, tag))
-        except Exception as e:  # noqa: BLE001
-            log("태그 '%s' 수집 실패: %s" % (tag, e))
+    if not _cancelled():
+        at = ss.load_authors_tags()
+        for tag in at.get("tags", []):
+            if _cancelled():
+                break
+            ss.save_job_state({"message": "태그 '%s' 목록 수집 중" % tag})
+            try:
+                merged.update(naver_api.fetch_genre_titles(session, tag, should_cancel=_cancelled))
+            except Exception as e:  # noqa: BLE001
+                log("태그 '%s' 수집 실패: %s" % (tag, e))
 
     old_titles = ss.load_titles()
+    at = ss.load_authors_tags()
     author_names = set(a.strip() for a in at.get("authors", []) if a.strip())
     patch = {tid: _autosubscribe_patch(item, old_titles.get(tid, {}), author_names)
              for tid, item in merged.items()}
 
     ss.upsert_title(patch)
-    ss.save_job_state({"last_scan_at": time.time()})
-    log("요일별 스캔 완료: 총 %d개 작품" % len(patch))
+    if _cancelled():
+        log("요일별 스캔 취소됨 - 지금까지 모은 %d개 작품만 반영" % len(patch))
+    else:
+        ss.save_job_state({"last_scan_at": time.time()})
+        log("요일별 스캔 완료: 총 %d개 작품" % len(patch))
     return {"scanned": len(patch)}
 
 
@@ -141,7 +151,9 @@ def run_scan_finished(cfg, log=print, max_pages=200):
     ss.save_job_state({"stage": "scanning_finished", "message": "완결 목록 수집 중"})
     log("완결 목록 수집 시작")
     try:
-        finished = naver_api.fetch_finished_titles(session, max_pages=max_pages)
+        finished = naver_api.fetch_finished_titles(
+            session, max_pages=max_pages,
+            should_cancel=lambda: bool(ss.load_job_state().get("cancel_requested")))
     except Exception as e:  # noqa: BLE001
         log("완결 목록 수집 실패: %s" % e)
         finished = {}

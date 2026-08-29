@@ -100,10 +100,13 @@ def _get(session, url, params=None, referer=None):
     return resp
 
 
-def fetch_weekday_titles(session):
-    """요일별 연재중 웹툰 전체 목록 + 매일+(dailyPlus). {titleId: {...}} 형태로 병합해서 반환."""
+def fetch_weekday_titles(session, should_cancel=None):
+    """요일별 연재중 웹툰 전체 목록 + 매일+(dailyPlus). {titleId: {...}} 형태로 병합해서 반환.
+    should_cancel: 인자 없이 호출해 True를 반환하면 그 자리에서 중단하는 콜백(선택)."""
     out = {}
     for wd in WEEKDAYS_WITH_DAILY_PLUS:
+        if should_cancel and should_cancel():
+            break
         try:
             resp = _get(session, API_BASE + "/weekday", params={"week": wd})
             body = resp.json()
@@ -119,11 +122,13 @@ def fetch_weekday_titles(session):
     return out
 
 
-def fetch_finished_titles(session, max_pages=200):
+def fetch_finished_titles(session, max_pages=200, should_cancel=None):
     """완결 웹툰 목록(페이지 순회)."""
     out = {}
     page = 1
     while page <= max_pages:
+        if should_cancel and should_cancel():
+            break
         try:
             resp = _get(session, API_BASE + "/finished", params={"page": page})
             body = resp.json()
@@ -140,10 +145,12 @@ def fetch_finished_titles(session, max_pages=200):
     return out
 
 
-def fetch_genre_titles(session, genre, max_pages=50):
+def fetch_genre_titles(session, genre, max_pages=50, should_cancel=None):
     out = {}
     page = 1
     while page <= max_pages:
+        if should_cancel and should_cancel():
+            break
         try:
             resp = _get(session, API_BASE + "/genre", params={"genre": genre, "page": page})
             body = resp.json()
