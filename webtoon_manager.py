@@ -46,9 +46,6 @@ DEFAULTS = {
     "REQUEST_TIMEOUT_SECONDS": 10,
     "FOLDER_ZERO_FILL": 4,
     "IMAGE_ZERO_FILL": 4,
-    "AUTO_REGISTER_LIBRARY": False,
-    "LIBRARY_DB_TYPE": "general",
-    "WEBHOOK_BASE_URL": "http://localhost:5930",
 }
 
 
@@ -82,19 +79,6 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         {"key": "DISCORD_WEBHOOK_URL", "label": "디스코드 웹훅 URL(선택)", "type": "text"},
         {"key": "DISCORD_BOT_TOKEN", "label": "디스코드 봇 토큰(선택, 완결확인용)", "type": "password"},
         {"key": "DISCORD_CHANNEL_ID", "label": "디스코드 채널 ID(선택)", "type": "text"},
-        {"key": "AUTO_REGISTER_LIBRARY", "label": "다운로드 완료 시 BookOasis 라이브러리 자동 등록",
-         "type": "checkbox", "default": False,
-         "description": "/api/webhook/scan(토큰 인증)을 호출해 다운로드된 작품 폴더를 즉시 스캔·등록합니다."},
-        {"key": "LIBRARY_ID", "label": "등록할 라이브러리 ID(숫자)", "type": "number"},
-        {"key": "LIBRARY_DB_TYPE", "label": "라이브러리 DB 스코프", "type": "text", "default": "general",
-         "description": "general 또는 adult"},
-        {"key": "LIBRARY_PHYSICAL_PATH_ROOT", "label": "라이브러리 physical_path 루트 경로(선택)", "type": "text",
-         "description": "비워두면 위 다운로드 저장 경로를 그대로 사용합니다. 라이브러리의 "
-                         "physical_path가 다운로드 경로와 다르면 그 값을 입력하세요."},
-        {"key": "WEBHOOK_BASE_URL", "label": "BookOasis 서버 주소(내부 호출용)", "type": "text",
-         "default": "http://localhost:5930",
-         "description": "플러그인이 자기 자신의 웹훅 API를 호출할 때 쓰는 주소"},
-        {"key": "WEBHOOK_TOKEN", "label": "BookOasis WEBHOOK_TOKEN(.env와 동일 값)", "type": "password"},
     ]
 
     # plugin_board(실제 동작 중인 참조 플러그인) 기준: 좌측 사이드바 1등 시민
@@ -445,10 +429,6 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                     ss.append_log("인증 만료: %s" % e)
                     discord_notify.notify_cookie_expired(cfg)
                     break
-            if ok_count > 0:
-                pipeline.register_library_scan(
-                    cfg, cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR,
-                    title, title_id, log=ss.append_log)
             ss.save_title_job_state({"running": False, "finished_at": time.time(),
                                       "message": "수동 다운로드 완료(%d화)" % ok_count})
 
@@ -551,9 +531,6 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
 
             if last_ok_no != t_info.get("last_downloaded_no"):
                 ss.upsert_title({str(title_id): {"last_downloaded_no": last_ok_no}})
-                pipeline.register_library_scan(
-                    cfg, cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR,
-                    title_name, title_id, log=ss.append_log)
             ss.save_title_job_state({"running": False, "finished_at": time.time(),
                                       "message": "%s 다운로드 완료(%d화)" % (title_name, ok_count)})
 
