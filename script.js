@@ -285,6 +285,8 @@
     renderAuthorsTags();
     renderHistory();
     renderSettingsSummary();
+    var verEl = el('[data-el="plugin-version"]');
+    if (verEl) verEl.textContent = state.plugin_version ? ('v' + state.plugin_version) : '';
   }
 
   async function refresh() {

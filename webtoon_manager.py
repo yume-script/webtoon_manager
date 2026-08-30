@@ -152,6 +152,18 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
     # ------------------------------------------------------------------
     # 대시보드/카테고리탭 데이터
     # ------------------------------------------------------------------
+    def _read_version(self):
+        """VERSION 파일에서 플러그인 버전을 읽어 헤더에 표시하기 위함.
+        파일이 없거나 형식이 안 맞아도 화면은 그냥 비워두면 되니 예외를
+        올리지 않는다."""
+        try:
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION")
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("plugin version") or data.get("version") or ""
+        except Exception:  # noqa: BLE001
+            return ""
+
     def get_dashboard_data(self, db_type, limit=10):
         cfg = self._get_cfg(db_type)
 
@@ -178,6 +190,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             "job": ss.load_job_state(),
             "title_job": ss.load_title_job_state(),
             "log_tail": ss.tail_log(60),
+            "plugin_version": self._read_version(),
             "config_public": {
                 "NAVER_ID": cfg.get("NAVER_ID", ""),
                 "DOWNLOAD_ROOT": cfg.get("DOWNLOAD_ROOT", ""),
