@@ -317,10 +317,21 @@ def _extract_comic_images(html):
 
 
 def fetch_episode_images(session, title_id, episode_no):
-    """회차 상세 페이지를 긁어서 이미지 URL 목록을 반환. 성인/미성년 인증이 필요한
+    """회차 상세 페이지를 긁어서 이미지 URL 목록을 반환. 로그인/성인 인증이 필요한
     작품인데 쿠키가 없거나 만료되었으면 NaverAuthExpired를 던진다."""
     url = "%s?titleId=%s&no=%s" % (DETAIL_URL, title_id, episode_no)
     resp = _get(session, url, referer=BASE + "/")
+
+    # 로그인/성인인증이 안 된 상태로 접근하면 만화 페이지 대신 네이버 로그인
+    # 페이지(nid.naver.com)로 그냥 리다이렉트되어 버린다(실사용 확인됨).
+    # 응답 페이지 텍스트 안에 "성인인증"/"만 19세" 같은 문구가 있는 게
+    # 아니라, 최종 URL 자체가 완전히 다른 도메인(로그인 페이지)로 바뀌므로
+    # 이 리다이렉트 여부를 직접 확인하는 게 훨씬 확실한 신호다.
+    if "nid.naver.com" in resp.url:
+        raise NaverAuthExpired(
+            "titleId=%s no=%s: 로그인 페이지로 리다이렉트됨 - 로그인/성인 인증이 "
+            "필요하거나 쿠키가 만료된 것으로 보임" % (title_id, episode_no))
+
     html = resp.text
 
     if "성인인증" in html or "adult_ok" in html or "만 19세" in html:
