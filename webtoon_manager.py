@@ -418,6 +418,17 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                         ss.append_history({"type": "manual_download", "title_id": title_id,
                                             "title": title, "episode_no": no,
                                             "image_count": cnt})
+                        # 이미지 다운로드(1단계)와 분리된 2단계 - 별도로 압축한다.
+                        # (스킵된 회차라도 "받아만 두고 압축 안 한" 상태일 수
+                        # 있어 압축은 스킵 여부와 무관하게 항상 시도한다.
+                        # compress_episode() 자체가 이미 압축돼 있으면 스킵함.)
+                        c_ok, c_path, c_msg = dl.compress_episode(
+                            cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR,
+                            title, title_id, no,
+                            folder_zero_fill=int(cfg.get("FOLDER_ZERO_FILL", 4)),
+                            log=ss.append_log)
+                        if not c_ok:
+                            ss.append_log("%s %s화 압축 실패: %s" % (title, no, c_msg))
                     else:
                         consecutive_fail += 1
                         ss.append_history({"type": "manual_download_fail", "title_id": title_id,
@@ -530,6 +541,14 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                         ss.append_history({"type": "download", "title_id": title_id,
                                             "title": title_name, "episode_no": ep["no"],
                                             "image_count": cnt})
+                        # 이미지 다운로드(1단계)와 분리된 2단계 - 별도로 압축한다.
+                        c_ok, c_path, c_msg = dl.compress_episode(
+                            cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR,
+                            title_name, title_id, ep["no"],
+                            folder_zero_fill=int(cfg.get("FOLDER_ZERO_FILL", 4)),
+                            log=ss.append_log)
+                        if not c_ok:
+                            ss.append_log("%s %s화 압축 실패: %s" % (title_name, ep["no"], c_msg))
                 else:
                     consecutive_fail += 1
                     ss.append_history({"type": "download_fail", "title_id": title_id,

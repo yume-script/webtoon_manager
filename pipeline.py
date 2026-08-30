@@ -232,6 +232,13 @@ def run_download_cycle(cfg, log=print):
                         "episode_no": ep["no"], "subtitle": ep.get("subtitle"),
                         "image_count": img_count,
                     })
+                    # 이미지 다운로드(1단계)와 완전히 분리된 2단계 - 회차 폴더가
+                    # 디스크에 다 쓰인 뒤에 별도로 압축한다.
+                    c_ok, c_path, c_msg = downloader.compress_episode(
+                        download_root, t.get("title", tid), tid, ep["no"],
+                        folder_zero_fill=folder_zero_fill, log=log)
+                    if not c_ok:
+                        log("titleId=%s %s화 압축 실패: %s" % (tid, ep["no"], c_msg))
             else:
                 consecutive_fail += 1
                 failures.append({"title_id": tid, "title": t.get("title", tid),
