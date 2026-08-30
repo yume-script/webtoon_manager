@@ -364,7 +364,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             meta["episodes"] = episodes
             return True, json.dumps(meta, ensure_ascii=False)
         except Exception as e:  # noqa: BLE001
-            return False, "조회 실패: %s" % e
+            return False, str(e)
 
     def _act_manual_download(self, db_type, payload):
         title_id = payload.get("titleId")
