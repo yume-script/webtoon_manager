@@ -197,9 +197,36 @@
     <div class="wtm-box">
       <div class="wtm-box-title">📁 파일 저장 방식</div>
       <p class="wtm-hint">
-        회차 이미지는 <b>압축하지 않고 낱장 파일 그대로</b> 회차 폴더 안에 저장됩니다
-        (BookOasis의 imgdir 포맷). 예전 버전(zip/cbz 압축)으로 받아둔 파일이 있어도
-        그대로 두면 되고, 자동으로 지워지거나 변환되지 않습니다.
+        회차 이미지는 먼저 낱장 파일로 전부 다운로드된 뒤, <b>다운로드가 완전히
+        끝난 다음 별도 단계로 압축</b>됩니다(다운로드와 압축이 동시에 섞이지 않아
+        더 안정적입니다). 압축이 끝나면 낱장 폴더는 자동 삭제되고, 최종적으로
+        시리즈 폴더 바로 밑에 압축파일 하나만 남습니다.
+      </p>
+      <p class="wtm-hint">
+        파일명 형식: <code>제목 00xx화#장수.zip</code> (예: <code>힐링사무소 0022화#110.zip</code>).
+        하위 폴더 없이 flat하게 저장됩니다.
+      </p>
+    </div>
+    <div class="wtm-box">
+      <div class="wtm-box-title">🗂️ 예전 형식으로 받아둔 파일 정리</div>
+      <p class="wtm-hint">
+        플러그인이 업데이트되면서 파일 저장 방식이 여러 번 바뀌었습니다(낱장 폴더 →
+        숫자만 있는 .cbz → 제목 없는 "N화#장수" → 제목은 있지만 공백 구분 → 지금의
+        "제목 00xx화#장수.zip"). 예전 형식으로 받아둔 파일이 남아있으면
+        <code>migrate_filenames.py</code> 스크립트로 한 번에 정리할 수 있습니다
+        (이 카테고리탭 화면에는 버튼이 없고, 서버에서 직접 실행하는 별도 스크립트입니다).
+      </p>
+      <p class="wtm-hint">
+        먼저 <code>--dry-run</code>으로 뭐가 바뀔지 확인한 뒤 실제로 실행하세요:
+      </p>
+      <p class="wtm-hint">
+        <code>docker exec -it bookoasis python3<br>
+        &nbsp;&nbsp;/app/plugins/metadata/webtoon_manager/migrate_filenames.py<br>
+        &nbsp;&nbsp;"다운로드_저장_경로" --dry-run</code>
+      </p>
+      <p class="wtm-hint">
+        같은 회차의 최신 형식 파일이 이미 있으면 예전 것은 중복이라 삭제되고,
+        없으면 이미지 손실 없이 새 형식으로 변환/이름변경만 됩니다.
       </p>
     </div>
   </div>
