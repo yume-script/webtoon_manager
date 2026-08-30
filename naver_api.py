@@ -260,8 +260,18 @@ def fetch_episode_list(session, title_id, max_pages=200):
             resp = _get(session, ARTICLE_LIST_API,
                         params={"titleId": title_id, "page": page},
                         referer="%s?titleId=%s" % (DETAIL_URL, title_id))
+        except requests.RequestException:
+            break
+        if "nid.naver.com" in resp.url:
+            # 로그인 페이지로 리다이렉트되면 resp.json()이 HTML을 못 읽어서
+            # ValueError로 잡히고 그냥 조용히 중단되던 문제가 있었다 - 원인을
+            # 명확히 구분해서 알려준다.
+            raise NaverAuthExpired(
+                "titleId=%s: 로그인 페이지로 리다이렉트됨 - 로그인/성인 인증이 필요하거나 "
+                "쿠키가 만료된 것으로 보임" % title_id)
+        try:
             body = resp.json()
-        except (requests.RequestException, ValueError):
+        except ValueError:
             break
         items = None
         if isinstance(body, dict):
@@ -356,5 +366,9 @@ def guess_title_meta(session, title_id):
     """저장된 목록에 없는 titleId를 수동 검색할 때 상세 페이지에서 제목만 대략 파싱."""
     url = "%s?titleId=%s" % (DETAIL_URL, title_id)
     resp = _get(session, url, referer=BASE + "/")
+    if "nid.naver.com" in resp.url:
+        raise NaverAuthExpired(
+            "titleId=%s: 로그인 페이지로 리다이렉트됨 - 로그인/성인 인증이 필요하거나 "
+            "쿠키가 만료된 것으로 보임" % title_id)
     m = _TITLE_RE.search(resp.text)
     return {"titleId": str(title_id), "title": m.group(1) if m else ("titleId %s" % title_id)}
