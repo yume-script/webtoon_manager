@@ -39,12 +39,12 @@ def _archive_prefix(title, episode_no, folder_zero_fill=4):
 
 def find_existing_episode_archive(download_root, title, title_id, episode_no, folder_zero_fill=4):
     """이미 압축까지 끝난 회차의 zip 파일을 찾는다. 파일명에 페이지 수가
-    포함돼 있어 정확한 이름을 미리 알 수 없으므로 '제목 00xx화 ' 접두어로
+    포함돼 있어 정확한 이름을 미리 알 수 없으므로 '제목 00xx화#' 접두어로
     찾는다."""
     series_dir = title_dir(download_root, title, title_id)
     if not os.path.isdir(series_dir):
         return None
-    prefix = _archive_prefix(title, episode_no, folder_zero_fill) + " "
+    prefix = _archive_prefix(title, episode_no, folder_zero_fill) + "#"
     for fname in os.listdir(series_dir):
         if fname.startswith(prefix) and fname.lower().endswith(".zip"):
             return os.path.join(series_dir, fname)
@@ -140,7 +140,7 @@ def download_episode(session, download_root, title, title_id, episode_no,
 def compress_episode(download_root, title, title_id, episode_no,
                       folder_zero_fill=4, log=None):
     """2단계(별도 단계): download_episode()로 완전히 다 받아진 회차 폴더의
-    이미지를 '제목 00xx화 장수.zip'으로 압축하고, 원본 낱장 폴더는 삭제한다.
+    이미지를 '제목 00xx화#장수.zip'으로 압축하고, 원본 낱장 폴더는 삭제한다.
     다운로드 자체와 완전히 분리된 단계라, 다운로드 도중에는 호출하지 않고
     download_episode()가 성공적으로 끝난 뒤에만 호출한다.
 
@@ -164,7 +164,7 @@ def compress_episode(download_root, title, title_id, episode_no,
     series_dir = title_dir(download_root, title, title_id)
     os.makedirs(series_dir, exist_ok=True)
     count = len(files)
-    archive_name = "%s %d.zip" % (_archive_prefix(title, episode_no, folder_zero_fill), count)
+    archive_name = "%s#%d.zip" % (_archive_prefix(title, episode_no, folder_zero_fill), count)
     archive_path = os.path.join(series_dir, archive_name)
     if os.path.exists(archive_path):
         os.remove(archive_path)
