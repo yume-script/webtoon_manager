@@ -50,7 +50,7 @@ DEFAULTS = {
 
 
 class WebtoonManagerMetadataProvider(BaseMetadataProvider):
-    id = PLUGIN_ID
+    id = "webtoon_manager"
     name = "웹툰 다운로더"
     is_searchable = False
 
