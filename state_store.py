@@ -33,6 +33,10 @@ JOB_STATE_PATH = os.path.join(DATA_DIR, "job_state.json")
 TITLE_JOB_STATE_PATH = os.path.join(DATA_DIR, "title_job_state.json")
 JOB_LOG_PATH = os.path.join(DATA_DIR, "job.log")
 SCHED_LOCK_PATH = os.path.join(DATA_DIR, "scheduler.lock")
+# GitHub 원격 VERSION 조회 결과 캐시. Redis(self.cache_get/set)가 없는 배포에서도
+# 매 대시보드 폴링(2.5~10초 간격)마다 GitHub에 요청을 보내지 않도록, Redis와
+# 무관하게 항상 동작하는 파일 기반 캐시를 별도로 둔다.
+UPDATE_CHECK_PATH = os.path.join(DATA_DIR, "update_check.json")
 
 _lock = threading.RLock()
 
@@ -219,6 +223,31 @@ def append_log(line):
         if len(lines) > MAX_LOG_LINES:
             lines = lines[-MAX_LOG_LINES:]
         _atomic_write(JOB_LOG_PATH, "".join(lines))
+
+
+# ---- update_check.json (GitHub 원격 버전 확인 결과 캐시) -------------------
+DEFAULT_UPDATE_CHECK = {
+    "checked_at": None,
+    "local_version": None,
+    "latest_version": None,
+    "update_available": False,
+    "error": None,
+}
+
+
+def load_update_check():
+    st = read_json(UPDATE_CHECK_PATH, dict(DEFAULT_UPDATE_CHECK))
+    for k, v in DEFAULT_UPDATE_CHECK.items():
+        st.setdefault(k, v)
+    return st
+
+
+def save_update_check(patch):
+    with _lock:
+        st = load_update_check()
+        st.update(patch)
+        write_json(UPDATE_CHECK_PATH, st)
+    return st
 
 
 def tail_log(n=60):

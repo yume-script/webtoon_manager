@@ -33,7 +33,10 @@
     if (!resp.ok) throw new Error('데이터 조회 실패: HTTP ' + resp.status);
     var body = await resp.json();
     var items = body.items || (body.data && body.data.items) || [];
-    return items[0] || { titles: [], authors_tags: { authors: [], tags: [] }, history: [], job: {}, log_tail: [] };
+    return items[0] || {
+      titles: [], authors_tags: { authors: [], tags: [] }, history: [], job: {}, log_tail: [],
+      update_status: {}, repo_url: 'https://github.com/yume-script/webtoon_manager'
+    };
   }
 
   async function callAction(actionId, payload) {
@@ -287,6 +290,22 @@
     renderSettingsSummary();
     var verEl = el('[data-el="plugin-version"]');
     if (verEl) verEl.textContent = state.plugin_version ? ('v' + state.plugin_version) : '';
+    renderUpdateBadge();
+  }
+
+  function renderUpdateBadge() {
+    var badge = el('[data-el="update-badge"]');
+    if (!badge) return;
+    var upd = state.update_status || {};
+    if (upd.update_available && upd.latest_version) {
+      badge.style.display = '';
+      badge.title = '현재 v' + (state.plugin_version || '?') + ' \u2192 최신 v' + upd.latest_version +
+        ' (GitHub 저장소 열기, 새 코드를 직접 받아 교체하거나 환경설정의 업데이트 버튼을 사용하세요)';
+      badge.innerHTML = '<i class="fa-solid fa-arrow-up"></i> 업데이트 가능 (v' + escapeHtml(upd.latest_version) + ')';
+      badge.href = state.repo_url || 'https://github.com/yume-script/webtoon_manager';
+    } else {
+      badge.style.display = 'none';
+    }
   }
 
   async function refresh() {

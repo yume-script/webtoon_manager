@@ -21,6 +21,8 @@ import os
 import threading
 import time
 
+import requests
+
 from plugins.metadata.base import BaseMetadataProvider
 
 # NOTE: 이 저장소(yume-script/webtoon_manager)는 core/ 서브패키지 없이
@@ -34,6 +36,14 @@ from . import naver_api
 from . import downloader
 
 PLUGIN_ID = "webtoon_manager"
+
+# 업데이트 가능 여부 배지용 상수. update_manifest의 raw_base_url/version_file과
+# 같은 저장소를 가리키되, 여기서는 "지금 카테고리탭 헤더에 배지를 띄울지"만
+# 판단하는 용도라 update_manifest와 별개로 자체 상수를 둔다(환경설정 화면의
+# 샘플 업데이트 버튼 로직과 이 배지 체크는 서로 다른 코드 경로).
+REPO_RAW_VERSION_URL = "https://raw.githubusercontent.com/yume-script/webtoon_manager/main/VERSION"
+REPO_URL = "https://github.com/yume-script/webtoon_manager"
+UPDATE_CHECK_INTERVAL_SECONDS = 3600  # 1시간마다 한 번만 GitHub 조회
 
 DEFAULTS = {
     "ENABLE_SCHEDULER": False,
@@ -164,6 +174,57 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         except Exception:  # noqa: BLE001
             return ""
 
+    @staticmethod
+    def _version_tuple(v):
+        """'1.6.5' -> (1, 6, 5). 파싱 불가능한 조각은 0으로 취급해서 형식이
+        살짝 다르더라도(예: 'v1.6.5', '1.6') 최대한 비교 가능하게 만든다."""
+        if not v:
+            return (0,)
+        parts = []
+        for p in str(v).strip().lstrip("vV").split("."):
+            digits = "".join(c for c in p if c.isdigit())
+            parts.append(int(digits) if digits else 0)
+        return tuple(parts) if parts else (0,)
+
+    def _check_update_available(self):
+        """GitHub 원격 VERSION 파일과 로컬 VERSION을 비교해 업데이트 가능
+        여부를 판단한다. 매 대시보드 폴링마다 GitHub에 요청하지 않도록
+        UPDATE_CHECK_INTERVAL_SECONDS 동안은 캐시된 결과를 그대로 쓴다.
+        네트워크 실패 등은 조용히 update_available=False로 처리하고
+        (배지를 못 띄울 뿐 화면 자체는 항상 정상 동작해야 하므로) 예외를
+        올리지 않는다."""
+        cached = ss.load_update_check()
+        checked_at = cached.get("checked_at")
+        if checked_at and (time.time() - checked_at) < UPDATE_CHECK_INTERVAL_SECONDS:
+            return cached
+
+        local_version = self._read_version()
+        result = {
+            "checked_at": time.time(),
+            "local_version": local_version,
+            "latest_version": cached.get("latest_version"),
+            "update_available": False,
+            "error": None,
+        }
+        try:
+            resp = requests.get(REPO_RAW_VERSION_URL, timeout=6)
+            resp.raise_for_status()
+            data = resp.json()
+            latest_version = data.get("plugin version") or data.get("version") or ""
+            result["latest_version"] = latest_version
+            if latest_version and local_version:
+                result["update_available"] = self._version_tuple(latest_version) > self._version_tuple(local_version)
+        except Exception as e:  # noqa: BLE001
+            # 조회 실패 시 직전에 알던 latest_version/update_available은 그대로
+            # 유지하고(캐시가 있었다면), 에러 사유만 갱신해서 다음 폴링 때
+            # 재시도할 수 있게 한다.
+            result["latest_version"] = cached.get("latest_version")
+            result["update_available"] = bool(cached.get("update_available"))
+            result["error"] = str(e)
+
+        ss.save_update_check(result)
+        return result
+
     def get_dashboard_data(self, db_type, limit=10):
         cfg = self._get_cfg(db_type)
 
@@ -174,6 +235,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                                       pipeline.run_finished_scan_job)
         except Exception:  # noqa: BLE001
             pass
+
+        update_status = self._check_update_available()
 
         titles = ss.load_titles()
         items_list = []
@@ -191,6 +254,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             "title_job": ss.load_title_job_state(),
             "log_tail": ss.tail_log(60),
             "plugin_version": self._read_version(),
+            "update_status": update_status,
+            "repo_url": REPO_URL,
             "config_public": {
                 "NAVER_ID": cfg.get("NAVER_ID", ""),
                 "DOWNLOAD_ROOT": cfg.get("DOWNLOAD_ROOT", ""),
