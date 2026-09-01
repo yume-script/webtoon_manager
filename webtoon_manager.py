@@ -45,6 +45,9 @@ REPO_RAW_VERSION_URL = "https://raw.githubusercontent.com/yume-script/webtoon_ma
 REPO_URL = "https://github.com/yume-script/webtoon_manager"
 UPDATE_CHECK_INTERVAL_SECONDS = 3600  # 1시간마다 한 번만 GitHub 조회
 
+_UPDATE_CHECK_THREAD_LOCK = threading.Lock()
+_update_check_thread_active = False
+
 DEFAULTS = {
     "ENABLE_SCHEDULER": False,
     "INTERVAL_MINUTES": 240,
@@ -147,18 +150,6 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             merged["DOWNLOAD_ROOT"] = ss.DOWNLOAD_DEFAULT_DIR
         return merged
 
-    def _save_cfg_patch(self, db_type, patch):
-        cfg = self.get_plugin_config(db_type, default={}) or {}
-        cfg.update(patch)
-        try:
-            self.set_plugin_config(db_type, cfg)
-            return True
-        except AttributeError:
-            # 게이트웨이에 set_plugin_config가 없는 코어 버전 - db_gateway로 직접 저장 시도
-            gw = self.get_db_gateway(db_type)
-            gw.set_setting("PLUGIN_CONFIG_%s" % self.id, json.dumps(cfg, ensure_ascii=False))
-            return True
-
     # ------------------------------------------------------------------
     # 대시보드/카테고리탭 데이터
     # ------------------------------------------------------------------
@@ -188,16 +179,43 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
 
     def _check_update_available(self):
         """GitHub 원격 VERSION 파일과 로컬 VERSION을 비교해 업데이트 가능
-        여부를 판단한다. 매 대시보드 폴링마다 GitHub에 요청하지 않도록
-        UPDATE_CHECK_INTERVAL_SECONDS 동안은 캐시된 결과를 그대로 쓴다.
-        네트워크 실패 등은 조용히 update_available=False로 처리하고
-        (배지를 못 띄울 뿐 화면 자체는 항상 정상 동작해야 하므로) 예외를
-        올리지 않는다."""
+        여부를 판단한다. 캐시가 신선하면(1시간 이내) 그대로 반환한다.
+        캐시가 오래됐으면 백그라운드 스레드로 갱신을 "시작만" 시키고, 이번
+        호출 자체는 (약간 오래됐을 수 있는) 캐시값을 즉시 반환한다 - 예전
+        구현은 이 자리에서 동기적으로 requests.get()을 기다려서, GitHub 응답이
+        느리거나 네트워크가 막혀 있으면 캐시가 갱신되는 그 1회의 대시보드
+        폴링이 최대 6초(timeout)까지 지연되는 문제가 있었다."""
         cached = ss.load_update_check()
         checked_at = cached.get("checked_at")
-        if checked_at and (time.time() - checked_at) < UPDATE_CHECK_INTERVAL_SECONDS:
-            return cached
+        is_stale = not checked_at or (time.time() - checked_at) >= UPDATE_CHECK_INTERVAL_SECONDS
+        if is_stale:
+            self._maybe_start_background_update_check()
+        return cached
 
+    def _maybe_start_background_update_check(self):
+        """이미 백그라운드 조회가 진행 중이면 새로 띄우지 않는다. 플러그인
+        모듈이 요청마다 새로 로드될 수 있어(scheduler.py와 동일한 사정)
+        프로세스 전역 플래그만으로는 완벽하지 않지만, 최악의 경우에도
+        "가끔 중복으로 조회 한 번 더 나감" 정도라 update_check.json 자체의
+        타임스탬프 갱신으로 곧 다시 정상화된다."""
+        global _update_check_thread_active
+        with _UPDATE_CHECK_THREAD_LOCK:
+            if _update_check_thread_active:
+                return
+            _update_check_thread_active = True
+
+        def _runner():
+            global _update_check_thread_active
+            try:
+                self._fetch_and_save_update_check()
+            finally:
+                with _UPDATE_CHECK_THREAD_LOCK:
+                    _update_check_thread_active = False
+
+        threading.Thread(target=_runner, name="webtoon_manager_update_check", daemon=True).start()
+
+    def _fetch_and_save_update_check(self):
+        cached = ss.load_update_check()
         local_version = self._read_version()
         result = {
             "checked_at": time.time(),
@@ -293,8 +311,6 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
 
     def _dispatch(self, db_type, action, payload):
         try:
-            if action == "save_settings":
-                return self._act_save_settings(db_type, payload)
             if action == "scan_now":
                 return self._act_run_bg(db_type, pipeline.run_scan_weekday, "요일별 스캔")
             if action == "scan_finished_now":
@@ -343,11 +359,6 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         except Exception as e:  # noqa: BLE001
             return False, "오류: %s" % e
 
-    def _act_save_settings(self, db_type, payload):
-        patch = {k: v for k, v in payload.items() if k not in ("action",)}
-        self._save_cfg_patch(db_type, patch)
-        return True, "설정 저장됨"
-
     def _act_force_reset(self):
         """job_state/title_job_state가 컨테이너 재시작 등으로 running=true인
         채 멈춘 "유령 상태"일 때, 실제 스레드가 죽어있어 취소 요청도 안 먹히는
@@ -360,14 +371,18 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         return True, "작업 상태를 초기화했습니다."
 
     def _act_run_bg(self, db_type, func, label):
-        job = ss.load_job_state()
-        if job.get("running"):
+        # 예전에는 "읽어서 running 확인 -> (조금 뒤에) running=True 저장"을
+        # 두 번의 별도 호출로 했는데, 그 사이 짧은 틈에 다른 요청이 끼어들면
+        # 같은 종류의 작업이 동시에 두 개 시작될 수 있었다(TOCTOU 레이스).
+        # try_acquire_job()이 확인+저장을 lock 안에서 원자적으로 처리한다.
+        acquired = ss.try_acquire_job({
+            "stage": "starting", "message": "%s 시작" % label,
+            "started_at": time.time(), "cancel_requested": False, "last_error": None,
+        })
+        if not acquired:
             return False, "이미 실행 중인 작업이 있습니다"
 
         cfg = self._get_cfg(db_type)
-        ss.save_job_state({"running": True, "stage": "starting", "message": "%s 시작" % label,
-                            "started_at": time.time(), "cancel_requested": False,
-                            "last_error": None})
 
         def _runner():
             try:
@@ -454,16 +469,20 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         # 스캔/전체실행(job_state)과는 독립된 락(title_job_state)을 쓴다 —
         # 큰 작업이 도는 중에도 개별 작품 다운로드는 막히지 않게 하기 위함.
         # 개별 작품 다운로드끼리는 여전히 한 번에 하나만 허용(순차 처리).
-        tjob = ss.load_title_job_state()
-        if tjob.get("running"):
+        # try_acquire_title_job()으로 확인+저장을 원자적으로 처리해 TOCTOU
+        # 레이스(짧은 틈에 두 다운로드가 동시에 시작되는 문제)를 없앤다.
+        cfg = self._get_cfg(db_type)
+        acquired = ss.try_acquire_title_job({
+            "title_id": title_id, "title": title,
+            "message": "수동 다운로드 시작", "started_at": time.time(),
+            "cancel_requested": False, "last_error": None,
+            "progress": 0, "total": len(episode_nos),
+        })
+        if not acquired:
+            tjob = ss.load_title_job_state()
             return False, "이미 다른 작품을 다운로드 중입니다(%s). 완료 후 다시 시도해주세요." % (
                 tjob.get("title") or tjob.get("title_id") or "")
 
-        cfg = self._get_cfg(db_type)
-        ss.save_title_job_state({"running": True, "title_id": title_id, "title": title,
-                                  "message": "수동 다운로드 시작", "started_at": time.time(),
-                                  "cancel_requested": False, "last_error": None,
-                                  "progress": 0, "total": len(episode_nos)})
         _dl_root = cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR
         if _dl_root == ss.DOWNLOAD_DEFAULT_DIR:
             ss.append_log("이번 다운로드 경로(설정 안 됨 - 기본 경로 사용): %s" % _dl_root)
@@ -537,10 +556,6 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         스캔/전체실행(job_state)과는 독립된 title_job_state 락을 쓴다."""
         if not title_id:
             return False, "titleId 필요"
-        tjob = ss.load_title_job_state()
-        if tjob.get("running"):
-            return False, "이미 다른 작품을 다운로드 중입니다(%s). 완료 후 다시 시도해주세요." % (
-                tjob.get("title") or tjob.get("title_id") or "")
 
         cfg = self._get_cfg(db_type)
         titles = ss.load_titles()
@@ -549,10 +564,19 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             return False, "구독 목록에 없는 titleId입니다"
 
         title_name = t_info.get("title", title_id)
-        ss.save_title_job_state({"running": True, "title_id": title_id, "title": title_name,
-                                  "message": "%s 새 회차 확인 중" % title_name,
-                                  "started_at": time.time(), "cancel_requested": False,
-                                  "last_error": None, "progress": 0, "total": 0})
+        # try_acquire_title_job()으로 확인+저장을 원자적으로 처리해 TOCTOU
+        # 레이스를 없앤다(_act_manual_download와 동일한 이유).
+        acquired = ss.try_acquire_title_job({
+            "title_id": title_id, "title": title_name,
+            "message": "%s 새 회차 확인 중" % title_name,
+            "started_at": time.time(), "cancel_requested": False,
+            "last_error": None, "progress": 0, "total": 0,
+        })
+        if not acquired:
+            tjob = ss.load_title_job_state()
+            return False, "이미 다른 작품을 다운로드 중입니다(%s). 완료 후 다시 시도해주세요." % (
+                tjob.get("title") or tjob.get("title_id") or "")
+
         _dl_root = cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR
         if _dl_root == ss.DOWNLOAD_DEFAULT_DIR:
             ss.append_log("이번 다운로드 경로(설정 안 됨 - 기본 경로 사용): %s" % _dl_root)

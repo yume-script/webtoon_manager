@@ -58,7 +58,7 @@ def run_scan_weekday(cfg, log=print):
     log("요일별 연재 목록 수집 시작")
     merged = {}
     try:
-        merged.update(naver_api.fetch_weekday_titles(session, should_cancel=_cancelled))
+        merged.update(naver_api.fetch_weekday_titles(session, should_cancel=_cancelled, log=log))
     except Exception as e:  # noqa: BLE001
         log("요일별 목록 수집 실패: %s" % e)
 
@@ -126,18 +126,6 @@ def run_scan_finished(cfg, log=print, max_pages=200):
     return {"scanned": len(patch), "finished_events": finished_events}
 
 
-def run_scan(cfg, log=print):
-    """수동 "지금 스캔" 버튼 등 하위호환용 - 요일별+완결을 순서대로 모두 수행.
-    사용자가 명시적으로 호출한 경우에만 쓰고, 자동 스케줄러는
-    run_scan_weekday/run_scan_finished를 각자 다른 주기로 따로 호출한다."""
-    weekday_result = run_scan_weekday(cfg, log=log)
-    finished_result = run_scan_finished(cfg, log=log)
-    return {
-        "scanned": weekday_result["scanned"] + finished_result["scanned"],
-        "finished_events": finished_result["finished_events"],
-    }
-
-
 def _episodes_to_download(session, cfg, title_id, known_last_no):
     episodes = naver_api.fetch_episode_list(session, title_id)
     # 최신 -> 과거 순으로 오므로 known_last_no보다 큰(새 회차)만, 오래된 순으로 반환
@@ -171,8 +159,17 @@ def run_download_cycle(cfg, log=print):
     failures = []
     downloaded_count = 0
     cookie_expired = False
+    cancelled = False
+
+    def _cancelled():
+        return bool(ss.load_job_state().get("cancel_requested"))
 
     for i, (tid, t) in enumerate(subscribed.items()):
+        if _cancelled():
+            log("취소 요청 확인됨 - 남은 %d개 작품은 건너뛰고 다운로드를 중단합니다" %
+                (len(subscribed) - i))
+            cancelled = True
+            break
         ss.save_job_state({"progress": i, "message": "%s 새 회차 확인 중" % t.get("title", tid)})
         try:
             new_eps = _episodes_to_download(session, cfg, tid, t.get("last_downloaded_no"))
@@ -189,6 +186,10 @@ def run_download_cycle(cfg, log=print):
         last_ok_no = t.get("last_downloaded_no")
         consecutive_fail = 0
         for ep in capped:
+            if _cancelled():
+                log("titleId=%s: 취소 요청 확인됨 - 남은 회차는 다음 실행 때 이어받습니다" % tid)
+                cancelled = True
+                break
             if ep.get("charge"):
                 # 목록 API가 이미 유료(charge=true)라고 알려주는 회차를 만나면,
                 # 그 뒤 회차들도 순서대로 계속 유료일 가능성이 매우 높다("매일
@@ -256,11 +257,16 @@ def run_download_cycle(cfg, log=print):
                         (tid, consecutive_fail))
                     break
 
+        # up_flag("UP" 뱃지)는 last_ok_no 변경 여부와 무관하게 항상 최신
+        # rest_needed 값으로 갱신한다. 예전에는 last_ok_no가 바뀔 때만
+        # upsert했는데, 유료/연속실패로 하나도 못 받은 회차라도 밀린 회차가
+        # 있으면(rest_needed=True) UP 뱃지가 떠야 하는데 안 뜨는 문제가 있었다.
+        patch = {"up_flag": rest_needed}
         if last_ok_no != t.get("last_downloaded_no"):
-            ss.upsert_title({tid: {"last_downloaded_no": last_ok_no,
-                                    "up_flag": rest_needed}})
+            patch["last_downloaded_no"] = last_ok_no
+        ss.upsert_title({tid: patch})
 
-        if cookie_expired:
+        if cookie_expired or cancelled:
             break
 
         if rest_needed and batch_rest_min > 0:
@@ -276,8 +282,10 @@ def run_download_cycle(cfg, log=print):
     if failures:
         discord_notify.notify_failures(cfg, failures)
 
-    log("다운로드 사이클 완료: 신규 %d화, 실패 %d건" % (downloaded_count, len(failures)))
-    return {"downloaded": downloaded_count, "failures": failures, "cookie_expired": cookie_expired}
+    log("다운로드 사이클 완료: 신규 %d화, 실패 %d건%s" %
+        (downloaded_count, len(failures), " (취소됨)" if cancelled else ""))
+    return {"downloaded": downloaded_count, "failures": failures,
+            "cookie_expired": cookie_expired, "cancelled": cancelled}
 
 
 def run_finished_scan_job(cfg, log=print):
@@ -305,10 +313,13 @@ def run_full_cycle(cfg, log=print):
     try:
         scan_result = run_scan_weekday(cfg, log=log)
         dl_result = run_download_cycle(cfg, log=log)
-        ss.save_job_state({"running": False, "stage": "done", "finished_at": time.time(),
-                            "message": "완료: 스캔 %d개 / 신규 %d화 / 실패 %d건" % (
+        ss.save_job_state({"running": False,
+                            "stage": "cancelled" if dl_result.get("cancelled") else "done",
+                            "finished_at": time.time(),
+                            "message": "완료: 스캔 %d개 / 신규 %d화 / 실패 %d건%s" % (
                                 scan_result["scanned"], dl_result["downloaded"],
-                                len(dl_result["failures"]))})
+                                len(dl_result["failures"]),
+                                " (도중 취소됨)" if dl_result.get("cancelled") else "")})
         return {"scan": scan_result, "download": dl_result}
     except Exception as e:  # noqa: BLE001
         log("파이프라인 실행 중 오류: %s" % e)

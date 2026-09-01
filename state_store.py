@@ -181,6 +181,22 @@ def save_job_state(patch):
     return st
 
 
+def try_acquire_job(patch=None):
+    """running이 False일 때만 원자적으로 True로 바꾸고 성공 여부를 bool로
+    반환한다. "읽어서 running 확인 -> 그 다음에 running=True 저장" 을 두 번의
+    호출로 나누면(예: 이전의 _act_run_bg) 그 사이에 다른 요청이 끼어들어
+    작업이 이중으로 시작될 수 있다(TOCTOU 레이스). 이 함수는 확인과 저장을
+    _lock 안에서 한 번에 처리해 그 틈을 없앤다."""
+    with _lock:
+        st = load_job_state()
+        if st.get("running"):
+            return False
+        st.update(patch or {})
+        st["running"] = True
+        write_json(JOB_STATE_PATH, st)
+        return True
+
+
 # ---- title_job_state.json (개별 작품 다운로드 잡 진행상태, 스캔/전체실행과 독립) ---
 DEFAULT_TITLE_JOB_STATE = {
     "running": False,
@@ -209,6 +225,19 @@ def save_title_job_state(patch):
         st.update(patch)
         write_json(TITLE_JOB_STATE_PATH, st)
     return st
+
+
+def try_acquire_title_job(patch=None):
+    """try_acquire_job()과 동일한 이유로 존재하는, 개별 작품 다운로드
+    (title_job_state) 전용 원자적 획득 헬퍼."""
+    with _lock:
+        st = load_title_job_state()
+        if st.get("running"):
+            return False
+        st.update(patch or {})
+        st["running"] = True
+        write_json(TITLE_JOB_STATE_PATH, st)
+        return True
 
 
 def append_log(line):

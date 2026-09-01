@@ -112,9 +112,12 @@ def _get(session, url, params=None, referer=None):
     return resp
 
 
-def fetch_weekday_titles(session, should_cancel=None):
+def fetch_weekday_titles(session, should_cancel=None, log=None):
     """요일별 연재중 웹툰 전체 목록 + 매일+(dailyPlus). {titleId: {...}} 형태로 병합해서 반환.
-    should_cancel: 인자 없이 호출해 True를 반환하면 그 자리에서 중단하는 콜백(선택)."""
+    should_cancel: 인자 없이 호출해 True를 반환하면 그 자리에서 중단하는 콜백(선택).
+    log: 진단용 콜백(선택). dailyPlus의 실제 API 파라미터명이 미검증 상태라(위 주석 참고),
+    요청 자체가 실패하거나 0건이 돌아오면 원인을 알 수 있도록 로그를 남긴다 - 조용히
+    스킵되면 사용자가 "매일+ 탭이 왜 항상 비어있지"를 진단할 방법이 없기 때문."""
     out = {}
     for wd in WEEKDAYS_WITH_DAILY_PLUS:
         if should_cancel and should_cancel():
@@ -122,9 +125,18 @@ def fetch_weekday_titles(session, should_cancel=None):
         try:
             resp = _get(session, API_BASE + "/weekday", params={"week": wd})
             body = resp.json()
-        except (requests.RequestException, ValueError):
+        except (requests.RequestException, ValueError) as e:
+            if log:
+                log("요일별 목록 조회 실패 week=%s: %s%s" %
+                    (wd, e, " (dailyPlus 파라미터가 실제 API와 다를 수 있음, guide 참고)"
+                     if wd == DAILY_PLUS else ""))
             continue
-        for item in _extract_title_list(body):
+        items = _extract_title_list(body)
+        if not items and log:
+            log("요일별 목록 week=%s: 0건 반환됨%s" %
+                (wd, " - dailyPlus의 실제 API 파라미터명이 확인되지 않은 상태라 이 값이 "
+                     "맞는지 의심해볼 필요가 있음(코드 주석 참고)" if wd == DAILY_PLUS else ""))
+        for item in items:
             item["status"] = item.get("status") or "연재"
             item.setdefault("weekdays", [])
             if wd not in item["weekdays"]:

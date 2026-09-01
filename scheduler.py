@@ -84,17 +84,32 @@ def _loop(get_cfg_func, run_full_cycle_func, run_finished_scan_func):
                 due = (job.get("last_scan_at") is None or
                        (time.time() - job.get("last_scan_at", 0)) >= interval_min * 60)
                 if due:
-                    try:
-                        run_full_cycle_func(cfg, log=_ss.append_log)
-                    except Exception as e:  # noqa: BLE001
-                        _ss.append_log("스케줄러 실행 오류: %s" % e)
+                    # try_acquire_job()으로 확인+저장을 원자적으로 처리한다.
+                    # 예전에는 위의 job.get("running") 확인과 실제 실행 사이에
+                    # 짧은 틈이 있어서, 그 사이 사용자가 수동으로 "지금 전체
+                    # 실행"을 눌러도 둘 다 실행을 시작해버리는 레이스가
+                    # 있었다(반대로 스케줄러가 먼저 선점하면 수동 액션 쪽이
+                    # "이미 실행 중" 응답을 받게 됨 - 어느 쪽이든 이제 하나만
+                    # 실제로 시작된다).
+                    if _ss.try_acquire_job({
+                        "stage": "starting", "message": "스케줄러: 요일별 스캔+다운로드 시작",
+                        "started_at": time.time(), "cancel_requested": False, "last_error": None,
+                    }):
+                        try:
+                            run_full_cycle_func(cfg, log=_ss.append_log)
+                        except Exception as e:  # noqa: BLE001
+                            _ss.append_log("스케줄러 실행 오류: %s" % e)
                 elif _is_finished_scan_due(job, finished_hour):
                     # 요일별 사이클이 지금 막 안 돌아도, 정해진 시각이 됐으면
                     # 완결 스캔은 독립적으로 실행한다.
-                    try:
-                        run_finished_scan_func(cfg, log=_ss.append_log)
-                    except Exception as e:  # noqa: BLE001
-                        _ss.append_log("스케줄러(완결 스캔) 실행 오류: %s" % e)
+                    if _ss.try_acquire_job({
+                        "stage": "starting", "message": "스케줄러: 완결 목록 수집 시작",
+                        "started_at": time.time(), "cancel_requested": False, "last_error": None,
+                    }):
+                        try:
+                            run_finished_scan_func(cfg, log=_ss.append_log)
+                        except Exception as e:  # noqa: BLE001
+                            _ss.append_log("스케줄러(완결 스캔) 실행 오류: %s" % e)
 
         time.sleep(60)
 

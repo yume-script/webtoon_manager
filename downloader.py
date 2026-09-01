@@ -56,9 +56,12 @@ def download_episode(session, download_root, title, title_id, episode_no,
                       max_concurrent=5, delay_seconds=1.0, timeout=10, log=None):
     """
     1단계: 이미지만 내려받는다(압축은 하지 않음 - compress_episode()가 별도
-    단계로 처리). 이미 압축까지 끝난 회차거나, 회차 폴더에 이미지가 이미
-    있으면(전에 받아만 두고 아직 압축 안 한 경우 포함) 새로 받지 않고
-    True(스킵)로 취급한다.
+    단계로 처리). 이미 압축까지 끝난 회차는 네트워크 요청 없이 즉시 스킵한다.
+    압축 전 낱장 폴더가 있는 경우, 기대 이미지 장수(원본에서 조회)와 실제
+    받은 장수를 비교해서 완전히 받아져 있을 때만 스킵하고, 중단된 채 남은
+    폴더라면 빠진 이미지만 이어받는다(resume). 이어받은 뒤에도 장수가
+    모자라면 ok=False를 반환해 호출 측이 compress_episode()를 부르지 않도록
+    한다(불완전 압축 방지).
     반환: (ok: bool, skipped: bool, image_count: int, error: str|None)
     """
     existing_archive = find_existing_episode_archive(
@@ -72,14 +75,20 @@ def download_episode(session, download_root, title, title_id, episode_no,
         return True, True, cnt, None
 
     target_dir = episode_dir(download_root, title, title_id, episode_no, folder_zero_fill)
-    if os.path.isdir(target_dir) and any(
-            f.lower().endswith(_IMAGE_EXTS) for f in os.listdir(target_dir)):
-        # 전에 이미지는 받아뒀는데 압축을 아직 안 한 상태 - 다시 받을 필요는
-        # 없다. 압축은 이 함수를 호출한 쪽이 뒤이어 compress_episode()를
-        # 불러서 처리한다.
-        return True, True, len(os.listdir(target_dir)), None
 
     try:
+        # 버그 수정: 예전에는 target_dir에 이미지가 "하나라도" 있으면 무조건
+        # 완료로 간주하고 곧바로 압축 단계로 넘겼다. 컨테이너 재시작/네트워크
+        # 중단 등으로 다운로드가 중간에 끊긴 폴더도 이 조건을 그대로 만족해서,
+        # 불완전한 이미지 묶음이 "제목 00xx화#N.zip"이라는 정상 파일명으로
+        # 압축되어 버리면 find_existing_episode_archive()가 그걸 완료로 인식해
+        # 다시는 재다운로드되지 않는 문제가 있었다.
+        # 이제는 항상 먼저 원본 이미지 목록(기대 장수)을 조회해서, 이미 받은
+        # 파일 수와 비교한 뒤에만 완료로 판정한다. 이미 완전히 받은 회차라도
+        # HTML 상세페이지 요청 1회는 매번 발생하지만(성능 트레이드오프),
+        # 이미 압축이 끝난 회차는 위쪽의 find_existing_episode_archive()
+        # 단계에서 이 네트워크 요청 없이 걸러지므로 실제 영향 범위는 "다운로드는
+        # 됐는데 아직 압축 전인" 좁은 구간뿐이다.
         try:
             images = naver_api.fetch_episode_images(session, title_id, episode_no)
         except naver_api.NaverAuthExpired:
@@ -88,6 +97,17 @@ def download_episode(session, download_root, title, title_id, episode_no,
             raise
         except Exception as e:  # noqa: BLE001
             return False, False, 0, str(e)
+
+        expected_count = len(images)
+
+        if os.path.isdir(target_dir):
+            existing_files = [f for f in os.listdir(target_dir) if f.lower().endswith(_IMAGE_EXTS)]
+            if expected_count > 0 and len(existing_files) >= expected_count:
+                # 이미 기대 장수만큼 다 받아져 있음 - 압축만 안 됐을 뿐 완료 상태.
+                return True, True, len(existing_files), None
+            if existing_files and log:
+                log("titleId=%s no=%s: 이전에 중단된 다운로드로 보임(%d/%d장) - 이어받기 시도" %
+                    (title_id, episode_no, len(existing_files), expected_count))
 
         os.makedirs(target_dir, exist_ok=True)
         referer = "%s?titleId=%s&no=%s" % (naver_api.DETAIL_URL, title_id, episode_no)
@@ -102,6 +122,8 @@ def download_episode(session, download_root, title, title_id, episode_no,
             fname = str(idx + 1).zfill(int(image_zero_fill or 4)) + ext
             fpath = os.path.join(target_dir, fname)
             if os.path.exists(fpath) and os.path.getsize(fpath) > 0:
+                # 이미 받아둔 파일 - 이어받기(resume)의 핵심: 중단됐던 다운로드도
+                # 이미 받은 낱장은 다시 받지 않고 빠진 것만 채운다.
                 return True
             try:
                 resp = session.get(img_url, headers={"Referer": referer}, timeout=timeout)
@@ -125,6 +147,13 @@ def download_episode(session, download_root, title, title_id, episode_no,
         if ok_count == 0:
             shutil.rmtree(target_dir, ignore_errors=True)
             return False, False, 0, "이미지 0장 저장됨(전체 실패)"
+
+        if expected_count > 0 and ok_count < expected_count:
+            # 이번 시도로도 다 못 채움 - 폴더는 지우지 않고 그대로 둬서 다음
+            # 재시도 때 이어받을 수 있게 한다. ok=False라서 호출 측이
+            # compress_episode()를 부르지 않으므로 불완전 압축도 방지된다.
+            return False, False, ok_count, ("이미지 %d장 중 %d장만 받음(불완전, 다음 시도 때 이어받음)" %
+                                             (expected_count, ok_count))
 
         return True, False, ok_count, None
     finally:
