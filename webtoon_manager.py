@@ -6,7 +6,7 @@ GitHub murianwind/webtoon-manager(네이버웹툰 무료 회차 자동 구독/�
 독립 웹앱)를 BookOasis 카테고리탭 플러그인으로 이식.
 
 기능: 작가/태그 자동 구독, 신작 자동 다운로드, 완결 감지/쿠키 만료 디스코드
-알림, 주기 실행 스케줄러, 구독해제/제외 관리, 수동 다운로드, 다운로드 이력.
+알림, 주기 실행 스케줄러, 구독해제/제외 관리, 선택 회차 다운로드, 다운로드 이력.
 
 화면: index.html(카테고리탭 풀페이지) + script.js + style.css.
 
@@ -474,7 +474,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         cfg = self._get_cfg(db_type)
         acquired = ss.try_acquire_title_job({
             "title_id": title_id, "title": title,
-            "message": "수동 다운로드 시작", "started_at": time.time(),
+            "message": "선택 회차 다운로드 시작", "started_at": time.time(),
             "cancel_requested": False, "last_error": None,
             "progress": 0, "total": len(episode_nos),
         })
@@ -496,7 +496,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             consecutive_fail = 0
             for i, no in enumerate(episode_nos):
                 if ss.load_title_job_state().get("cancel_requested"):
-                    ss.append_log("수동 다운로드 취소됨")
+                    ss.append_log("선택 회차 다운로드 취소됨")
                     break
                 ss.save_title_job_state({"progress": i, "message": "%s %s화 다운로드 중" % (title, no)})
                 try:
@@ -543,14 +543,14 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                     discord_notify.notify_cookie_expired(cfg)
                     break
             ss.save_title_job_state({"running": False, "finished_at": time.time(),
-                                      "message": "수동 다운로드 완료(%d화)" % ok_count})
+                                      "message": "선택 회차 다운로드 완료(%d화)" % ok_count})
 
         t = threading.Thread(target=_runner, name="webtoon_manager_manual_dl", daemon=True)
         t.start()
-        return True, "수동 다운로드 시작됨(백그라운드)"
+        return True, "선택 회차 다운로드 시작됨(백그라운드)"
 
     def _act_download_title(self, db_type, title_id):
-        """구독중 카드의 '지금 다운로드' 버튼: 회차를 직접 선택하지 않고,
+        """구독중 카드의 '새회차 다운로드' 버튼: 회차를 직접 선택하지 않고,
         그 작품의 last_downloaded_no보다 새로운 회차를 자동으로 찾아 전부
         받는다(run_download_cycle과 같은 로직을 titleId 하나로 축소한 버전).
         스캔/전체실행(job_state)과는 독립된 title_job_state 락을 쓴다."""
