@@ -216,16 +216,24 @@
     if (!list.length) { box.innerHTML = '<div class="wtm-hint">다운로드 이력이 없습니다.</div>'; return; }
     box.innerHTML = list.map(function (h) {
       var isFail = (h.type || '').indexOf('fail') >= 0;
+      // source 필드가 없는 예전 이력(업데이트 전에 쌓인 기록)은 type 이름으로
+      // 대신 추정한다 - manual_download(_fail)만 수동이고 나머지는 자동.
+      var isManual = h.source ? h.source === 'manual' : (h.type || '').indexOf('manual') >= 0;
+      var sourceBadge = '<span class="wtm-badge' + (isManual ? '' : ' new') + '" style="margin-right:6px">' +
+        (isManual ? '수동' : '자동') + '</span>';
       var text = '';
       if (h.type === 'download' || h.type === 'manual_download') {
         text = escapeHtml(h.title) + ' - ' + h.episode_no + '화 (' + (h.image_count || 0) + '장)';
+      } else if (h.type === 'skipped_paid') {
+        text = escapeHtml(h.title) + ' - ' + h.episode_no + '화: 유료라 건너뜀' +
+          (h.error ? ' (' + escapeHtml(h.error) + ')' : '');
       } else if (isFail) {
         text = escapeHtml(h.title) + ' - ' + h.episode_no + '화 실패: ' + escapeHtml(h.error || '');
       } else {
         text = JSON.stringify(h);
       }
       return '<div class="wtm-history-item' + (isFail ? ' fail' : '') + '">' +
-        '<span>' + fmtDate(h.ts) + '</span> &middot; ' + text + '</div>';
+        sourceBadge + '<span>' + fmtDate(h.ts) + '</span> &middot; ' + text + '</div>';
     }).join('');
   }
 

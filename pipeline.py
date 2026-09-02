@@ -198,7 +198,8 @@ def run_download_cycle(cfg, log=print):
                 # last_ok_no는 그대로 둬서 다음 스캔 때 이 회차부터 다시 확인한다.
                 log("titleId=%s %s화: 유료(charge=true) 회차, 목록 API 기준 - 이후 회차도 유료로 보고 이 작품은 중단" % (tid, ep["no"]))
                 ss.append_history({
-                    "type": "skipped_paid", "title_id": tid, "title": t.get("title", tid),
+                    "type": "skipped_paid", "source": "auto", "title_id": tid,
+                    "title": t.get("title", tid),
                     "episode_no": ep["no"], "error": "유료 회차(목록 API charge=true)",
                 })
                 break
@@ -218,7 +219,8 @@ def run_download_cycle(cfg, log=print):
                 # 있으니 last_ok_no는 안 건드려서 다음 스캔 때 다시 확인함).
                 log("titleId=%s %s화: %s (이후 회차도 유료로 보고 이 작품은 중단, 다음 스캔 때 재시도)" % (tid, ep["no"], e))
                 ss.append_history({
-                    "type": "skipped_paid", "title_id": tid, "title": t.get("title", tid),
+                    "type": "skipped_paid", "source": "auto", "title_id": tid,
+                    "title": t.get("title", tid),
                     "episode_no": ep["no"], "error": str(e),
                 })
                 break
@@ -229,7 +231,8 @@ def run_download_cycle(cfg, log=print):
                 if not skipped:
                     downloaded_count += 1
                     ss.append_history({
-                        "type": "download", "title_id": tid, "title": t.get("title", tid),
+                        "type": "download", "source": "auto", "title_id": tid,
+                        "title": t.get("title", tid),
                         "episode_no": ep["no"], "subtitle": ep.get("subtitle"),
                         "image_count": img_count,
                     })
@@ -245,7 +248,8 @@ def run_download_cycle(cfg, log=print):
                 failures.append({"title_id": tid, "title": t.get("title", tid),
                                   "episode_no": ep["no"], "error": err})
                 ss.append_history({
-                    "type": "download_fail", "title_id": tid, "title": t.get("title", tid),
+                    "type": "download_fail", "source": "auto", "title_id": tid,
+                    "title": t.get("title", tid),
                     "episode_no": ep["no"], "error": err,
                 })
                 # 딜레이를 지켜도 연속으로 계속 실패하면(네이버 일시 차단/레이트리밋

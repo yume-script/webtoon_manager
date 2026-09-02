@@ -540,7 +540,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                     if ok:
                         consecutive_fail = 0
                         ok_count += 1 if not skipped else 0
-                        ss.append_history({"type": "manual_download", "title_id": title_id,
+                        ss.append_history({"type": "manual_download", "source": "manual",
+                                            "title_id": title_id,
                                             "title": title, "episode_no": no,
                                             "image_count": cnt})
                         # 이미지 다운로드(1단계)와 분리된 2단계 - 별도로 압축한다.
@@ -556,14 +557,16 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                             ss.append_log("%s %s화 압축 실패: %s" % (title, no, c_msg))
                     else:
                         consecutive_fail += 1
-                        ss.append_history({"type": "manual_download_fail", "title_id": title_id,
+                        ss.append_history({"type": "manual_download_fail", "source": "manual",
+                                            "title_id": title_id,
                                             "title": title, "episode_no": no, "error": err})
                         if consecutive_fail >= pipeline._MAX_CONSECUTIVE_FAILURES:
                             ss.append_log("연속 %d회 실패 - 일시 차단 가능성으로 중단" % consecutive_fail)
                             break
                 except naver_api.NaverPaidEpisode as e:
                     ss.append_log("%s %s화: %s (건너뜀)" % (title, no, e))
-                    ss.append_history({"type": "skipped_paid", "title_id": title_id,
+                    ss.append_history({"type": "skipped_paid", "source": "manual",
+                                        "title_id": title_id,
                                         "title": title, "episode_no": no, "error": str(e)})
                     continue
                 except naver_api.NaverAuthExpired as e:
@@ -637,7 +640,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                     break
                 if ep.get("charge"):
                     ss.append_log("%s %s화: 유료(charge=true) 회차, 목록 API 기준 - 이후 회차도 유료로 보고 중단" % (title_name, ep["no"]))
-                    ss.append_history({"type": "skipped_paid", "title_id": title_id,
+                    ss.append_history({"type": "skipped_paid", "source": "auto",
+                                        "title_id": title_id,
                                         "title": title_name, "episode_no": ep["no"],
                                         "error": "유료 회차(목록 API charge=true)"})
                     break
@@ -656,7 +660,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                     # 이후 회차도 순서대로 계속 유료일 가능성이 높아 여기서 중단
                     # (다음 스캔/실행 때 다시 이 회차부터 확인).
                     ss.append_log("%s %s화: %s (이후 회차도 유료로 보고 중단, 다음에 재시도)" % (title_name, ep["no"], e))
-                    ss.append_history({"type": "skipped_paid", "title_id": title_id,
+                    ss.append_history({"type": "skipped_paid", "source": "auto",
+                                        "title_id": title_id,
                                         "title": title_name, "episode_no": ep["no"], "error": str(e)})
                     break
                 except naver_api.NaverAuthExpired as e:
@@ -668,7 +673,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                     last_ok_no = ep["no"]
                     if not skipped:
                         ok_count += 1
-                        ss.append_history({"type": "download", "title_id": title_id,
+                        ss.append_history({"type": "download", "source": "auto",
+                                            "title_id": title_id,
                                             "title": title_name, "episode_no": ep["no"],
                                             "image_count": cnt})
                         # 이미지 다운로드(1단계)와 분리된 2단계 - 별도로 압축한다.
@@ -681,7 +687,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                             ss.append_log("%s %s화 압축 실패: %s" % (title_name, ep["no"], c_msg))
                 else:
                     consecutive_fail += 1
-                    ss.append_history({"type": "download_fail", "title_id": title_id,
+                    ss.append_history({"type": "download_fail", "source": "auto",
+                                        "title_id": title_id,
                                         "title": title_name, "episode_no": ep["no"], "error": err})
                     if consecutive_fail >= pipeline._MAX_CONSECUTIVE_FAILURES:
                         ss.append_log("titleId=%s 연속 %d회 실패 - 일시 차단 가능성으로 중단" %
