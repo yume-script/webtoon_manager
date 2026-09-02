@@ -706,3 +706,36 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
 
 def action_slug(label):
     return "".join(c for c in label if c.isalnum()) or "job"
+
+
+# ----------------------------------------------------------------------
+# 모듈 임포트 시점 스케줄러 부트스트랩
+# ----------------------------------------------------------------------
+# scheduler.ensure_started()는 원래 get_dashboard_data() 안에서만 호출됐다.
+# 그런데 get_dashboard_data()는 카테고리탭 화면(script.js의 폴링)이 실제로
+# 열려 있을 때만 코어가 호출하는 경로다. 즉 컨테이너가 재시작된 뒤 아무도
+# "웹툰 다운로더" 탭을 열지 않으면 스케줄러 스레드 자체가 영영 시작되지
+# 않고, ENABLE_SCHEDULER=true로 설정해놔도 자동 다운로드가 조용히 멈춰
+# 있는 문제가 있었다 - 이 플러그인의 존재 이유(무인 자동 다운로드)를 깨는
+# 문제라 별도 트리거를 추가한다.
+#
+# scheduler.py 자신의 주석대로 "BookOasis 플러그인 모듈은 요청마다 새로
+# 로드될 수 있다" - 즉 이 파일이 import되는 시점 자체가, 카테고리탭을
+# 열었을 때보다 훨씬 자주(플러그인 목록 조회, 사이드바 렌더링, 권한 매트릭스
+# 조회 등 이 모듈을 건드리는 모든 요청마다) 찾아온다. 그 매 시점마다
+# ensure_started()를 "시도"해두면, 그중 Flask 요청 컨텍스트가 살아있는
+# 시점(=대부분의 요청)에 한 번만 성공해도 스레드가 뜬다.
+#
+# 아주 방어적으로 감싼다: 여기서 무슨 예외가 나든(예: 아직 앱 컨텍스트가
+# 없는 극초기 import 시점이라 get_plugin_config()가 실패하는 경우) 클래스
+# 정의 자체(이미 위에서 끝남)에는 영향이 없어야 하고, 플러그인 로딩을
+# 절대 막아선 안 된다. get_dashboard_data() 쪽의 기존 ensure_started() 호출도
+# 그대로 남겨둬서 이중 안전망으로 유지한다(ensure_started 자체가 중복
+# 호출에 안전하도록 이미 설계돼 있음 - PID 락 + 프로세스 전역 플래그).
+try:
+    _bootstrap_provider = WebtoonManagerMetadataProvider()
+    scheduler.ensure_started(lambda: _bootstrap_provider._get_cfg("general"),
+                              pipeline.run_full_cycle,
+                              pipeline.run_finished_scan_job)
+except Exception:  # noqa: BLE001
+    pass
