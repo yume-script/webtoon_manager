@@ -451,9 +451,37 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         session = pipeline.build_session_from_cfg(cfg)
         try:
             meta = naver_api.guess_title_meta(session, title_id)
+            # 다운로드 여부 판정은 실제 다운로드 때 폴더/파일명에 쓰이는(그리고
+            # 과거에 쓰였던) 제목 문자열을 기준으로 해야 한다. guess_title_meta()가
+            # 상세페이지에서 새로 파싱한 제목이 titles.json에 저장된 제목과
+            # 미묘하게 다르면(네이버 쪽 표기가 나중에 바뀌는 경우 등)
+            # find_existing_episode_archive()의 파일명 접두어가 어긋나서, 이미
+            # 받은 회차인데도 "다운로드 안 됨"으로 잘못 표시될 수 있다. 구독
+            # 목록에 이미 있는 titleId라면 그때 실제로 쓰인 제목을 우선한다.
+            stored = ss.load_titles().get(str(title_id)) or {}
+            title_for_check = stored.get("title") or meta.get("title")
+
             # 회차가 많은 장기 연재작(10페이지 이상)도 전부 가져오도록 상한을
             # 넉넉히 잡는다. 화면은 스크롤 가능한 박스라 개수 제한이 필요 없다.
             episodes = naver_api.fetch_episode_list(session, title_id, max_pages=200)
+
+            download_root = cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR
+            folder_zero_fill = int(cfg.get("FOLDER_ZERO_FILL", 4))
+            # find_existing_episode_archive()를 회차마다 부르면 그때그때
+            # os.listdir()을 반복하게 되어(장기 연재작은 회차가 수백 개)
+            # 비효율적이다. 여기서는 시리즈 폴더를 한 번만 읽어서 이미 있는
+            # 파일명 집합을 만들고, 회차별로는 메모리에서만 접두어 매칭한다.
+            series_dir = downloader.title_dir(download_root, title_for_check, title_id)
+            existing_files = set(os.listdir(series_dir)) if os.path.isdir(series_dir) else set()
+            for ep in episodes:
+                no = ep.get("no")
+                if isinstance(no, int):
+                    prefix = downloader._archive_prefix(title_for_check, no, folder_zero_fill) + "#"
+                    ep["downloaded"] = any(
+                        f.startswith(prefix) and f.lower().endswith(".zip") for f in existing_files)
+                else:
+                    ep["downloaded"] = False
+
             meta["episodes"] = episodes
             return True, json.dumps(meta, ensure_ascii=False)
         except Exception as e:  # noqa: BLE001

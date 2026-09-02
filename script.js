@@ -411,10 +411,16 @@
       }
       if (action === 'manual_download_all') {
         if (!lookupResult) return;
-        var freeEps = (lookupResult.episodes || []).filter(function (e) { return !e.charge; })
-          .map(function (e) { return e.no; });
+        var freeAllEps = (lookupResult.episodes || []).filter(function (e) { return !e.charge; });
+        var freeEps = freeAllEps.map(function (e) { return e.no; });
         if (!freeEps.length) { alert('다운로드 가능한(무료) 회차가 없습니다'); return; }
-        if (!confirm('무료 회차 ' + freeEps.length + '개를 전부 다운로드할까요?')) return;
+        var alreadyDone = freeAllEps.filter(function (e) { return e.downloaded; }).length;
+        var confirmMsg = '무료 회차 ' + freeEps.length + '개를 전부 다운로드할까요?';
+        if (alreadyDone > 0) {
+          confirmMsg += ' (이미 받은 ' + alreadyDone + '개는 건너뛰고 나머지 ' +
+            (freeEps.length - alreadyDone) + '개만 실제로 받습니다)';
+        }
+        if (!confirm(confirmMsg)) return;
         var r4b = await callAction('manual_download', { titleId: lookupResult.titleId, title: lookupResult.title, episodeNos: freeEps });
         alert(r4b.message || (r4b.success ? '시작됨' : '실패'));
         await refresh();
@@ -476,18 +482,24 @@
     var box = el('[data-el="manual-result"]');
     if (!box || !lookupResult) return;
     var eps = lookupResult.episodes || [];
+    var downloadedCount = eps.filter(function (e) { return e.downloaded; }).length;
     box.innerHTML =
       '<div class="wtm-box" style="margin-top:10px">' +
-      '<div class="wtm-box-title">' + escapeHtml(lookupResult.title) + ' (titleId=' + lookupResult.titleId + ')</div>' +
+      '<div class="wtm-box-title">' + escapeHtml(lookupResult.title) + ' (titleId=' + lookupResult.titleId + ')' +
+      ' <span class="wtm-hint" style="margin:0">- 받음 ' + downloadedCount + '/' + eps.length + '화</span></div>' +
       '<div style="max-height:260px;overflow:auto">' +
       eps.map(function (e) {
         var isPaid = !!e.charge;
-        return '<label style="display:flex;gap:8px;padding:3px 0;font-size:12px;' + (isPaid ? 'opacity:.5' : '') + '">' +
+        var isDone = !!e.downloaded;
+        return '<label style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12px;' + (isPaid ? 'opacity:.5' : '') + '">' +
           '<input type="checkbox" data-ep-checkbox="' + e.no + '"' + (isPaid ? ' disabled title="유료 회차는 선택할 수 없습니다"' : '') + '> ' +
-          e.no + '화 - ' + escapeHtml(e.subtitle || '') + (isPaid ? ' <b>(유료 - 선택불가)</b>' : '') + '</label>';
+          '<span' + (isDone ? ' style="opacity:.6"' : '') + '>' + e.no + '화 - ' + escapeHtml(e.subtitle || '') + '</span>' +
+          (isPaid ? ' <b>(유료 - 선택불가)</b>' : '') +
+          (isDone ? ' <span class="wtm-badge" style="background:color-mix(in srgb, #4f9d76 22%, transparent);color:color-mix(in srgb, #4f9d76 90%, var(--app-text-primary))">받음</span>' : '') +
+          '</label>';
       }).join('') +
       '</div>' +
-      '<div style="display:flex;gap:8px;margin-top:8px">' +
+      '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">' +
       '<button class="wtm-btn wtm-btn-primary" data-action="manual_download_selected">선택 회차 다운로드</button>' +
       '<button class="wtm-btn wtm-btn-secondary" data-action="manual_download_all">전체 다운로드(무료만)</button>' +
       '</div>' +
