@@ -226,9 +226,10 @@ def run_download_cycle(cfg, log=print):
                 break
 
             if ok:
-                consecutive_fail = 0
-                last_ok_no = ep["no"]
-                if not skipped:
+                if skipped:
+                    consecutive_fail = 0
+                    last_ok_no = ep["no"]
+                else:
                     downloaded_count += 1
                     ss.append_history({
                         "type": "download", "source": "auto", "title_id": tid,
@@ -241,8 +242,26 @@ def run_download_cycle(cfg, log=print):
                     c_ok, c_path, c_msg = downloader.compress_episode(
                         download_root, t.get("title", tid), tid, ep["no"],
                         folder_zero_fill=folder_zero_fill, log=log)
-                    if not c_ok:
-                        log("titleId=%s %s화 압축 실패: %s" % (tid, ep["no"], c_msg))
+                    if c_ok:
+                        consecutive_fail = 0
+                        last_ok_no = ep["no"]
+                    else:
+                        # 버그 수정: 예전에는 압축이 실패해도 last_ok_no를 이미
+                        # 위에서 무조건 이 회차 번호로 넘겨버려서, 실제로는 zip이
+                        # 없는데도 "완료"로 취급돼 다음 확인 때부터 이 회차가
+                        # 영구히 재시도 대상에서 빠지는 문제가 있었다(사용자가
+                        # "다시 확인" 버튼을 눌러야만 알아채고 복구 가능했음).
+                        # 이제는 압축 실패를 다운로드 실패와 동일하게 취급해서
+                        # last_ok_no를 전진시키지 않고, 다음 사이클에 이 회차부터
+                        # 다시 시도되도록 남겨둔다.
+                        log("titleId=%s %s화 압축 실패: %s (재시도 대상으로 남김)" % (tid, ep["no"], c_msg))
+                        consecutive_fail += 1
+                        failures.append({"title_id": tid, "title": t.get("title", tid),
+                                          "episode_no": ep["no"], "error": "압축 실패: %s" % c_msg})
+                        if consecutive_fail >= _MAX_CONSECUTIVE_FAILURES:
+                            log("titleId=%s 연속 %d회 실패(압축 포함) - 이 작품은 중단하고 다음으로 넘어감" %
+                                (tid, consecutive_fail))
+                            break
             else:
                 consecutive_fail += 1
                 failures.append({"title_id": tid, "title": t.get("title", tid),

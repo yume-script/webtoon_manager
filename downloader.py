@@ -146,6 +146,13 @@ def download_episode(session, download_root, title, title_id, episode_no,
 
         if ok_count == 0:
             shutil.rmtree(target_dir, ignore_errors=True)
+            if os.path.isdir(target_dir) and log:
+                # ignore_errors=True라 예외는 안 나지만, 원격/네트워크 마운트에서는
+                # 삭제가 조용히 실패(또는 지연)할 수 있다. 그대로 두면 다음번에
+                # "이전에 중단된 다운로드로 보임" 이어받기 경로로 자연스럽게
+                # 재시도되긴 하지만, 원인 파악을 위해 최소한 로그는 남긴다.
+                log("titleId=%s no=%s: 실패한 다운로드 폴더 정리가 안 됨(원격 마운트 지연 등으로 "
+                    "의심됨) - %s" % (title_id, episode_no, target_dir))
             return False, False, 0, "이미지 0장 저장됨(전체 실패)"
 
         if expected_count > 0 and ok_count < expected_count:

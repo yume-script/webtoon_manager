@@ -669,9 +669,10 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                     discord_notify.notify_cookie_expired(cfg)
                     break
                 if ok:
-                    consecutive_fail = 0
-                    last_ok_no = ep["no"]
-                    if not skipped:
+                    if skipped:
+                        consecutive_fail = 0
+                        last_ok_no = ep["no"]
+                    else:
                         ok_count += 1
                         ss.append_history({"type": "download", "source": "auto",
                                             "title_id": title_id,
@@ -683,8 +684,20 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                             title_name, title_id, ep["no"],
                             folder_zero_fill=int(cfg.get("FOLDER_ZERO_FILL", 4)),
                             log=ss.append_log)
-                        if not c_ok:
-                            ss.append_log("%s %s화 압축 실패: %s" % (title_name, ep["no"], c_msg))
+                        if c_ok:
+                            consecutive_fail = 0
+                            last_ok_no = ep["no"]
+                        else:
+                            # pipeline.run_download_cycle과 동일한 이유로 수정:
+                            # 압축 실패를 "완료"로 잘못 취급해 last_ok_no를
+                            # 전진시키면, 실제로는 zip이 없는데도 다음 확인부터
+                            # 이 회차가 영구히 재시도 대상에서 빠진다.
+                            ss.append_log("%s %s화 압축 실패: %s (재시도 대상으로 남김)" % (title_name, ep["no"], c_msg))
+                            consecutive_fail += 1
+                            if consecutive_fail >= pipeline._MAX_CONSECUTIVE_FAILURES:
+                                ss.append_log("titleId=%s 연속 %d회 실패(압축 포함) - 중단" %
+                                               (title_id, consecutive_fail))
+                                break
                 else:
                     consecutive_fail += 1
                     ss.append_history({"type": "download_fail", "source": "auto",
