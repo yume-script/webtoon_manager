@@ -491,6 +491,12 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         title_id = payload.get("titleId")
         title = payload.get("title") or title_id
         episode_nos = payload.get("episodeNos") or []
+        # force=True면 이미 zip이 있어도 지우고 처음부터 다시 받는다.
+        # "선택 회차 다운로드"(체크박스로 특정 회차를 콕 찍어 요청)는 파일이
+        # 잘못됐다고 판단해서 누르는 명시적 재다운로드 요청으로 보고 기본
+        # force=True. "전체 다운로드(무료만)"는 밀린 걸 채우는 용도라 이미
+        # 받은 건 그대로 스킵해야 하므로 프런트에서 force=False를 보낸다.
+        force = bool(payload.get("force", True))
         if not title_id or not episode_nos:
             return False, "titleId/episodeNos 필요"
 
@@ -536,7 +542,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                         max_concurrent=int(cfg.get("MAX_CONCURRENT_DOWNLOADS", 5)),
                         delay_seconds=float(cfg.get("DELAY_SECONDS", 1.0)),
                         timeout=int(cfg.get("REQUEST_TIMEOUT_SECONDS", 10)),
-                        log=ss.append_log)
+                        log=ss.append_log, force=force)
                     if ok:
                         consecutive_fail = 0
                         ok_count += 1 if not skipped else 0

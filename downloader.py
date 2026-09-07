@@ -53,7 +53,8 @@ def find_existing_episode_archive(download_root, title, title_id, episode_no, fo
 
 def download_episode(session, download_root, title, title_id, episode_no,
                       image_zero_fill=4, folder_zero_fill=4,
-                      max_concurrent=5, delay_seconds=1.0, timeout=10, log=None):
+                      max_concurrent=5, delay_seconds=1.0, timeout=10, log=None,
+                      force=False):
     """
     1단계: 이미지만 내려받는다(압축은 하지 않음 - compress_episode()가 별도
     단계로 처리). 이미 압축까지 끝난 회차는 네트워크 요청 없이 즉시 스킵한다.
@@ -62,17 +63,41 @@ def download_episode(session, download_root, title, title_id, episode_no,
     폴더라면 빠진 이미지만 이어받는다(resume). 이어받은 뒤에도 장수가
     모자라면 ok=False를 반환해 호출 측이 compress_episode()를 부르지 않도록
     한다(불완전 압축 방지).
+
+    force=True면 이미 완성된 압축파일이 있어도 무시하고 지운 뒤 처음부터
+    다시 받는다("선택 회차 다운로드"에서 사용자가 파일이 잘못됐다고 판단해
+    명시적으로 재다운로드를 요청한 경우용). force=False(기본값, 자동
+    다운로드 경로들이 사용)에서도, 기존 압축파일 자체가 손상돼 열리지 않으면
+    "이미 완료"로 잘못 취급하지 않고 자동으로 재다운로드한다.
     반환: (ok: bool, skipped: bool, image_count: int, error: str|None)
     """
     existing_archive = find_existing_episode_archive(
         download_root, title, title_id, episode_no, folder_zero_fill)
     if existing_archive and os.path.getsize(existing_archive) > 0:
-        try:
-            with zipfile.ZipFile(existing_archive) as zf:
-                cnt = len(zf.namelist())
-        except Exception:  # noqa: BLE001
-            cnt = 0
-        return True, True, cnt, None
+        if force:
+            if log:
+                log("titleId=%s no=%s: 강제 재다운로드 요청 - 기존 압축파일 삭제 후 다시 받음" %
+                    (title_id, episode_no))
+            try:
+                os.remove(existing_archive)
+            except OSError as e:
+                return False, False, 0, "기존 파일 삭제 실패: %s" % e
+        else:
+            try:
+                with zipfile.ZipFile(existing_archive) as zf:
+                    cnt = len(zf.namelist())
+                return True, True, cnt, None
+            except Exception as e:  # noqa: BLE001
+                # 압축파일 자체가 손상돼 열리지 않음 - 예전에는 이런 경우도
+                # "이미 완료"로 잘못 취급해서 영원히 재다운로드가 안 됐다.
+                # force 여부와 무관하게 손상된 파일은 항상 지우고 다시 받는다.
+                if log:
+                    log("titleId=%s no=%s: 기존 압축파일이 손상된 것으로 보여 재다운로드함 - %s" %
+                        (title_id, episode_no, e))
+                try:
+                    os.remove(existing_archive)
+                except OSError:
+                    pass
 
     target_dir = episode_dir(download_root, title, title_id, episode_no, folder_zero_fill)
 

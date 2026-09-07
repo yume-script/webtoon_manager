@@ -410,9 +410,22 @@
       }
       if (action === 'manual_download_selected') {
         if (!lookupResult) return;
-        var checked = els('[data-ep-checkbox]:checked').map(function (c) { return parseInt(c.getAttribute('data-ep-checkbox'), 10); });
+        var checkedBoxes = els('[data-ep-checkbox]:checked');
+        var checked = checkedBoxes.map(function (c) { return parseInt(c.getAttribute('data-ep-checkbox'), 10); });
         if (!checked.length) { alert('회차를 선택하세요'); return; }
-        var r4 = await callAction('manual_download', { titleId: lookupResult.titleId, title: lookupResult.title, episodeNos: checked });
+        var epByNo = {};
+        (lookupResult.episodes || []).forEach(function (e) { epByNo[e.no] = e; });
+        var alreadyDoneChecked = checked.filter(function (no) { return epByNo[no] && epByNo[no].downloaded; }).length;
+        // 여기서 선택한 회차는 명시적 재다운로드 요청으로 보고 force: true를
+        // 보낸다 - 이미 zip이 있어도 지우고 처음부터 다시 받는다(파일이
+        // 잘못됐을 때 쓰는 용도).
+        if (alreadyDoneChecked > 0) {
+          if (!confirm('선택한 ' + checked.length + '개 중 이미 받은 ' + alreadyDoneChecked +
+            '개도 포함되어 있습니다. 그 회차들은 기존 파일을 지우고 처음부터 다시 받습니다 - 계속할까요?')) {
+            return;
+          }
+        }
+        var r4 = await callAction('manual_download', { titleId: lookupResult.titleId, title: lookupResult.title, episodeNos: checked, force: true });
         alert(r4.message || (r4.success ? '시작됨' : '실패'));
         await refresh();
         return;
@@ -429,7 +442,10 @@
             (freeEps.length - alreadyDone) + '개만 실제로 받습니다)';
         }
         if (!confirm(confirmMsg)) return;
-        var r4b = await callAction('manual_download', { titleId: lookupResult.titleId, title: lookupResult.title, episodeNos: freeEps });
+        // "전체 다운로드"는 밀린 걸 채우는 용도라 이미 받은 건 그대로 둔다
+        // (force: false) - 잘못된 파일 재다운로드는 위의 "선택 회차
+        // 다운로드"로 콕 찍어서 하도록 분리했다.
+        var r4b = await callAction('manual_download', { titleId: lookupResult.titleId, title: lookupResult.title, episodeNos: freeEps, force: false });
         alert(r4b.message || (r4b.success ? '시작됨' : '실패'));
         await refresh();
         return;
@@ -500,7 +516,10 @@
         var isPaid = !!e.charge;
         var isDone = !!e.downloaded;
         return '<label style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12px;' + (isPaid ? 'opacity:.5' : '') + '">' +
-          '<input type="checkbox" data-ep-checkbox="' + e.no + '"' + (isPaid ? ' disabled title="유료 회차는 선택할 수 없습니다"' : '') + '> ' +
+          '<input type="checkbox" data-ep-checkbox="' + e.no + '"' +
+          (isPaid ? ' disabled title="유료 회차는 선택할 수 없습니다"' :
+            (isDone ? ' title="이미 받은 회차입니다 - 체크 후 \'선택 회차 다운로드\'를 누르면 기존 파일을 지우고 강제로 다시 받습니다(파일이 잘못됐을 때 사용)"' : '')) +
+          '> ' +
           '<span' + (isDone ? ' style="opacity:.6"' : '') + '>' + e.no + '화 - ' + escapeHtml(e.subtitle || '') + '</span>' +
           (isPaid ? ' <b>(유료 - 선택불가)</b>' : '') +
           (isDone ? ' <span class="wtm-badge" style="background:color-mix(in srgb, #4f9d76 22%, transparent);color:color-mix(in srgb, #4f9d76 90%, var(--app-text-primary))">받음</span>' : '') +
@@ -508,8 +527,8 @@
       }).join('') +
       '</div>' +
       '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">' +
-      '<button class="wtm-btn wtm-btn-primary" data-action="manual_download_selected">선택 회차 다운로드</button>' +
-      '<button class="wtm-btn wtm-btn-secondary" data-action="manual_download_all">전체 다운로드(무료만)</button>' +
+      '<button class="wtm-btn wtm-btn-primary" data-action="manual_download_selected" title="이미 받은 회차를 체크하면 기존 파일을 지우고 강제로 다시 받습니다">선택 회차 다운로드</button>' +
+      '<button class="wtm-btn wtm-btn-secondary" data-action="manual_download_all" title="아직 안 받은 무료 회차만 채워 받습니다(이미 받은 건 건너뜀)">전체 다운로드(무료만)</button>' +
       '</div>' +
       '</div>';
   }
