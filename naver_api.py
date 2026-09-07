@@ -329,16 +329,42 @@ def fetch_episode_list(session, title_id, max_pages=200):
     return episodes
 
 
-def _extract_comic_images(html):
+def _extract_comic_images(html, title_id=None, episode_no=None, log=None):
     """페이지 안의 <img src="...">를 전부 뽑은 뒤, 실제 만화컷 CDN 경로
     (image-comic.pstatic.net)인 것만 남기고 연령고지 배너(/static/agerate/)는
     제외한다. class="wt_viewer"가 <img> 자체에 붙는 템플릿/<div>에만 붙는
-    템플릿 둘 다 이 방식이면 구분 없이 처리된다."""
+    템플릿 둘 다 이 방식이면 구분 없이 처리된다.
+
+    버그 수정: 실제 회차 상세페이지에는 본문 컷 이미지 말고도 "추천 웹툰"/
+    "이 작품의 다른 회차" 미리보기 같은 섹션이 함께 실려 있고, 그 썸네일도
+    동일한 image-comic.pstatic.net 도메인에서 서빙된다(실사용 확인:
+    image-comic.pstatic.net/webtoon/725586/190/2022...IMAG01_1.jpg 형태가
+    실제 컷 이미지, image-comic.pstatic.net/webtoon/<titleId>/thumbnail/...
+    형태가 추천/미리보기 썸네일). 도메인만 보고 걸러내면 이 썸네일들까지
+    회차 이미지로 오인해서 같이 다운로드되는 문제가 있었다.
+    title_id/episode_no가 주어지면 URL 경로가 정확히
+    "/webtoon/<title_id>/<episode_no>/"인 것만 남긴다 - 다른 회차/다른
+    작품/썸네일 전용 경로("/thumbnail/")는 이 패턴에 걸리지 않는다.
+    이 경로 패턴에 하나도 안 걸리면(네이버가 URL 구조를 바꿨을 가능성)
+    아예 못 찾는 것보다는 나으니 도메인 기준 결과로 폴백하되, log가 있으면
+    경고를 남겨 이상 여부를 나중에 확인할 수 있게 한다."""
     candidates = _ANY_IMG_SRC_RE.findall(html)
-    return [u for u in candidates if _COMIC_CDN_RE.search(u) and not _AGE_BANNER_RE.search(u)]
+    imgs = [u for u in candidates if _COMIC_CDN_RE.search(u) and not _AGE_BANNER_RE.search(u)]
+    if title_id is None or episode_no is None:
+        return imgs
+    scoped_re = re.compile(r'/webtoon/%s/%s/' % (re.escape(str(title_id)), re.escape(str(episode_no))))
+    scoped = [u for u in imgs if scoped_re.search(u)]
+    if scoped:
+        return scoped
+    if imgs and log:
+        log("titleId=%s no=%s: 컷 이미지 URL 경로 패턴(/webtoon/%s/%s/)이 하나도 안 맞아서 "
+            "도메인 기준으로 폴백함 - 다른 회차/추천 이미지가 섞여 들어갈 수 있음. "
+            "네이버가 URL 구조를 바꿨을 가능성이 있으니 실제 다운로드된 이미지를 확인해보세요." %
+            (title_id, episode_no, title_id, episode_no))
+    return imgs
 
 
-def fetch_episode_images(session, title_id, episode_no):
+def fetch_episode_images(session, title_id, episode_no, log=None):
     """회차 상세 페이지를 긁어서 이미지 URL 목록을 반환. 로그인/성인 인증이 필요한
     작품인데 쿠키가 없거나 만료되었으면 NaverAuthExpired를 던진다."""
     url = "%s?titleId=%s&no=%s" % (DETAIL_URL, title_id, episode_no)
@@ -358,12 +384,12 @@ def fetch_episode_images(session, title_id, episode_no):
 
     if "성인인증" in html or "adult_ok" in html or "만 19세" in html:
         # 이미지가 하나도 안 잡히면 인증 필요로 간주
-        if not _extract_comic_images(html):
+        if not _extract_comic_images(html, title_id, episode_no, log=log):
             raise NaverAuthExpired(
                 "titleId=%s no=%s: 성인 인증이 필요하거나 쿠키가 만료된 것으로 보임" %
                 (title_id, episode_no))
 
-    imgs = _extract_comic_images(html)
+    imgs = _extract_comic_images(html, title_id, episode_no, log=log)
     if not imgs:
         if any(marker in html for marker in _PAID_MARKERS):
             raise NaverPaidEpisode(

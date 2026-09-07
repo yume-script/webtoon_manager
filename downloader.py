@@ -90,7 +90,7 @@ def download_episode(session, download_root, title, title_id, episode_no,
         # 단계에서 이 네트워크 요청 없이 걸러지므로 실제 영향 범위는 "다운로드는
         # 됐는데 아직 압축 전인" 좁은 구간뿐이다.
         try:
-            images = naver_api.fetch_episode_images(session, title_id, episode_no)
+            images = naver_api.fetch_episode_images(session, title_id, episode_no, log=log)
         except naver_api.NaverAuthExpired:
             raise
         except naver_api.NaverPaidEpisode:
