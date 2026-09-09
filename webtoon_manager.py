@@ -18,6 +18,7 @@ GitHub murianwind/webtoon-manager(네이버웹툰 무료 회차 자동 구독/�
 """
 import json
 import os
+import re
 import threading
 import time
 
@@ -36,6 +37,23 @@ from . import naver_api
 from . import downloader
 
 PLUGIN_ID = "webtoon_manager"
+
+# 시리즈명 비교용 정규화: 괄호류 안 내용(예: "(완결)", "(19)")과 공백을 제거하고
+# 소문자로 통일한다. 네이버 목록의 표기와 BookOasis 라이브러리에 등록된 폴더명
+# 표기가 완전히 똑같지 않을 수 있어(공백, 완결 표시 등) 정확한 문자열 일치
+# 대신 이 정도로 느슨하게 비교한다 - "혹시 이미 있을 수도 있다"는 참고용 알림
+# 기능이라 약간의 오탐/누락은 감수한다.
+_COMPARE_BRACKET_RE = re.compile(r'[\(\[（【].*?[\)\]）】]')
+_COMPARE_WS_RE = re.compile(r'\s+')
+
+
+def _normalize_series_name(name):
+    if not name:
+        return ""
+    n = _COMPARE_BRACKET_RE.sub('', str(name))
+    n = _COMPARE_WS_RE.sub('', n)
+    return n.strip().lower()
+
 
 # 업데이트 가능 여부 배지용 상수. update_manifest의 raw_base_url/version_file과
 # 같은 저장소를 가리키되, 여기서는 "지금 카테고리탭 헤더에 배지를 띄울지"만
@@ -85,6 +103,13 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         {"key": "AUTO_SUBSCRIBE_NEW_TITLES",
          "label": "신간 자동 구독(요일별 목록에 처음 나타나는 작품을 관심 작가와 무관하게 전부 구독)",
          "type": "checkbox", "default": False},
+        {"key": "COMPARE_LIBRARY_ID",
+         "label": "중복 확인 라이브러리 ID(카테고리탭의 '설정' 탭에서 드롭다운으로 선택하는 걸 권장 - "
+                  "여기 직접 입력해도 됨, 비우면 중복 확인 기능 꺼짐)",
+         "type": "text", "default": ""},
+        {"key": "COMPARE_LIBRARY_NAME",
+         "label": "중복 확인 라이브러리 이름(표시용, ID와 함께 자동으로 채워짐)",
+         "type": "text", "default": ""},
         {"key": "MAX_NEW_EPISODES_PER_TITLE", "label": "1회 실행당 작품별 최대 신규 다운로드 회차 수(0=무제한)",
          "type": "number", "default": 10},
         {"key": "BATCH_REST_MINUTES", "label": "상한 도달 시 휴식(분)", "type": "number", "default": 5},
@@ -261,10 +286,15 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         update_status = self._check_update_available()
 
         titles = ss.load_titles()
+        compare_set = self._get_compare_library_series_set(db_type, cfg)
         items_list = []
         for tid, t in titles.items():
             item = dict(t)
             item["titleId"] = tid
+            if compare_set is None:
+                item["in_library"] = None
+            else:
+                item["in_library"] = _normalize_series_name(item.get("title", "")) in compare_set
             items_list.append(item)
         items_list.sort(key=lambda x: x.get("last_seen_at", 0), reverse=True)
 
@@ -285,6 +315,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 "INTERVAL_MINUTES": cfg.get("INTERVAL_MINUTES"),
                 "FINISHED_SCAN_HOUR": cfg.get("FINISHED_SCAN_HOUR"),
                 "AUTO_SUBSCRIBE_NEW_TITLES": bool(cfg.get("AUTO_SUBSCRIBE_NEW_TITLES")),
+                "COMPARE_LIBRARY_ID": cfg.get("COMPARE_LIBRARY_ID", ""),
+                "COMPARE_LIBRARY_NAME": cfg.get("COMPARE_LIBRARY_NAME", ""),
                 "MAX_NEW_EPISODES_PER_TITLE": cfg.get("MAX_NEW_EPISODES_PER_TITLE"),
                 "BATCH_REST_MINUTES": cfg.get("BATCH_REST_MINUTES"),
                 "MAX_CONCURRENT_DOWNLOADS": cfg.get("MAX_CONCURRENT_DOWNLOADS"),
@@ -360,6 +392,10 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 return self._act_download_title(db_type, payload.get("titleId"))
             if action == "test_discord":
                 return self._act_test_discord(db_type)
+            if action == "list_libraries":
+                return self._act_list_libraries(db_type)
+            if action == "set_compare_library":
+                return self._act_set_compare_library(db_type, payload)
             return False, "알 수 없는 action: %s" % action
         except Exception as e:  # noqa: BLE001
             return False, "오류: %s" % e
@@ -733,6 +769,75 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         ok, msg = discord_notify.notify(cfg, "🔔 웹툰 다운로더 플러그인 테스트",
                                          "이 메시지가 보이면 디스코드 알림 설정이 정상입니다.")
         return ok, msg
+
+    # ------------------------------------------------------------------
+    # 특정 라이브러리와 비교해서 "이미 라이브러리에 있는 웹툰"인지 알려주는 기능
+    # ------------------------------------------------------------------
+    def _act_list_libraries(self, db_type):
+        """설정 탭의 "중복 확인 라이브러리" 드롭다운을 채우기 위해, 이
+        db_type 스코프(general/adult)의 라이브러리 목록을 DB에서 직접
+        조회한다. 코어의 /api/media/libraries HTTP 엔드포인트를 다시
+        호출하는 대신 게이트웨이로 바로 조회하는 게 더 간단하다(같은
+        프로세스 안이라 별도 HTTP 왕복이 필요 없음)."""
+        try:
+            gw = self.get_db_gateway(db_type)
+            rows = gw.fetch_all("SELECT id, name FROM libraries ORDER BY name")
+            libs = [{"id": r["id"], "name": r["name"]} for r in rows]
+            return True, json.dumps({"libraries": libs}, ensure_ascii=False)
+        except Exception as e:  # noqa: BLE001
+            return False, "라이브러리 목록 조회 실패: %s" % e
+
+    def _act_set_compare_library(self, db_type, payload):
+        """설정 탭에서 고른 라이브러리를 "중복 확인 대상"으로 저장한다.
+        library_id가 빈 값이면 비교 기능을 끈다."""
+        library_id = payload.get("libraryId") or ""
+        library_name = payload.get("libraryName") or ""
+        ok = self._save_cfg_patch(db_type, {
+            "COMPARE_LIBRARY_ID": library_id,
+            "COMPARE_LIBRARY_NAME": library_name,
+        })
+        if not ok:
+            return False, "저장 실패"
+        if library_id:
+            return True, "'%s' 라이브러리와 중복 확인을 시작합니다" % library_name
+        return True, "중복 확인 기능을 껐습니다"
+
+    def _save_cfg_patch(self, db_type, patch):
+        cfg = self.get_plugin_config(db_type, default={}) or {}
+        cfg.update(patch)
+        try:
+            self.set_plugin_config(db_type, cfg)
+            return True
+        except AttributeError:
+            # 게이트웨이에 set_plugin_config가 없는 코어 버전 - db_gateway로 직접 저장 시도
+            gw = self.get_db_gateway(db_type)
+            gw.set_setting("PLUGIN_CONFIG_%s" % self.id, json.dumps(cfg, ensure_ascii=False))
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _get_compare_library_series_set(self, db_type, cfg):
+        """설정된 비교 라이브러리에 이미 등록된 시리즈명을 정규화한 집합으로
+        반환한다. 비교 기능이 꺼져 있거나(라이브러리 미지정) 조회에 실패하면
+        None을 반환한다(그리고 카드에는 뱃지를 아예 안 띄운다 - 잘못 켜진
+        걸로 오인해 "라이브러리에 없음"이라고 확정하면 안 되므로 True/False가
+        아닌 '모름' 상태를 구분해서 표현한다)."""
+        library_id = cfg.get("COMPARE_LIBRARY_ID")
+        if not library_id:
+            return None
+        try:
+            gw = self.get_db_gateway(db_type)
+            # 게이트웨이는 SQLite/MariaDB 어느 엔진이든 '?' 플레이스홀더로
+            # 통일해서 받는 것으로 가정한다(가이드의 다른 예시 쿼리들과 동일한
+            # 관례). 혹시 이 코어 버전이 그렇지 않다면 아래 except에서 조용히
+            # None으로 폴백하므로 플러그인 전체가 죽지는 않는다.
+            rows = gw.fetch_all(
+                "SELECT DISTINCT series_name FROM books WHERE library_id = ? "
+                "AND COALESCE(is_deleted, 0) = 0",
+                (library_id,))
+            return set(_normalize_series_name(r["series_name"]) for r in rows if r.get("series_name"))
+        except Exception:  # noqa: BLE001
+            return None
 
 
 def action_slug(label):

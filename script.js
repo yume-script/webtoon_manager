@@ -88,6 +88,7 @@
   var lookupResult = null;
   var pollTimer = null;
   var pollFastUntil = 0;
+  var librariesLoaded = false;
 
   function statusOf(t) {
     if (t.excluded) return 'excluded';
@@ -144,6 +145,12 @@
     if (t.status === '완결') out += '<span class="wtm-badge finished">완결</span>';
     if (t.rest) out += '<span class="wtm-badge rest">휴재</span>';
     if (t.up_flag) out += '<span class="wtm-badge up">UP</span>';
+    if (t.in_library === true) {
+      out += '<span class="wtm-badge" style="background:color-mix(in srgb, #c58a3a 22%, transparent);' +
+        'color:color-mix(in srgb, #c58a3a 90%, var(--app-text-primary))" ' +
+        'title="설정에서 지정한 라이브러리에 같은 이름의 시리즈가 이미 있습니다(제목 비교라 정확하지 않을 수 있음)">' +
+        '📚 라이브러리에 있음</span>';
+    }
     return out;
   }
 
@@ -256,6 +263,41 @@
 
     var logBox = el('[data-el="log-tail"]');
     if (logBox) logBox.textContent = (state.log_tail || []).join('\n');
+
+    syncCompareLibrarySelect();
+  }
+
+  async function loadLibraryOptionsIfNeeded() {
+    var sel = el('[data-el="compare-library-select"]');
+    if (!sel || librariesLoaded) { syncCompareLibrarySelect(); return; }
+    var r = await callAction('list_libraries', {});
+    if (r.success) {
+      var data = parseMaybeJson(r.message);
+      var libs = (data && data.libraries) || [];
+      sel.innerHTML = '<option value="">중복 확인 안 함</option>' +
+        libs.map(function (l) {
+          return '<option value="' + l.id + '">' + escapeHtml(l.name) + '</option>';
+        }).join('');
+      librariesLoaded = true;
+    }
+    syncCompareLibrarySelect();
+  }
+
+  function syncCompareLibrarySelect() {
+    var sel = el('[data-el="compare-library-select"]');
+    if (!sel) return;
+    var cfg = state.config_public || {};
+    var current = cfg.COMPARE_LIBRARY_ID || '';
+    // 옵션 목록이 아직 안 불러와졌으면(첫 렌더) 값만 기억해뒀다가, 목록이
+    // 로드된 뒤 다시 이 함수가 불려서 실제로 선택된다.
+    if (sel.value !== current && el('option[value="' + current + '"]')) {
+      sel.value = current;
+    }
+    var statusEl = el('[data-el="compare-library-status"]');
+    if (statusEl && !statusEl.textContent) {
+      statusEl.textContent = cfg.COMPARE_LIBRARY_ID ?
+        ('현재: "' + (cfg.COMPARE_LIBRARY_NAME || cfg.COMPARE_LIBRARY_ID) + '"와 비교 중') : '';
+    }
   }
 
   function renderStatusBar() {
@@ -353,6 +395,8 @@
     var toolbar = el('[data-panel="all,subscribed,unsubscribed,excluded"]');
     if (toolbar) toolbar.style.display = isListTab ? '' : 'none';
 
+    if (tab === 'settings') loadLibraryOptionsIfNeeded();
+
     renderGrid();
   }
 
@@ -383,6 +427,20 @@
         headerAction.disabled = false;
         if (!r.success) alert(r.message || '실패');
         await refresh();
+        return;
+      }
+      if (action === 'save_compare_library') {
+        var sel = el('[data-el="compare-library-select"]');
+        if (!sel) return;
+        var opt = sel.options[sel.selectedIndex];
+        headerAction.disabled = true;
+        var r6 = await callAction('set_compare_library', {
+          libraryId: sel.value, libraryName: opt ? opt.textContent : '',
+        });
+        headerAction.disabled = false;
+        var statusEl = el('[data-el="compare-library-status"]');
+        if (statusEl) statusEl.textContent = r6.message || (r6.success ? '저장됨' : '실패');
+        if (r6.success) await refresh();
         return;
       }
       if (action === 'add_author' || action === 'add_tag') {
