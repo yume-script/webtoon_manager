@@ -246,6 +246,7 @@
       ['쿠키 등록', cfg.has_cookie ? '등록됨' : '(미설정)'],
       ['다운로드 경로', cfg.DOWNLOAD_ROOT || '(기본값)'],
       ['자동 실행', cfg.ENABLE_SCHEDULER ? ('사용 / ' + cfg.INTERVAL_MINUTES + '분 주기') : '사용 안 함'],
+      ['신간 자동 구독', cfg.AUTO_SUBSCRIBE_NEW_TITLES ? '사용' : '사용 안 함(관심 작가만 자동구독)'],
       ['작품당 최대 신규 다운로드', cfg.MAX_NEW_EPISODES_PER_TITLE],
       ['디스코드 알림', cfg.has_discord ? '설정됨' : '(미설정)']
     ];

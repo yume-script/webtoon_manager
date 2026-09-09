@@ -26,16 +26,19 @@ def build_session_from_cfg(cfg):
     )
 
 
-def _autosubscribe_patch(item, old, author_names):
-    """신규 발견 항목이면 작가 자동구독 여부를 판단하고, 기존에 사용자가
-    직접 구독/제외/구독해제한 적 있는 항목이면 그 선택을 그대로 유지한다."""
+def _autosubscribe_patch(item, old, author_names, auto_new=False):
+    """신규 발견 항목이면 작가 자동구독 여부(+ '신간 자동 구독' 설정)를
+    판단하고, 기존에 사용자가 직접 구독/제외/구독해제한 적 있는 항목이면
+    그 선택을 그대로 유지한다.
+    auto_new=True면 작가 매칭 여부와 무관하게 신규 발견 항목을 전부
+    구독으로 올린다("설정 > 신간 자동 구독" 토글)."""
     p = dict(item)
     if "subscribed" in old or "excluded" in old:
         p["subscribed"] = old.get("subscribed", False)
         p["excluded"] = old.get("excluded", False)
         p["unsubscribed"] = old.get("unsubscribed", False)
     else:
-        auto = False
+        auto = bool(auto_new)
         if item.get("author") and any(a in item.get("author", "") for a in author_names):
             auto = True
         p["subscribed"] = auto
@@ -76,7 +79,20 @@ def run_scan_weekday(cfg, log=print):
     old_titles = ss.load_titles()
     at = ss.load_authors_tags()
     author_names = set(a.strip() for a in at.get("authors", []) if a.strip())
-    patch = {tid: _autosubscribe_patch(item, old_titles.get(tid, {}), author_names)
+
+    # "신간 자동 구독" 설정이 켜져 있어도, 이번이 이 카테고리탭의 첫 스캔이라
+    # old_titles가 완전히 비어있으면(설치 직후) 적용하지 않는다. 그대로
+    # 적용하면 현재 연재 중인 모든 작품이 전부 "처음 보는 항목"이라 한꺼번에
+    # 구독되어 버려서, 다운로드 큐가 폭주하고 원치 않는 작품까지 대량으로
+    # 구독되는 사고가 날 수 있다. 다음 스캔부터는 정상 적용된다.
+    auto_new = bool(cfg.get("AUTO_SUBSCRIBE_NEW_TITLES"))
+    if auto_new and not old_titles:
+        auto_new = False
+        log("신간 자동 구독이 켜져 있지만 첫 스캔이라(구독 목록이 비어있음) 이번 한 번은 "
+            "적용하지 않습니다 - 현재 연재 중인 모든 작품이 한꺼번에 구독되는 걸 막기 위함. "
+            "다음 스캔부터 정상 적용됩니다.")
+
+    patch = {tid: _autosubscribe_patch(item, old_titles.get(tid, {}), author_names, auto_new=auto_new)
              for tid, item in merged.items()}
 
     ss.upsert_title(patch)
