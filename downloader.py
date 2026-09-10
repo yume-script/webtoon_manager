@@ -5,6 +5,7 @@ import shutil
 import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from xml.sax.saxutils import escape as _xml_escape
 
 from . import naver_api
 
@@ -15,6 +16,46 @@ _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 def safe_name(name):
     name = _SAFE_RE.sub("_", str(name)).strip()
     return name or "untitled"
+
+
+def build_comicinfo_xml(series=None, number=None, sub_title=None, summary=None,
+                         writer=None, genre=None, web=None, age_rating=None,
+                         page_count=None, language_iso="ko", notes=None):
+    """Komga/Kavita/ComicRack 등이 표준으로 인식하는 ComicInfo.xml 내용을
+    만든다. 값이 없는 필드는 아예 태그를 안 넣는다(빈 태그보다 필드 자체가
+    없는 쪽이 리더들의 "정보 없음" 처리와 더 잘 맞는다). 텍스트는 전부
+    xml.sax.saxutils.escape로 이스케이프해서, 제목/작가명에 &, <, > 같은
+    문자가 있어도 깨진 XML이 나오지 않게 한다."""
+    def esc(v):
+        return _xml_escape(str(v)) if v not in (None, "") else ""
+
+    lines = ['<?xml version="1.0" encoding="utf-8"?>',
+             '<ComicInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+             'xmlns:xsd="http://www.w3.org/2001/XMLSchema">']
+    if series:
+        lines.append("  <Series>%s</Series>" % esc(series))
+    if number is not None:
+        lines.append("  <Number>%s</Number>" % esc(number))
+    if sub_title:
+        lines.append("  <Title>%s</Title>" % esc(sub_title))
+    if summary:
+        lines.append("  <Summary>%s</Summary>" % esc(summary))
+    if writer:
+        lines.append("  <Writer>%s</Writer>" % esc(writer))
+    if genre:
+        lines.append("  <Genre>%s</Genre>" % esc(genre))
+    if web:
+        lines.append("  <Web>%s</Web>" % esc(web))
+    if age_rating:
+        lines.append("  <AgeRating>%s</AgeRating>" % esc(age_rating))
+    if page_count is not None:
+        lines.append("  <PageCount>%s</PageCount>" % esc(page_count))
+    if language_iso:
+        lines.append("  <LanguageISO>%s</LanguageISO>" % esc(language_iso))
+    if notes:
+        lines.append("  <Notes>%s</Notes>" % esc(notes))
+    lines.append("</ComicInfo>")
+    return "\n".join(lines)
 
 
 def title_dir(download_root, title, title_id):
@@ -199,11 +240,18 @@ def download_episode(session, download_root, title, title_id, episode_no,
 
 
 def compress_episode(download_root, title, title_id, episode_no,
-                      folder_zero_fill=4, log=None):
+                      folder_zero_fill=4, log=None, comicinfo_meta=None):
     """2단계(별도 단계): download_episode()로 완전히 다 받아진 회차 폴더의
     이미지를 '제목 00xx화#장수.zip'으로 압축하고, 원본 낱장 폴더는 삭제한다.
     다운로드 자체와 완전히 분리된 단계라, 다운로드 도중에는 호출하지 않고
     download_episode()가 성공적으로 끝난 뒤에만 호출한다.
+
+    comicinfo_meta가 주어지면(dict: series/sub_title/summary/writer/genre/
+    web/age_rating/notes 키를 선택적으로 포함) Komga/Kavita 등이 인식하는
+    ComicInfo.xml을 같은 zip 안에 함께 넣는다. PageCount는 실제 압축된
+    이미지 장수로 자동 채운다. XML 생성에 실패해도(예: 값 이상) 이미지
+    압축 자체는 그대로 진행한다 - 메타데이터는 부가 정보일 뿐이라 이것
+    때문에 다운로드가 실패로 처리되면 안 된다.
 
     이미 압축된 파일이 있으면 아무 것도 안 하고 그 경로를 반환한다(스킵).
     압축할 낱장 폴더 자체가 없으면(예: 애초에 이미지 다운로드가 실패한 경우)
@@ -234,6 +282,25 @@ def compress_episode(download_root, title, title_id, episode_no,
         with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for fname in files:
                 zf.write(os.path.join(target_dir, fname), arcname=fname)
+            if comicinfo_meta:
+                try:
+                    xml_str = build_comicinfo_xml(
+                        series=comicinfo_meta.get("series") or title,
+                        number=episode_no,
+                        sub_title=comicinfo_meta.get("sub_title"),
+                        summary=comicinfo_meta.get("summary"),
+                        writer=comicinfo_meta.get("writer"),
+                        genre=comicinfo_meta.get("genre"),
+                        web=comicinfo_meta.get("web"),
+                        age_rating=comicinfo_meta.get("age_rating"),
+                        page_count=count,
+                        notes=comicinfo_meta.get("notes"),
+                    )
+                    zf.writestr("ComicInfo.xml", xml_str)
+                except Exception as e:  # noqa: BLE001
+                    if log:
+                        log("titleId=%s no=%s: ComicInfo.xml 생성 실패(이미지 압축은 정상 진행) - %s" %
+                            (title_id, episode_no, e))
         os.replace(tmp_path, archive_path)
         shutil.rmtree(target_dir, ignore_errors=True)
         return True, archive_path, "압축 완료(%d장)" % count

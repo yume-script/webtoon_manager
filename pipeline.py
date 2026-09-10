@@ -142,6 +142,21 @@ def run_scan_finished(cfg, log=print, max_pages=200):
     return {"scanned": len(patch), "finished_events": finished_events}
 
 
+def _comicinfo_meta_for(t, ep, title_id):
+    """titles.json의 작품 레코드(t)와 회차 정보(ep)로 ComicInfo.xml에 넣을
+    메타데이터 dict를 조립한다. 값이 없는 필드는 빈 문자열/None으로 둬서
+    downloader.build_comicinfo_xml()이 알아서 생략하게 한다."""
+    tags = t.get("tags") or []
+    return {
+        "series": t.get("title"),
+        "sub_title": ep.get("subtitle"),
+        "writer": t.get("author") or None,
+        "genre": ", ".join(tags) if tags else None,
+        "web": "https://comic.naver.com/webtoon/detail?titleId=%s&no=%s" % (title_id, ep.get("no")),
+        "age_rating": "Adults Only 18+" if t.get("is_adult") else None,
+    }
+
+
 def _episodes_to_download(session, cfg, title_id, known_last_no):
     episodes = naver_api.fetch_episode_list(session, title_id)
     # 최신 -> 과거 순으로 오므로 known_last_no보다 큰(새 회차)만, 오래된 순으로 반환
@@ -257,7 +272,9 @@ def run_download_cycle(cfg, log=print):
                     # 디스크에 다 쓰인 뒤에 별도로 압축한다.
                     c_ok, c_path, c_msg = downloader.compress_episode(
                         download_root, t.get("title", tid), tid, ep["no"],
-                        folder_zero_fill=folder_zero_fill, log=log)
+                        folder_zero_fill=folder_zero_fill, log=log,
+                        comicinfo_meta=_comicinfo_meta_for(t, ep, tid)
+                        if cfg.get("GENERATE_COMICINFO_XML", True) else None)
                     if c_ok:
                         consecutive_fail = 0
                         last_ok_no = ep["no"]

@@ -78,6 +78,7 @@ DEFAULTS = {
     "REQUEST_TIMEOUT_SECONDS": 10,
     "FOLDER_ZERO_FILL": 4,
     "IMAGE_ZERO_FILL": 4,
+    "GENERATE_COMICINFO_XML": True,
 }
 
 
@@ -110,6 +111,9 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         {"key": "COMPARE_LIBRARY_NAME",
          "label": "중복 확인 라이브러리 이름(표시용, ID와 함께 자동으로 채워짐)",
          "type": "text", "default": ""},
+        {"key": "GENERATE_COMICINFO_XML",
+         "label": "ComicInfo.xml 함께 생성(Komga/Kavita 등에서 인식하는 메타데이터 - 회차 zip 안에 포함됨)",
+         "type": "checkbox", "default": True},
         {"key": "MAX_NEW_EPISODES_PER_TITLE", "label": "1회 실행당 작품별 최대 신규 다운로드 회차 수(0=무제한)",
          "type": "number", "default": 10},
         {"key": "BATCH_REST_MINUTES", "label": "상한 도달 시 휴식(분)", "type": "number", "default": 5},
@@ -317,6 +321,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 "AUTO_SUBSCRIBE_NEW_TITLES": bool(cfg.get("AUTO_SUBSCRIBE_NEW_TITLES")),
                 "COMPARE_LIBRARY_ID": cfg.get("COMPARE_LIBRARY_ID", ""),
                 "COMPARE_LIBRARY_NAME": cfg.get("COMPARE_LIBRARY_NAME", ""),
+                "GENERATE_COMICINFO_XML": bool(cfg.get("GENERATE_COMICINFO_XML", True)),
                 "MAX_NEW_EPISODES_PER_TITLE": cfg.get("MAX_NEW_EPISODES_PER_TITLE"),
                 "BATCH_REST_MINUTES": cfg.get("BATCH_REST_MINUTES"),
                 "MAX_CONCURRENT_DOWNLOADS": cfg.get("MAX_CONCURRENT_DOWNLOADS"),
@@ -541,6 +546,12 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         if not title_id or not episode_nos:
             return False, "titleId/episodeNos 필요"
 
+        # ComicInfo.xml용 메타데이터 - 구독 목록에 있는 작품이면 작가/장르/
+        # 성인여부까지 채울 수 있고, 구독 목록에 없는(수동 조회만 한) 작품이면
+        # 제목 외 필드는 빈 채로 둔다(그래도 XML 자체는 만들어짐). 회차별
+        # 소제목(subtitle)은 이 함수에 안 넘어오므로 <Title> 태그는 생략된다.
+        _t_for_comicinfo = ss.load_titles().get(str(title_id)) or {"title": title}
+
         # 스캔/전체실행(job_state)과는 독립된 락(title_job_state)을 쓴다 —
         # 큰 작업이 도는 중에도 개별 작품 다운로드는 막히지 않게 하기 위함.
         # 개별 작품 다운로드끼리는 여전히 한 번에 하나만 허용(순차 처리).
@@ -599,7 +610,10 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                             cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR,
                             title, title_id, no,
                             folder_zero_fill=int(cfg.get("FOLDER_ZERO_FILL", 4)),
-                            log=ss.append_log)
+                            log=ss.append_log,
+                            comicinfo_meta=pipeline._comicinfo_meta_for(
+                                _t_for_comicinfo, {"no": no, "subtitle": None}, title_id)
+                            if cfg.get("GENERATE_COMICINFO_XML", True) else None)
                         if not c_ok:
                             ss.append_log("%s %s화 압축 실패: %s" % (title, no, c_msg))
                     else:
@@ -730,7 +744,9 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                             cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR,
                             title_name, title_id, ep["no"],
                             folder_zero_fill=int(cfg.get("FOLDER_ZERO_FILL", 4)),
-                            log=ss.append_log)
+                            log=ss.append_log,
+                            comicinfo_meta=pipeline._comicinfo_meta_for(t_info, ep, title_id)
+                            if cfg.get("GENERATE_COMICINFO_XML", True) else None)
                         if c_ok:
                             consecutive_fail = 0
                             last_ok_no = ep["no"]
