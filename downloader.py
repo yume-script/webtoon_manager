@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import json
 import os
 import re
 import shutil
@@ -61,6 +62,46 @@ def build_comicinfo_xml(series=None, number=None, sub_title=None, summary=None,
 def title_dir(download_root, title, title_id):
     """작품(시리즈) 폴더 경로."""
     return os.path.join(download_root, safe_name("%s (%s)" % (title, title_id)))
+
+
+def write_series_json(download_root, title, title_id, meta, log=None):
+    """시리즈 폴더(회차 zip들과 같은 레벨)에 series.json을 써서 BookOasis
+    자체 스캐너가 시리즈 단위 메타데이터(작가/줄거리/장르/표지 등)를 인식하게
+    한다. 각 회차 zip 안의 ComicInfo.xml(Komga/Kavita 같은 외부 리더용)과는
+    완전히 별개의, 폴더 레벨 파일이다.
+
+    스키마는 tools/scanner/metadata/ 파서들의 공통 반환 필드셋
+    (author/publisher/summary/link/score/release_date/genre/tags)을 따르고,
+    series.json은 "웹툰용" 전용으로 원격 표지 URL(cover_image_url)을 추가
+    지원한다고 스캐너 파서 가이드에 명시되어 있어 그 필드를 포함했다.
+    meta: {"author", "publisher", "summary", "link", "score", "release_date",
+           "genre", "tags", "cover_image_url"} 중 있는 키만 채워서 넘기면 됨.
+    실패해도(디스크 오류 등) 예외를 올리지 않고 조용히 무시한다 - 다운로드
+    자체를 막을 이유가 없는 부가 메타데이터이기 때문이다."""
+    try:
+        series_dir = title_dir(download_root, title, title_id)
+        os.makedirs(series_dir, exist_ok=True)
+        data = {
+            "author": meta.get("author") or "",
+            "publisher": meta.get("publisher") or "",
+            "summary": meta.get("summary") or "",
+            "link": meta.get("link") or "",
+            "score": meta.get("score") or 0,
+            "release_date": meta.get("release_date") or "",
+            "genre": meta.get("genre") or "",
+            "tags": meta.get("tags") or "",
+            "cover_image_url": meta.get("cover_image_url") or "",
+        }
+        path = os.path.join(series_dir, "series.json")
+        tmp_path = path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
+        return True
+    except Exception as e:  # noqa: BLE001
+        if log:
+            log("titleId=%s: series.json 쓰기 실패(무시하고 계속) - %s" % (title_id, e))
+        return False
 
 
 def episode_dir(download_root, title, title_id, episode_no, folder_zero_fill=4):

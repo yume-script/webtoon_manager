@@ -255,6 +255,7 @@
       ['자동 실행', cfg.ENABLE_SCHEDULER ? ('사용 / ' + cfg.INTERVAL_MINUTES + '분 주기') : '사용 안 함'],
       ['신간 자동 구독', cfg.AUTO_SUBSCRIBE_NEW_TITLES ? '사용' : '사용 안 함(관심 작가만 자동구독)'],
       ['ComicInfo.xml 생성', cfg.GENERATE_COMICINFO_XML ? '사용' : '사용 안 함'],
+      ['series.json 생성(BookOasis 스캐너용)', cfg.GENERATE_SERIES_JSON ? '사용' : '사용 안 함'],
       ['작품당 최대 신규 다운로드', cfg.MAX_NEW_EPISODES_PER_TITLE],
       ['디스코드 알림', cfg.has_discord ? '설정됨' : '(미설정)']
     ];

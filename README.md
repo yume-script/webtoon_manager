@@ -1,11 +1,33 @@
 # webtoon_manager (BookOasis 플러그인) — 표시 이름 "웹툰 다운로더"
 
 원본: https://github.com/murianwind/webtoon-manager (네이버웹툰 무료 회차 자동 구독/다운로드 독립 웹앱)
-을 BookOasis 카테고리탭 플러그인으로 이식. **버전 1.9.0**
+을 BookOasis 카테고리탭 플러그인으로 이식. **버전 1.9.1**
 
 ⚠️ **이 README가 진실입니다.** 지금까지 이 저장소가 오래도록 최신 상태로 갱신되지 않아
 `plugin_board`로 업데이트/재설치할 때마다 예전 버전으로 조용히 되돌아가는 문제가 있었습니다.
 이 커밋 이후로는 실제 반영된 코드와 이 저장소가 항상 같은 상태여야 합니다.
+
+## 버전 1.9.1 변경사항 — BookOasis 자체 스캐너용 series.json 추가
+
+- **ComicInfo.xml(회차 zip 안, Komga/Kavita 등 외부 리더용)과는 별개로,
+  시리즈 폴더에 `series.json`을 생성**합니다. BookOasis 자체 스캐너가
+  `tools/scanner/metadata/` 파서들의 공통 스키마(author/publisher/summary/
+  link/score/release_date/genre/tags)로 폴더 단위 메타데이터를 인식하는
+  구조를 활용한 것이고, `series.json`은 스캐너 파서 가이드에 "웹툰용,
+  원격 표지 URL 지원"이라고 명시되어 있어 이 포맷을 썼습니다
+  (`cover_image_url`에 네이버 썸네일 URL을 그대로 채움 - 로컬 파일을
+  base64로 인코딩해야 하는 `kavita.yaml`/`komga.yaml` 방식보다 간단함).
+- 환경설정 > 플러그인 설정의 **"series.json 함께 생성"** 체크박스로 켜고
+  끌 수 있습니다(기본값: 사용). 작품의 새 회차를 받을 때마다(스케줄러/
+  전체실행/새회차 다운로드/선택 회차 다운로드 전부) 최신 정보로 갱신됩니다.
+- ⚠️ **스키마 신뢰도 안내**: 실제 `series_json.py` 파서 소스코드를 직접 본
+  게 아니라, 같은 문서에 예시로 실려 있는 `komga_yaml.py` 파서의 반환
+  필드셋 패턴에서 유추한 스키마입니다. BookOasis 코어 버전에 따라 실제
+  필드명이 다를 수 있으니, 반영 후 라이브러리 스캔을 한 번 돌려서 작가/
+  장르 등이 실제로 반영되는지 확인해보시길 권장합니다. 다르면 알려주시면
+  바로 맞춰드리겠습니다.
+- `summary`(줄거리)는 현재 항상 빈 값입니다 - 네이버 목록/상세 API에서
+  아직 줄거리 텍스트를 긁어오지 않기 때문입니다(추후 필요하면 추가 가능).
 
 ## 버전 1.9.0 변경사항 — ComicInfo.xml 자동 생성
 

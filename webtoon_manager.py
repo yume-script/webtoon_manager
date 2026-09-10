@@ -79,6 +79,7 @@ DEFAULTS = {
     "FOLDER_ZERO_FILL": 4,
     "IMAGE_ZERO_FILL": 4,
     "GENERATE_COMICINFO_XML": True,
+    "GENERATE_SERIES_JSON": True,
 }
 
 
@@ -113,6 +114,10 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
          "type": "text", "default": ""},
         {"key": "GENERATE_COMICINFO_XML",
          "label": "ComicInfo.xml 함께 생성(Komga/Kavita 등에서 인식하는 메타데이터 - 회차 zip 안에 포함됨)",
+         "type": "checkbox", "default": True},
+        {"key": "GENERATE_SERIES_JSON",
+         "label": "series.json 함께 생성(BookOasis 자체 스캐너가 인식하는 시리즈 메타데이터 - "
+                  "시리즈 폴더에 zip과 별도로 저장됨)",
          "type": "checkbox", "default": True},
         {"key": "MAX_NEW_EPISODES_PER_TITLE", "label": "1회 실행당 작품별 최대 신규 다운로드 회차 수(0=무제한)",
          "type": "number", "default": 10},
@@ -322,6 +327,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 "COMPARE_LIBRARY_ID": cfg.get("COMPARE_LIBRARY_ID", ""),
                 "COMPARE_LIBRARY_NAME": cfg.get("COMPARE_LIBRARY_NAME", ""),
                 "GENERATE_COMICINFO_XML": bool(cfg.get("GENERATE_COMICINFO_XML", True)),
+                "GENERATE_SERIES_JSON": bool(cfg.get("GENERATE_SERIES_JSON", True)),
                 "MAX_NEW_EPISODES_PER_TITLE": cfg.get("MAX_NEW_EPISODES_PER_TITLE"),
                 "BATCH_REST_MINUTES": cfg.get("BATCH_REST_MINUTES"),
                 "MAX_CONCURRENT_DOWNLOADS": cfg.get("MAX_CONCURRENT_DOWNLOADS"),
@@ -575,6 +581,11 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         else:
             ss.append_log("이번 다운로드 경로(설정값): %s" % _dl_root)
 
+        if cfg.get("GENERATE_SERIES_JSON", True):
+            downloader.write_series_json(
+                _dl_root, title, title_id,
+                pipeline._series_json_meta_for(_t_for_comicinfo, title_id), log=ss.append_log)
+
         def _runner():
             from . import downloader as dl
             session = pipeline.build_session_from_cfg(cfg)
@@ -674,6 +685,11 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             ss.append_log("이번 다운로드 경로(설정 안 됨 - 기본 경로 사용): %s" % _dl_root)
         else:
             ss.append_log("이번 다운로드 경로(설정값): %s" % _dl_root)
+
+        if cfg.get("GENERATE_SERIES_JSON", True):
+            downloader.write_series_json(
+                _dl_root, title_name, title_id,
+                pipeline._series_json_meta_for(t_info, title_id), log=ss.append_log)
 
         def _runner():
             from . import downloader as dl

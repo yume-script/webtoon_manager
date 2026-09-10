@@ -142,6 +142,23 @@ def run_scan_finished(cfg, log=print, max_pages=200):
     return {"scanned": len(patch), "finished_events": finished_events}
 
 
+def _series_json_meta_for(t, title_id):
+    """titles.json의 작품 레코드(t)로 series.json에 넣을 메타데이터 dict를
+    조립한다. 네이버 목록/상세 API에서 줄거리(summary)는 현재 긁어오지 않으므로
+    항상 빈 값이다(추후 상세페이지 파싱을 추가하면 채울 수 있음)."""
+    tags = t.get("tags") or []
+    genre_tags = ", ".join(tags) if tags else ""
+    return {
+        "author": t.get("author") or "",
+        "summary": "",
+        "link": "https://comic.naver.com/webtoon/list?titleId=%s" % title_id,
+        "score": t.get("rating") or 0,
+        "genre": genre_tags,
+        "tags": genre_tags,
+        "cover_image_url": t.get("thumbnail") or "",
+    }
+
+
 def _comicinfo_meta_for(t, ep, title_id):
     """titles.json의 작품 레코드(t)와 회차 정보(ep)로 ComicInfo.xml에 넣을
     메타데이터 dict를 조립한다. 값이 없는 필드는 빈 문자열/None으로 둬서
@@ -213,6 +230,11 @@ def run_download_cycle(cfg, log=print):
 
         capped = new_eps if max_new <= 0 else new_eps[:max_new]
         rest_needed = max_new > 0 and len(new_eps) > max_new
+
+        if cfg.get("GENERATE_SERIES_JSON", True):
+            downloader.write_series_json(
+                download_root, t.get("title", tid), tid,
+                _series_json_meta_for(t, tid), log=log)
 
         last_ok_no = t.get("last_downloaded_no")
         consecutive_fail = 0
