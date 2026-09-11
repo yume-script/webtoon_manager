@@ -48,6 +48,31 @@ def _autosubscribe_patch(item, old, author_names, auto_new=False):
     return p
 
 
+def _apply_daily_plus_autosubscribe(patch, enabled, log=print):
+    """"매일+ 자동 구독" 설정이 켜져 있으면, 이번 스캔 결과(patch)에 포함된
+    작품 중 '매일+(dailyPlus)' 탭에 속하면서 사용자가 구독/구독해제/제외 중
+    아무것도 명시적으로 선택한 적 없는(전부 기본값인) 작품을 전부 구독으로
+    올린다. _autosubscribe_patch()는 "새로 발견된 항목"일 때만 자동구독을
+    판단하고 기존 항목은 그대로 유지하는데, 이 함수는 그와 달리 매 스캔마다
+    이미 알고 있던 작품까지 다시 확인한다 - 그래야 이 설정을 나중에 켰을 때도
+    이미 스캔되어 있던 매일+ 작품들을 곧바로 잡아낼 수 있다("신간 자동 구독"과
+    달리 매일+ 탭 자체가 소수라 한꺼번에 구독되어도 폭주 위험이 낮다).
+    사용자가 한 번이라도 구독해제/제외를 누른 작품은 절대 건드리지 않는다."""
+    if not enabled:
+        return patch
+    promoted = 0
+    for tid, item in patch.items():
+        if naver_api.DAILY_PLUS not in (item.get("weekdays") or []):
+            continue
+        if item.get("subscribed") or item.get("excluded") or item.get("unsubscribed"):
+            continue
+        item["subscribed"] = True
+        promoted += 1
+    if promoted:
+        log("매일+ 자동 구독: %d개 작품을 새로 구독 처리함" % promoted)
+    return patch
+
+
 def run_scan_weekday(cfg, log=print):
     """빠른 스캔: 요일별 연재중 목록 + 등록된 태그(작가/장르) 자동구독 대상만
     수집한다. 완결 전체 목록(최대 200페이지라 느림)은 포함하지 않는다 -
@@ -94,6 +119,7 @@ def run_scan_weekday(cfg, log=print):
 
     patch = {tid: _autosubscribe_patch(item, old_titles.get(tid, {}), author_names, auto_new=auto_new)
              for tid, item in merged.items()}
+    patch = _apply_daily_plus_autosubscribe(patch, bool(cfg.get("AUTO_SUBSCRIBE_DAILY_PLUS")), log=log)
 
     ss.upsert_title(patch)
     if _cancelled():

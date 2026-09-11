@@ -71,6 +71,7 @@ DEFAULTS = {
     "INTERVAL_MINUTES": 240,
     "FINISHED_SCAN_HOUR": 4,
     "AUTO_SUBSCRIBE_NEW_TITLES": False,
+    "AUTO_SUBSCRIBE_DAILY_PLUS": False,
     "MAX_NEW_EPISODES_PER_TITLE": 10,
     "BATCH_REST_MINUTES": 5.0,
     "MAX_CONCURRENT_DOWNLOADS": 5,
@@ -104,6 +105,10 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
          "default": 4},
         {"key": "AUTO_SUBSCRIBE_NEW_TITLES",
          "label": "신간 자동 구독(요일별 목록에 처음 나타나는 작품을 관심 작가와 무관하게 전부 구독)",
+         "type": "checkbox", "default": False},
+        {"key": "AUTO_SUBSCRIBE_DAILY_PLUS",
+         "label": "매일+ 자동 구독('매일+' 탭의 작품을 전부 구독 처리 - 이미 스캔된 적 있는 작품도 "
+                  "구독해제/제외한 적 없다면 즉시 잡아냄, 자동 다운로드는 실행 주기마다 새 회차 확인)",
          "type": "checkbox", "default": False},
         {"key": "COMPARE_LIBRARY_ID",
          "label": "중복 확인 라이브러리 ID(카테고리탭의 '설정' 탭에서 드롭다운으로 선택하는 걸 권장 - "
@@ -324,6 +329,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 "INTERVAL_MINUTES": cfg.get("INTERVAL_MINUTES"),
                 "FINISHED_SCAN_HOUR": cfg.get("FINISHED_SCAN_HOUR"),
                 "AUTO_SUBSCRIBE_NEW_TITLES": bool(cfg.get("AUTO_SUBSCRIBE_NEW_TITLES")),
+                "AUTO_SUBSCRIBE_DAILY_PLUS": bool(cfg.get("AUTO_SUBSCRIBE_DAILY_PLUS")),
                 "COMPARE_LIBRARY_ID": cfg.get("COMPARE_LIBRARY_ID", ""),
                 "COMPARE_LIBRARY_NAME": cfg.get("COMPARE_LIBRARY_NAME", ""),
                 "GENERATE_COMICINFO_XML": bool(cfg.get("GENERATE_COMICINFO_XML", True)),
