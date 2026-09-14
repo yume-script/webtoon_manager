@@ -215,6 +215,7 @@ def run_download_cycle(cfg, log=print):
                   if t.get("subscribed") and not t.get("excluded") and not t.get("unsubscribed")}
 
     download_root = cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR
+    temp_root = cfg.get("TEMP_DOWNLOAD_ROOT") or ss.TMP_DOWNLOAD_DEFAULT_DIR
     if download_root == ss.DOWNLOAD_DEFAULT_DIR:
         log("이번 다운로드 경로(설정 안 됨 - 기본 경로 사용): %s" % download_root)
     else:
@@ -284,7 +285,7 @@ def run_download_cycle(cfg, log=print):
                 break
             try:
                 ok, skipped, img_count, err = downloader.download_episode(
-                    session, download_root, t.get("title", tid), tid, ep["no"],
+                    session, download_root, temp_root, t.get("title", tid), tid, ep["no"],
                     image_zero_fill=image_zero_fill, folder_zero_fill=folder_zero_fill,
                     max_concurrent=max_concurrent, delay_seconds=delay_seconds,
                     timeout=timeout, log=log)
@@ -319,7 +320,7 @@ def run_download_cycle(cfg, log=print):
                     # 이미지 다운로드(1단계)와 완전히 분리된 2단계 - 회차 폴더가
                     # 디스크에 다 쓰인 뒤에 별도로 압축한다.
                     c_ok, c_path, c_msg = downloader.compress_episode(
-                        download_root, t.get("title", tid), tid, ep["no"],
+                        download_root, temp_root, t.get("title", tid), tid, ep["no"],
                         folder_zero_fill=folder_zero_fill, log=log,
                         comicinfo_meta=_comicinfo_meta_for(t, ep, tid)
                         if cfg.get("GENERATE_COMICINFO_XML", True) else None)

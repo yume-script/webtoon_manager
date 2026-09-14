@@ -104,12 +104,21 @@ def write_series_json(download_root, title, title_id, meta, log=None):
         return False
 
 
-def episode_dir(download_root, title, title_id, episode_no, folder_zero_fill=4):
-    """회차 이미지를 내려받는 동안 쓰는 폴더. 다운로드가 끝나면(별도 단계인
-    compress_episode()가 호출되면) 이 폴더 안 이미지들이 압축파일로 옮겨지고
-    이 폴더 자체는 삭제된다."""
+def temp_episode_dir(temp_root, title_id, episode_no, folder_zero_fill=4):
+    """회차 이미지를 내려받는 동안 쓰는 '임시' 작업 폴더. 실제 웹툰
+    라이브러리 경로(download_root - 원격/rclone 마운트일 수 있음)와는
+    완전히 분리된 별도 위치(기본값: 플러그인 데이터 폴더 밑, 항상 로컬
+    디스크)에 만든다. 압축 전 미완성 상태의 낱장 이미지 폴더가 BookOasis
+    스캐너가 실제로 보는 라이브러리 폴더 안에 절대 노출되지 않게 하기
+    위함이다. 다운로드가 끝나 compress_episode()가 성공하면 이 폴더는
+    삭제되고, 완성된 zip만 실제 웹툰 폴더로 옮겨진다.
+
+    경로에 제목(safe_name)을 안 쓰고 titleId만 쓰는 이유: 임시 폴더는
+    사람이 보는 게 아니라 다음 실행 때 같은 회차를 정확히 다시 찾아
+    이어받기(resume)만 하면 되므로, 제목이 나중에 바뀌어도(네이버 표기
+    변경 등) 경로가 안 흔들리게 titleId(고유 숫자)만 키로 쓴다."""
     ep_name = str(episode_no).zfill(int(folder_zero_fill or 4))
-    return os.path.join(title_dir(download_root, title, title_id), ep_name)
+    return os.path.join(temp_root, str(title_id), ep_name)
 
 
 def _archive_prefix(title, episode_no, folder_zero_fill=4):
@@ -133,18 +142,20 @@ def find_existing_episode_archive(download_root, title, title_id, episode_no, fo
     return None
 
 
-def download_episode(session, download_root, title, title_id, episode_no,
+def download_episode(session, download_root, temp_root, title, title_id, episode_no,
                       image_zero_fill=4, folder_zero_fill=4,
                       max_concurrent=5, delay_seconds=1.0, timeout=10, log=None,
                       force=False):
     """
     1단계: 이미지만 내려받는다(압축은 하지 않음 - compress_episode()가 별도
     단계로 처리). 이미 압축까지 끝난 회차는 네트워크 요청 없이 즉시 스킵한다.
-    압축 전 낱장 폴더가 있는 경우, 기대 이미지 장수(원본에서 조회)와 실제
-    받은 장수를 비교해서 완전히 받아져 있을 때만 스킵하고, 중단된 채 남은
-    폴더라면 빠진 이미지만 이어받는다(resume). 이어받은 뒤에도 장수가
-    모자라면 ok=False를 반환해 호출 측이 compress_episode()를 부르지 않도록
-    한다(불완전 압축 방지).
+    이미지는 실제 웹툰 폴더(download_root)가 아니라 별도의 temp_root 임시
+    폴더에 내려받는다 - 압축 전 미완성 상태가 실제 라이브러리 경로(원격
+    마운트일 수 있음)에 노출되지 않게 하기 위함이다. 압축 전 낱장 폴더가
+    있는 경우, 기대 이미지 장수(원본에서 조회)와 실제 받은 장수를 비교해서
+    완전히 받아져 있을 때만 스킵하고, 중단된 채 남은 폴더라면 빠진 이미지만
+    이어받는다(resume). 이어받은 뒤에도 장수가 모자라면 ok=False를 반환해
+    호출 측이 compress_episode()를 부르지 않도록 한다(불완전 압축 방지).
 
     force=True면 이미 완성된 압축파일이 있어도 무시하고 지운 뒤 처음부터
     다시 받는다("선택 회차 다운로드"에서 사용자가 파일이 잘못됐다고 판단해
@@ -181,7 +192,7 @@ def download_episode(session, download_root, title, title_id, episode_no,
                 except OSError:
                     pass
 
-    target_dir = episode_dir(download_root, title, title_id, episode_no, folder_zero_fill)
+    target_dir = temp_episode_dir(temp_root, title_id, episode_no, folder_zero_fill)
 
     try:
         # 버그 수정: 예전에는 target_dir에 이미지가 "하나라도" 있으면 무조건
@@ -280,11 +291,12 @@ def download_episode(session, download_root, title, title_id, episode_no,
             time.sleep(float(delay_seconds))
 
 
-def compress_episode(download_root, title, title_id, episode_no,
+def compress_episode(download_root, temp_root, title, title_id, episode_no,
                       folder_zero_fill=4, log=None, comicinfo_meta=None):
-    """2단계(별도 단계): download_episode()로 완전히 다 받아진 회차 폴더의
-    이미지를 '제목 00xx화#장수.zip'으로 압축하고, 원본 낱장 폴더는 삭제한다.
-    다운로드 자체와 완전히 분리된 단계라, 다운로드 도중에는 호출하지 않고
+    """2단계(별도 단계): download_episode()로 temp_root 임시 폴더에 완전히
+    다 받아진 회차 이미지를 '제목 00xx화#장수.zip'으로 압축해서 실제 웹툰
+    폴더(download_root)로 옮기고, 임시 낱장 폴더는 삭제한다. 다운로드
+    자체와 완전히 분리된 단계라, 다운로드 도중에는 호출하지 않고
     download_episode()가 성공적으로 끝난 뒤에만 호출한다.
 
     comicinfo_meta가 주어지면(dict: series/sub_title/summary/writer/genre/
@@ -303,7 +315,7 @@ def compress_episode(download_root, title, title_id, episode_no,
     if existing and os.path.getsize(existing) > 0:
         return True, existing, "이미 압축되어 있음"
 
-    target_dir = episode_dir(download_root, title, title_id, episode_no, folder_zero_fill)
+    target_dir = temp_episode_dir(temp_root, title_id, episode_no, folder_zero_fill)
     if not os.path.isdir(target_dir):
         return False, None, "압축할 폴더가 없음(다운로드가 안 된 상태)"
 
@@ -311,6 +323,10 @@ def compress_episode(download_root, title, title_id, episode_no,
     if not files:
         return False, None, "압축할 이미지가 없음"
 
+    # 압축 결과물(zip)은 처음부터 실제 웹툰 폴더(series_dir)에 ".tmp" 이름으로
+    # 만들고, 다 쓴 뒤 os.replace()로 원자적 교체한다 - 이러면 압축 도중에
+    # 죽어도 "완성된 이름"의 파일이 실제 라이브러리 경로에 절대 안 생긴다.
+    # (이미지 자체는 temp_root라는 별도 위치에서 압축 전까지 머무른다.)
     series_dir = title_dir(download_root, title, title_id)
     os.makedirs(series_dir, exist_ok=True)
     count = len(files)
@@ -344,6 +360,17 @@ def compress_episode(download_root, title, title_id, episode_no,
                             (title_id, episode_no, e))
         os.replace(tmp_path, archive_path)
         shutil.rmtree(target_dir, ignore_errors=True)
+        # 임시 폴더 구조는 temp_root/titleId/회차번호/ 였으니, 회차 폴더를
+        # 지운 뒤 상위 titleId 폴더가 비어있으면(그 작품 회차가 지금 이거
+        # 하나만 처리 중이었다면 보통 비게 됨) 같이 정리해서 빈 폴더가
+        # 안 쌓이게 한다. 다른 회차가 아직 처리 중이면 안 비어있을 테니
+        # 그냥 둔다(실패해도 무해하므로 조용히 무시).
+        try:
+            parent_dir = os.path.dirname(target_dir)
+            if os.path.isdir(parent_dir) and not os.listdir(parent_dir):
+                os.rmdir(parent_dir)
+        except OSError:
+            pass
         return True, archive_path, "압축 완료(%d장)" % count
     except Exception as e:  # noqa: BLE001
         if log:

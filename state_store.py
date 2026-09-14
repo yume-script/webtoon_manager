@@ -21,6 +21,11 @@ _PLUGINS_ROOT = os.path.dirname(_METADATA_DIR)                  # plugins
 DATA_DIR = os.path.join(_PLUGINS_ROOT, "data", "webtoon_manager")
 
 DOWNLOAD_DEFAULT_DIR = os.path.join(DATA_DIR, "downloads")
+# 압축 전 낱장 이미지를 내려받는 임시 작업 폴더(기본값). 실제 웹툰 폴더
+# (DOWNLOAD_ROOT, 원격/rclone 마운트일 수 있음)와 분리해서, 압축 전 미완성
+# 상태의 파일들이 BookOasis 스캐너가 보는 실제 라이브러리 경로에 절대 노출되지
+# 않게 한다. 플러그인 데이터 폴더 밑이라 항상 로컬 디스크에 있다고 가정한다.
+TMP_DOWNLOAD_DEFAULT_DIR = os.path.join(DATA_DIR, "tmp_downloads")
 TITLES_PATH = os.path.join(DATA_DIR, "titles.json")
 AUTHORS_TAGS_PATH = os.path.join(DATA_DIR, "authors_tags.json")
 HISTORY_PATH = os.path.join(DATA_DIR, "history.jsonl")
@@ -47,6 +52,7 @@ MAX_LOG_LINES = 500
 def ensure_dirs():
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(DOWNLOAD_DEFAULT_DIR, exist_ok=True)
+    os.makedirs(TMP_DOWNLOAD_DEFAULT_DIR, exist_ok=True)
 
 
 def _atomic_write(path, text):
