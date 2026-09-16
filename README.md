@@ -1,11 +1,36 @@
 # webtoon_manager (BookOasis 플러그인) — 표시 이름 "웹툰 다운로더"
 
 원본: https://github.com/murianwind/webtoon-manager (네이버웹툰 무료 회차 자동 구독/다운로드 독립 웹앱)
-을 BookOasis 카테고리탭 플러그인으로 이식. **버전 1.12.0**
+을 BookOasis 카테고리탭 플러그인으로 이식. **버전 1.12.1**
 
 ⚠️ **이 README가 진실입니다.** 지금까지 이 저장소가 오래도록 최신 상태로 갱신되지 않아
 `plugin_board`로 업데이트/재설치할 때마다 예전 버전으로 조용히 되돌아가는 문제가 있었습니다.
 이 커밋 이후로는 실제 반영된 코드와 이 저장소가 항상 같은 상태여야 합니다.
+
+## 버전 1.12.1 변경사항 — 🔴 Windows에서 서버 전체가 SIGINT로 종료되던 치명적 버그 수정
+
+- **`scheduler.py`의 `_pid_alive()`가 Windows에서 `os.kill(pid, 0)`을 쓰던 것을
+  `OpenProcess()` 방식으로 교체했습니다.** 유닉스에서 `os.kill(pid, 0)`은
+  "신호를 보내지 않고 존재만 확인"하는 관용구지만, **Windows에서는 의미가
+  완전히 다릅니다.** CPython 문서상 Windows의 `os.kill()`은 sig가
+  `signal.CTRL_C_EVENT`(값이 바로 **0**) 또는 `CTRL_BREAK_EVENT`(1)일 때
+  "같은 콘솔 창을 공유하는 콘솔 프로세스들"에게 실제로 그 콘솔 제어 이벤트를
+  보내고, 그 외의 값이면 `TerminateProcess`로 대상을 무조건 죽입니다.
+- 결과적으로 Windows에서 이 한 줄이 **'Ctrl+C 전송'** 으로 동작해, 같은 CMD
+  콘솔에 붙어 있던 BookOasis 본체와 scanner worker가 함께 `KeyboardInterrupt`를
+  받고 종료되며 `Terminate batch job (Y/N)?`이 뜨는 문제가 발생했습니다
+  (플러그인 OFF 시 미재현 / ON 시 재현으로 원인 확정).
+- 이제 Windows에서는 신호를 전혀 보내지 않는 `OpenProcess(
+  PROCESS_QUERY_LIMITED_INFORMATION)`로만 PID 존재를 확인합니다. 추가로
+  ① 64비트에서 핸들 값이 잘리지 않도록 `restype`을 `HANDLE`로 명시하고,
+  ② 핸들은 열렸지만 이미 종료된 프로세스를 걸러내기 위해
+  `GetExitCodeProcess`로 `STILL_ACTIVE` 여부까지 확인하며,
+  ③ 권한 부족(`ERROR_ACCESS_DENIED`)은 "없음"이 아니라 "살아있음"으로
+  보수적으로 판정해 스케줄러가 중복으로 뜨지 않게 했습니다.
+- ⚠️ **이 수정은 과거에 한 번 적용됐다가 업데이트 과정에서 되돌아간 이력이
+  있습니다.** 재발을 막기 위해 `_pid_alive()` docstring에 "Windows에서 절대
+  `os.kill(pid, 0)`을 쓰지 말 것"이라는 경고와 이유를 코드 안에 박아두었으니,
+  향후 리팩터링 시 이 부분을 되돌리지 마세요.
 
 ## 버전 1.12.0 변경사항 — 전체 백필 스크립트 + 서버 리소스 양보
 

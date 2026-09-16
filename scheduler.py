@@ -16,13 +16,80 @@ _lock = threading.Lock()
 
 
 def _pid_alive(pid):
+    """PID가 살아있는지 확인한다. 실제로 신호를 보내서는 안 된다.
+
+    ⚠️ Windows에서 절대 os.kill(pid, 0)을 쓰지 말 것 (수정 이력 있음, 되돌리지 마세요)
+    ------------------------------------------------------------------------
+    유닉스에서 os.kill(pid, 0)은 "신호를 보내지 않고 존재/권한만 검사"하는
+    관용적인 방법이지만, Windows에서는 의미가 완전히 다르다. CPython 문서상
+    Windows의 os.kill()은 sig가 signal.CTRL_C_EVENT(값이 바로 0) 또는
+    CTRL_BREAK_EVENT(1)일 때 "같은 콘솔 창을 공유하는 콘솔 프로세스들"에게
+    실제로 그 콘솔 제어 이벤트를 보내고, 그 외의 값이면 TerminateProcess로
+    대상을 무조건 죽인다.
+
+    즉 Windows에서 os.kill(pid, 0)은 존재 확인이 아니라 'Ctrl+C 전송'이며,
+    BookOasis 본체와 scanner worker가 같은 CMD 콘솔에 붙어 있는 배포에서는
+    이 한 줄 때문에 서버 전체가 KeyboardInterrupt를 받고 죽으면서
+    "Terminate batch job (Y/N)?"이 뜨는 문제가 실제로 보고됐다.
+    (플러그인을 끄면 재현되지 않고 켜면 재현됨으로 원인 확인됨)
+
+    그래서 Windows에서는 신호를 전혀 보내지 않는 OpenProcess()로만 PID
+    존재 여부를 확인한다.
+    """
     if not pid:
         return False
     try:
-        os.kill(int(pid), 0)
-    except (OSError, ValueError, TypeError):
+        pid = int(pid)
+    except (ValueError, TypeError):
         return False
-    return True
+    if pid <= 0:
+        return False
+
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.windll.kernel32
+            # restype을 명시하지 않으면 기본값이 c_int라서 64비트에서 핸들
+            # 값이 잘려 오판할 수 있다. HANDLE로 정확히 지정한다.
+            kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+            kernel32.CloseHandle.restype = wintypes.BOOL
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            ERROR_ACCESS_DENIED = 5
+            STILL_ACTIVE = 259
+
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not handle:
+                # 권한 부족(다른 계정/서비스로 뜬 프로세스)이면 "없다"가 아니라
+                # "있는데 못 들여다본다"는 뜻이다. 살아있다고 보수적으로 판단해야
+                # 스케줄러가 중복으로 뜨지 않는다.
+                # (ctypes.get_last_error()는 use_last_error=True로 선언한
+                #  라이브러리에서만 유효하므로 kernel32.GetLastError()를 쓴다.)
+                return kernel32.GetLastError() == ERROR_ACCESS_DENIED
+            try:
+                # 핸들이 열렸어도 이미 종료된 프로세스일 수 있으므로 종료코드까지
+                # 확인한다(STILL_ACTIVE면 아직 실행 중).
+                exit_code = wintypes.DWORD()
+                if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    return exit_code.value == STILL_ACTIVE
+                return True
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:  # noqa: BLE001
+            # ctypes를 못 쓰는 환경 등 - 신호를 보내는 위험한 경로로는 절대
+            # 폴백하지 않는다. "죽었다"고 보면 스케줄러가 하나 더 뜰 뿐이라
+            # 무해하지만, Ctrl+C를 보내면 서버가 죽는다.
+            return False
+
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
 
 def _write_lock():
