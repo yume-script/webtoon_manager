@@ -78,6 +78,9 @@ def run_scan_weekday(cfg, log=print):
     수집한다. 완결 전체 목록(최대 200페이지라 느림)은 포함하지 않는다 -
     그건 run_scan_finished()가 별도 스케줄로 처리한다. 초기 설치 시 이 스캔만
     먼저 빠르게 끝나서 카테고리탭이 바로 쓸만해지도록 하기 위해 분리했다."""
+    if cfg.get("LOW_PRIORITY_MODE", True):
+        downloader.lower_thread_priority(int(cfg.get("DOWNLOAD_NICE_LEVEL", 10)))
+
     def _cancelled():
         return bool(ss.load_job_state().get("cancel_requested"))
 
@@ -136,6 +139,8 @@ def run_scan_finished(cfg, log=print, max_pages=200):
     자동 스케줄러는 이 함수를 하루 중 정해진 시각(FINISHED_SCAN_HOUR)에
     한 번만 호출한다(scheduler.py 참고) - 매 주기마다 돌리기엔 너무 느려서
     초기 설치 시 전체 인덱싱이 오래 걸리는 원인이었다."""
+    if cfg.get("LOW_PRIORITY_MODE", True):
+        downloader.lower_thread_priority(int(cfg.get("DOWNLOAD_NICE_LEVEL", 10)))
     session = build_session_from_cfg(cfg)
     ss.save_job_state({"stage": "scanning_finished", "message": "완결 목록 수집 중"})
     log("완결 목록 수집 시작")
@@ -209,6 +214,8 @@ def _episodes_to_download(session, cfg, title_id, known_last_no):
 
 
 def run_download_cycle(cfg, log=print):
+    if cfg.get("LOW_PRIORITY_MODE", True):
+        downloader.lower_thread_priority(int(cfg.get("DOWNLOAD_NICE_LEVEL", 10)))
     session = build_session_from_cfg(cfg)
     titles = ss.load_titles()
     subscribed = {tid: t for tid, t in titles.items()
@@ -322,6 +329,7 @@ def run_download_cycle(cfg, log=print):
                     c_ok, c_path, c_msg = downloader.compress_episode(
                         download_root, temp_root, t.get("title", tid), tid, ep["no"],
                         folder_zero_fill=folder_zero_fill, log=log,
+                        zip_stored=bool(cfg.get("ZIP_STORED", True)),
                         comicinfo_meta=_comicinfo_meta_for(t, ep, tid)
                         if cfg.get("GENERATE_COMICINFO_XML", True) else None)
                     if c_ok:

@@ -260,6 +260,44 @@
       </p>
     </div>
     <div class="wtm-box">
+      <div class="wtm-box-title">⏬ 전체 회차 일괄 받기 (과거 회차 백필)</div>
+      <p class="wtm-hint">
+        자동 다운로드는 <b>마지막으로 받은 회차 이후의 새 회차만</b> 확인하기
+        때문에, 중간에 구독한 작품은 과거 회차가 통째로 비어 있습니다.
+        <code>backfill_all.py</code> 스크립트를 쓰면 구독중인 <b>모든 작품</b>을
+        대상으로, <b>이미 받아둔 회차는 건너뛰고</b> 나머지 전 회차를 한 번에
+        받을 수 있습니다(이 화면에는 버튼이 없고 서버에서 직접 실행하는 별도
+        스크립트입니다).
+      </p>
+      <p class="wtm-hint">
+        먼저 <code>--dry-run</code>으로 몇 화나 받게 될지 확인한 뒤 실제로 실행하세요:
+      </p>
+      <p class="wtm-hint">
+        <code>docker exec -it bookoasis python3<br>
+        &nbsp;&nbsp;/app/plugins/metadata/webtoon_manager/backfill_all.py --dry-run</code>
+      </p>
+      <p class="wtm-hint">
+        확인 후 <code>--dry-run</code>만 빼고 다시 실행하면 실제로 받습니다.
+        자주 쓰는 옵션:
+      </p>
+      <p class="wtm-hint">
+        <code>--title-id 808389</code> 특정 작품만 (여러 번 지정 가능)<br>
+        <code>--limit-per-title 50</code> 작품당 최대 50화까지만<br>
+        <code>--max-titles 10</code> 이번 실행에서 작품 10개까지만<br>
+        <code>--delay 2</code> 회차 사이 대기 2초(네이버 부하/차단 회피)<br>
+        <code>--include-unsubscribed</code> 구독중이 아닌 작품까지 전부<br>
+        <code>--db-type adult</code> 성인 서재 설정 사용
+      </p>
+      <p class="wtm-hint">
+        ⚠️ 회차가 수천 개 쌓일 수 있어 <b>시간이 매우 오래 걸립니다.</b> 처음에는
+        <code>--max-titles</code>나 <code>--limit-per-title</code>로 조금씩
+        나눠서 돌려보시길 권합니다. 실행 중에는 플러그인 작업 잠금을 잡아
+        스케줄러 자동 다운로드와 겹치지 않고, 카테고리탭의 <b>"취소"</b> 버튼을
+        누르면 다음 회차 시작 전에 멈춥니다. Ctrl+C로 중단하거나 쿠키가
+        만료돼 중단돼도, 다시 실행하면 <b>받다 만 지점부터 이어서</b> 받습니다.
+      </p>
+    </div>
+    <div class="wtm-box">
       <div class="wtm-box-title">🗂️ 예전 형식으로 받아둔 파일 정리</div>
       <p class="wtm-hint">
         플러그인이 업데이트되면서 파일 저장 방식이 여러 번 바뀌었습니다(낱장 폴더 →

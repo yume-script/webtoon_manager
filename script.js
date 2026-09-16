@@ -258,6 +258,8 @@
       ['매일+ 자동 구독', cfg.AUTO_SUBSCRIBE_DAILY_PLUS ? '사용' : '사용 안 함'],
       ['ComicInfo.xml 생성', cfg.GENERATE_COMICINFO_XML ? '사용' : '사용 안 함'],
       ['series.json 생성(BookOasis 스캐너용)', cfg.GENERATE_SERIES_JSON ? '사용' : '사용 안 함'],
+      ['서버 리소스 양보', cfg.LOW_PRIORITY_MODE ? ('사용 / nice ' + cfg.DOWNLOAD_NICE_LEVEL) : '사용 안 함'],
+      ['zip 무압축 저장', cfg.ZIP_STORED ? '사용(CPU 절약)' : '사용 안 함(DEFLATE 압축)'],
       ['작품당 최대 신규 다운로드', cfg.MAX_NEW_EPISODES_PER_TITLE],
       ['디스코드 알림', cfg.has_discord ? '설정됨' : '(미설정)']
     ];

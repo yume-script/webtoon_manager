@@ -3,6 +3,7 @@ import json
 import os
 import re
 import shutil
+import threading
 import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -12,6 +13,25 @@ from . import naver_api
 
 _SAFE_RE = re.compile(r'[\\/:*?"<>|]')
 _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+
+
+def lower_thread_priority(nice_level=10):
+    """현재 스레드의 CPU 스케줄링 우선순위만 낮춘다(리눅스 전용). 다운로드/
+    압축 백그라운드 작업이 BookOasis 웹서버 본체나 다른 사용자 요청과 CPU를
+    두고 경쟁할 때 웹서버 쪽이 우선권을 갖게 하기 위함이다.
+
+    os.nice()는 프로세스 전체에 적용되어 BookOasis 전체가 느려지므로 쓰면
+    안 되고, 대신 os.setpriority(PRIO_PROCESS, tid, ...)를 현재 스레드의
+    커널 스레드 ID(threading.get_native_id() - 리눅스에서는 스레드마다
+    독립된 스케줄링 엔티티라 개별 우선순위 조정이 가능)에만 적용한다.
+
+    리눅스가 아니거나 권한이 없어 실패해도 조용히 무시한다 - 그냥 기본
+    우선순위로 도는 것뿐이라 무해하고, 이것 때문에 다운로드가 막히면 안 된다."""
+    try:
+        os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), int(nice_level))
+        return True
+    except (AttributeError, OSError, ValueError):
+        return False
 
 
 def safe_name(name):
@@ -292,12 +312,18 @@ def download_episode(session, download_root, temp_root, title, title_id, episode
 
 
 def compress_episode(download_root, temp_root, title, title_id, episode_no,
-                      folder_zero_fill=4, log=None, comicinfo_meta=None):
+                      folder_zero_fill=4, log=None, comicinfo_meta=None,
+                      zip_stored=True):
     """2단계(별도 단계): download_episode()로 temp_root 임시 폴더에 완전히
     다 받아진 회차 이미지를 '제목 00xx화#장수.zip'으로 압축해서 실제 웹툰
     폴더(download_root)로 옮기고, 임시 낱장 폴더는 삭제한다. 다운로드
     자체와 완전히 분리된 단계라, 다운로드 도중에는 호출하지 않고
     download_episode()가 성공적으로 끝난 뒤에만 호출한다.
+
+    zip_stored=True(기본값)면 ZIP_STORED(무압축 저장)로 묶는다. 이미지가 이미
+    JPEG로 압축돼 있어 DEFLATE를 걸어도 용량은 거의 안 줄면서 CPU만 많이 쓰기
+    때문에, 서버 리소스를 아끼려면 저장만 하는 쪽이 합리적이다. 용량을 조금
+    더 줄이고 싶으면 zip_stored=False로 DEFLATE를 쓸 수 있다.
 
     comicinfo_meta가 주어지면(dict: series/sub_title/summary/writer/genre/
     web/age_rating/notes 키를 선택적으로 포함) Komga/Kavita 등이 인식하는
@@ -336,7 +362,8 @@ def compress_episode(download_root, temp_root, title, title_id, episode_no,
         os.remove(archive_path)
     tmp_path = archive_path + ".tmp"
     try:
-        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(tmp_path, "w",
+                              zipfile.ZIP_STORED if zip_stored else zipfile.ZIP_DEFLATED) as zf:
             for fname in files:
                 zf.write(os.path.join(target_dir, fname), arcname=fname)
             if comicinfo_meta:

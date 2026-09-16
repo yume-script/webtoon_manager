@@ -81,6 +81,9 @@ DEFAULTS = {
     "IMAGE_ZERO_FILL": 4,
     "GENERATE_COMICINFO_XML": True,
     "GENERATE_SERIES_JSON": True,
+    "LOW_PRIORITY_MODE": True,
+    "DOWNLOAD_NICE_LEVEL": 10,
+    "ZIP_STORED": True,
 }
 
 
@@ -128,6 +131,17 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         {"key": "GENERATE_SERIES_JSON",
          "label": "series.json 함께 생성(BookOasis 자체 스캐너가 인식하는 시리즈 메타데이터 - "
                   "시리즈 폴더에 zip과 별도로 저장됨)",
+         "type": "checkbox", "default": True},
+        {"key": "LOW_PRIORITY_MODE",
+         "label": "다운로드 시 서버 리소스 양보(다운로드/압축 작업의 CPU 우선순위를 낮춰 BookOasis "
+                  "웹서버 응답이 밀리지 않게 함, 리눅스 전용 - 다른 환경에선 조용히 무시됨)",
+         "type": "checkbox", "default": True},
+        {"key": "DOWNLOAD_NICE_LEVEL",
+         "label": "CPU 양보 정도(0~19, 클수록 더 많이 양보 - 위 옵션이 켜져 있을 때만 적용)",
+         "type": "number", "default": 10},
+        {"key": "ZIP_STORED",
+         "label": "zip 무압축 저장(이미지는 이미 압축돼 있어 재압축해도 용량이 거의 안 줄고 CPU만 "
+                  "쓰므로 기본 권장. 끄면 용량이 조금 줄지만 CPU를 더 씀)",
          "type": "checkbox", "default": True},
         {"key": "MAX_NEW_EPISODES_PER_TITLE", "label": "1회 실행당 작품별 최대 신규 다운로드 회차 수(0=무제한)",
          "type": "number", "default": 10},
@@ -340,6 +354,9 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 "COMPARE_LIBRARY_NAME": cfg.get("COMPARE_LIBRARY_NAME", ""),
                 "GENERATE_COMICINFO_XML": bool(cfg.get("GENERATE_COMICINFO_XML", True)),
                 "GENERATE_SERIES_JSON": bool(cfg.get("GENERATE_SERIES_JSON", True)),
+                "LOW_PRIORITY_MODE": bool(cfg.get("LOW_PRIORITY_MODE", True)),
+                "DOWNLOAD_NICE_LEVEL": cfg.get("DOWNLOAD_NICE_LEVEL", 10),
+                "ZIP_STORED": bool(cfg.get("ZIP_STORED", True)),
                 "MAX_NEW_EPISODES_PER_TITLE": cfg.get("MAX_NEW_EPISODES_PER_TITLE"),
                 "BATCH_REST_MINUTES": cfg.get("BATCH_REST_MINUTES"),
                 "MAX_CONCURRENT_DOWNLOADS": cfg.get("MAX_CONCURRENT_DOWNLOADS"),
@@ -600,6 +617,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
 
         def _runner():
             from . import downloader as dl
+            if cfg.get("LOW_PRIORITY_MODE", True):
+                dl.lower_thread_priority(int(cfg.get("DOWNLOAD_NICE_LEVEL", 10)))
             session = pipeline.build_session_from_cfg(cfg)
             ok_count = 0
             consecutive_fail = 0
@@ -636,6 +655,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                             title, title_id, no,
                             folder_zero_fill=int(cfg.get("FOLDER_ZERO_FILL", 4)),
                             log=ss.append_log,
+                            zip_stored=bool(cfg.get("ZIP_STORED", True)),
                             comicinfo_meta=pipeline._comicinfo_meta_for(
                                 _t_for_comicinfo, {"no": no, "subtitle": None}, title_id)
                             if cfg.get("GENERATE_COMICINFO_XML", True) else None)
@@ -707,6 +727,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
 
         def _runner():
             from . import downloader as dl
+            if cfg.get("LOW_PRIORITY_MODE", True):
+                dl.lower_thread_priority(int(cfg.get("DOWNLOAD_NICE_LEVEL", 10)))
             session = pipeline.build_session_from_cfg(cfg)
             try:
                 new_eps = pipeline._episodes_to_download(
@@ -777,6 +799,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                             title_name, title_id, ep["no"],
                             folder_zero_fill=int(cfg.get("FOLDER_ZERO_FILL", 4)),
                             log=ss.append_log,
+                            zip_stored=bool(cfg.get("ZIP_STORED", True)),
                             comicinfo_meta=pipeline._comicinfo_meta_for(t_info, ep, title_id)
                             if cfg.get("GENERATE_COMICINFO_XML", True) else None)
                         if c_ok:
