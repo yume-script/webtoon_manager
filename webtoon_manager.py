@@ -44,6 +44,10 @@ PLUGIN_ID = "webtoon_manager"
 # 대신 이 정도로 느슨하게 비교한다 - "혹시 이미 있을 수도 있다"는 참고용 알림
 # 기능이라 약간의 오탐/누락은 감수한다.
 _COMPARE_BRACKET_RE = re.compile(r'[\(\[（【].*?[\)\]）】]')
+# 비교 폴더 스캔 결과 캐시: {폴더경로: (timestamp, 시리즈명집합)}
+_COMPARE_FOLDER_CACHE = {}
+# 파일명 끝의 "0012화#110", "05권", "12화" 같은 권/화 꼬리표를 떼기 위한 패턴
+_EPISODE_SUFFIX_RE = re.compile(r'\s*\d+\s*(화|권|話|卷)(\s*#\s*\d+)?\s*$')
 _COMPARE_WS_RE = re.compile(r'\s+')
 
 
@@ -81,6 +85,7 @@ DEFAULTS = {
     "IMAGE_ZERO_FILL": 4,
     "GENERATE_COMICINFO_XML": True,
     "GENERATE_SERIES_JSON": True,
+    "COMPARE_FOLDER": "",
     "LOW_PRIORITY_MODE": True,
     "DOWNLOAD_NICE_LEVEL": 10,
     "ZIP_STORED": True,
@@ -118,6 +123,11 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
          "label": "매일+ 자동 구독('매일+' 탭의 작품을 전부 구독 처리 - 이미 스캔된 적 있는 작품도 "
                   "구독해제/제외한 적 없다면 즉시 잡아냄, 자동 다운로드는 실행 주기마다 새 회차 확인)",
          "type": "checkbox", "default": False},
+        {"key": "COMPARE_FOLDER",
+         "label": "중복 확인 폴더(이미 갖고 있는 웹툰이 모여있는 폴더의 절대경로. 하위 폴더명/"
+                  "압축파일명을 시리즈명으로 보고 비교합니다. DB 스키마에 의존하지 않아 가장 확실한 "
+                  "방법이며, 아직 BookOasis에 스캔 등록하지 않은 폴더도 잡아냅니다)",
+         "type": "text", "default": ""},
         {"key": "COMPARE_LIBRARY_ID",
          "label": "중복 확인 라이브러리 ID(카테고리탭의 '설정' 탭에서 드롭다운으로 선택하는 걸 권장 - "
                   "여기 직접 입력해도 됨, 비우면 중복 확인 기능 꺼짐)",
@@ -319,7 +329,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         update_status = self._check_update_available()
 
         titles = ss.load_titles()
-        compare_set = self._get_compare_library_series_set(db_type, cfg)
+        compare_set, compare_status = self._build_compare_set(db_type, cfg)
         items_list = []
         for tid, t in titles.items():
             item = dict(t)
@@ -340,6 +350,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             "log_tail": ss.tail_log(60),
             "plugin_version": self._read_version(),
             "update_status": update_status,
+            "compare_status": compare_status,
             "repo_url": REPO_URL,
             "config_public": {
                 "NAVER_ID": cfg.get("NAVER_ID", ""),
@@ -352,6 +363,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 "AUTO_SUBSCRIBE_DAILY_PLUS": bool(cfg.get("AUTO_SUBSCRIBE_DAILY_PLUS")),
                 "COMPARE_LIBRARY_ID": cfg.get("COMPARE_LIBRARY_ID", ""),
                 "COMPARE_LIBRARY_NAME": cfg.get("COMPARE_LIBRARY_NAME", ""),
+                "COMPARE_FOLDER": cfg.get("COMPARE_FOLDER", ""),
                 "GENERATE_COMICINFO_XML": bool(cfg.get("GENERATE_COMICINFO_XML", True)),
                 "GENERATE_SERIES_JSON": bool(cfg.get("GENERATE_SERIES_JSON", True)),
                 "LOW_PRIORITY_MODE": bool(cfg.get("LOW_PRIORITY_MODE", True)),
@@ -888,27 +900,95 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             return False
 
     def _get_compare_library_series_set(self, db_type, cfg):
-        """설정된 비교 라이브러리에 이미 등록된 시리즈명을 정규화한 집합으로
-        반환한다. 비교 기능이 꺼져 있거나(라이브러리 미지정) 조회에 실패하면
-        None을 반환한다(그리고 카드에는 뱃지를 아예 안 띄운다 - 잘못 켜진
-        걸로 오인해 "라이브러리에 없음"이라고 확정하면 안 되므로 True/False가
-        아닌 '모름' 상태를 구분해서 표현한다)."""
+        """설정된 비교 라이브러리(BookOasis DB)에 등록된 시리즈명 집합을
+        반환한다. 조회 실패 시 예외 메시지를 함께 돌려줘서, 화면에 "왜 비교가
+        안 되는지"를 드러낼 수 있게 한다(예전에는 조용히 None만 반환해서
+        사용자가 기능이 없는 줄 알았다).
+        반환: (set|None, error_message|None)"""
         library_id = cfg.get("COMPARE_LIBRARY_ID")
         if not library_id:
-            return None
+            return None, None
         try:
             gw = self.get_db_gateway(db_type)
             # 게이트웨이는 SQLite/MariaDB 어느 엔진이든 '?' 플레이스홀더로
             # 통일해서 받는 것으로 가정한다(가이드의 다른 예시 쿼리들과 동일한
-            # 관례). 혹시 이 코어 버전이 그렇지 않다면 아래 except에서 조용히
-            # None으로 폴백하므로 플러그인 전체가 죽지는 않는다.
+            # 관례). 코어 버전에 따라 스키마가 다르면 아래 except가 사유를
+            # 문자열로 돌려주고, 그 내용이 설정 탭에 그대로 표시된다.
             rows = gw.fetch_all(
                 "SELECT DISTINCT series_name FROM books WHERE library_id = ? "
                 "AND COALESCE(is_deleted, 0) = 0",
                 (library_id,))
-            return set(_normalize_series_name(r["series_name"]) for r in rows if r.get("series_name"))
-        except Exception:  # noqa: BLE001
-            return None
+            return set(_normalize_series_name(r["series_name"])
+                       for r in rows if r.get("series_name")), None
+        except Exception as e:  # noqa: BLE001
+            return None, "라이브러리 조회 실패: %s" % e
+
+    def _get_compare_folder_series_set(self, cfg):
+        """설정된 '비교 폴더'를 직접 훑어서 이미 갖고 있는 시리즈명 집합을
+        만든다. DB 스키마에 전혀 의존하지 않아 라이브러리 방식보다 훨씬
+        튼튼하고, 아직 BookOasis에 등록(스캔)하지 않은 폴더도 잡아낸다.
+
+        하위 폴더 이름(= 보통 시리즈명)과, 폴더 바로 밑에 있는 압축파일
+        이름(권/화 번호는 떼고)을 모두 후보로 넣는다. 원격 마운트에서 매
+        폴링마다 훑으면 부담이 크므로 결과를 60초간 메모리에 캐시한다.
+        반환: (set|None, error_message|None)"""
+        folder = (cfg.get("COMPARE_FOLDER") or "").strip()
+        if not folder:
+            return None, None
+        if not os.path.isdir(folder):
+            return None, "폴더를 찾을 수 없음: %s" % folder
+
+        now = time.time()
+        cached = _COMPARE_FOLDER_CACHE.get(folder)
+        if cached and (now - cached[0]) < 60:
+            return cached[1], None
+
+        try:
+            names = set()
+            with os.scandir(folder) as it:
+                for entry in it:
+                    if entry.name.startswith("."):
+                        continue
+                    if entry.is_dir():
+                        names.add(_normalize_series_name(entry.name))
+                    elif entry.name.lower().endswith((".zip", ".cbz", ".epub", ".pdf")):
+                        stem = os.path.splitext(entry.name)[0]
+                        # "제목 0012화#110" / "제목 05권" 같은 꼬리표를 떼어
+                        # 시리즈명만 남긴다.
+                        stem = _EPISODE_SUFFIX_RE.sub("", stem)
+                        names.add(_normalize_series_name(stem))
+            names.discard("")
+            _COMPARE_FOLDER_CACHE[folder] = (now, names)
+            return names, None
+        except Exception as e:  # noqa: BLE001
+            return None, "폴더 읽기 실패: %s" % e
+
+    def _build_compare_set(self, db_type, cfg):
+        """폴더 기준 + 라이브러리 기준 결과를 합쳐서 최종 비교 집합을 만든다.
+        둘 다 설정 안 됐으면 (None, status) - 이 경우 카드에 뱃지를 아예 안
+        띄운다("없음"으로 단정하면 안 되므로 True/False가 아닌 '모름' 상태).
+        반환: (set|None, status dict)"""
+        status = {"enabled": False, "sources": [], "count": 0, "errors": []}
+        merged = None
+
+        folder_set, folder_err = self._get_compare_folder_series_set(cfg)
+        if folder_err:
+            status["errors"].append(folder_err)
+        if folder_set is not None:
+            merged = set(folder_set)
+            status["sources"].append("폴더(%d개)" % len(folder_set))
+
+        lib_set, lib_err = self._get_compare_library_series_set(db_type, cfg)
+        if lib_err:
+            status["errors"].append(lib_err)
+        if lib_set is not None:
+            merged = lib_set if merged is None else (merged | lib_set)
+            status["sources"].append("라이브러리(%d개)" % len(lib_set))
+
+        if merged is not None:
+            status["enabled"] = True
+            status["count"] = len(merged)
+        return merged, status
 
 
 def action_slug(label):

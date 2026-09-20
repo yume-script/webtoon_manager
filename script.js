@@ -102,6 +102,7 @@
     if (currentTab === 'subscribed') list = list.filter(function (t) { return t.subscribed && !t.excluded && !t.unsubscribed; });
     else if (currentTab === 'unsubscribed') list = list.filter(function (t) { return t.unsubscribed; });
     else if (currentTab === 'excluded') list = list.filter(function (t) { return t.excluded; });
+    else if (currentTab === 'duplicate') list = list.filter(function (t) { return t.in_library === true; });
     // 'all' 은 필터 없이 전체
 
     if (dayFilter === 'finished') {
@@ -148,8 +149,8 @@
     if (t.in_library === true) {
       out += '<span class="wtm-badge" style="background:color-mix(in srgb, #c58a3a 22%, transparent);' +
         'color:color-mix(in srgb, #c58a3a 90%, var(--app-text-primary))" ' +
-        'title="설정에서 지정한 라이브러리에 같은 이름의 시리즈가 이미 있습니다(제목 비교라 정확하지 않을 수 있음)">' +
-        '📚 라이브러리에 있음</span>';
+        'title="지정한 중복 확인 폴더/라이브러리에 같은 이름의 시리즈가 이미 있습니다(제목 비교라 정확하지 않을 수 있음)">' +
+        '📚 보유중</span>';
     }
     return out;
   }
@@ -170,12 +171,34 @@
       '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-card-action="exclude" data-title-id="' + t.titleId + '">제외</button>';
   }
 
+  function compareStatusText() {
+    var cs = state.compare_status || {};
+    if (cs.errors && cs.errors.length) {
+      return '⚠️ 중복 확인 중 문제가 발생했습니다: ' + escapeHtml(cs.errors.join(' / '));
+    }
+    if (!cs.enabled) {
+      return '중복 확인이 설정되지 않았습니다. [설정] 탭 또는 환경설정 &gt; 플러그인 설정의 ' +
+        '<b>"중복 확인 폴더"</b>에 이미 갖고 있는 웹툰 폴더 경로를 넣어주세요.';
+    }
+    return '중복 확인 기준: ' + escapeHtml((cs.sources || []).join(' + ')) +
+      ' / 비교 대상 시리즈 ' + (cs.count || 0) + '개';
+  }
+
+  function emptyMessage() {
+    if (currentTab === 'duplicate') {
+      var cs = state.compare_status || {};
+      if (!cs.enabled || (cs.errors && cs.errors.length)) return compareStatusText();
+      return '중복된 작품이 없습니다. (' + compareStatusText() + ')';
+    }
+    return '표시할 작품이 없습니다. "지금 스캔"을 먼저 실행해보세요.';
+  }
+
   function renderGrid() {
     var grid = el('[data-el="title-grid"]');
     if (!grid) return;
     var list = filteredTitles();
     if (!list.length) {
-      grid.innerHTML = '<div class="wtm-hint">표시할 작품이 없습니다. "지금 스캔"을 먼저 실행해보세요.</div>';
+      grid.innerHTML = '<div class="wtm-hint">' + emptyMessage() + '</div>';
       return;
     }
     grid.innerHTML = list.map(function (t) {
@@ -259,6 +282,9 @@
       ['ComicInfo.xml 생성', cfg.GENERATE_COMICINFO_XML ? '사용' : '사용 안 함'],
       ['series.json 생성(BookOasis 스캐너용)', cfg.GENERATE_SERIES_JSON ? '사용' : '사용 안 함'],
       ['서버 리소스 양보', cfg.LOW_PRIORITY_MODE ? ('사용 / nice ' + cfg.DOWNLOAD_NICE_LEVEL) : '사용 안 함'],
+      ['중복 확인', (state.compare_status && state.compare_status.enabled) ?
+        ((state.compare_status.sources || []).join(' + ') + ' / ' + state.compare_status.count + '개') :
+        '설정 안 됨'],
       ['zip 무압축 저장', cfg.ZIP_STORED ? '사용(CPU 절약)' : '사용 안 함(DEFLATE 압축)'],
       ['작품당 최대 신규 다운로드', cfg.MAX_NEW_EPISODES_PER_TITLE],
       ['디스코드 알림', cfg.has_discord ? '설정됨' : '(미설정)']
@@ -300,9 +326,13 @@
       sel.value = current;
     }
     var statusEl = el('[data-el="compare-library-status"]');
-    if (statusEl && !statusEl.textContent) {
-      statusEl.textContent = cfg.COMPARE_LIBRARY_ID ?
-        ('현재: "' + (cfg.COMPARE_LIBRARY_NAME || cfg.COMPARE_LIBRARY_ID) + '"와 비교 중') : '';
+    if (statusEl) {
+      var lines = [];
+      if (cfg.COMPARE_FOLDER) lines.push('폴더: ' + escapeHtml(cfg.COMPARE_FOLDER));
+      if (cfg.COMPARE_LIBRARY_ID) {
+        lines.push('라이브러리: ' + escapeHtml(cfg.COMPARE_LIBRARY_NAME || cfg.COMPARE_LIBRARY_ID));
+      }
+      statusEl.innerHTML = (lines.length ? lines.join('<br>') + '<br>' : '') + compareStatusText();
     }
   }
 
@@ -393,7 +423,7 @@
     currentTab = tab;
     els('.wtm-tab').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-tab') === tab); });
 
-    var isListTab = ['all', 'subscribed', 'unsubscribed', 'excluded'].indexOf(tab) >= 0;
+    var isListTab = ['all', 'subscribed', 'unsubscribed', 'excluded', 'duplicate'].indexOf(tab) >= 0;
     els('[data-panel-view]').forEach(function (p) {
       var views = p.getAttribute('data-panel-view').split(',');
       p.style.display = views.indexOf(tab) >= 0 ? '' : 'none';

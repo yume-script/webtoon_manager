@@ -33,6 +33,7 @@
     <button class="wtm-tab" data-tab="subscribed">구독중</button>
     <button class="wtm-tab" data-tab="unsubscribed">구독해제</button>
     <button class="wtm-tab" data-tab="excluded">제외됨</button>
+    <button class="wtm-tab" data-tab="duplicate">중복 🔁</button>
     <button class="wtm-tab" data-tab="manual">선택 회차 다운로드</button>
     <button class="wtm-tab" data-tab="authors">작가·태그 관리</button>
     <button class="wtm-tab" data-tab="history">다운로드 이력</button>
@@ -40,7 +41,7 @@
     <button class="wtm-tab" data-tab="help">도움말</button>
   </div>
 
-  <div class="wtm-toolbar" data-panel="all,subscribed,unsubscribed,excluded">
+  <div class="wtm-toolbar" data-panel="all,subscribed,unsubscribed,excluded,duplicate">
     <input type="text" class="wtm-input" data-el="search-input" placeholder="제목/작가로 검색">
     <select class="wtm-input" style="flex:0 0 auto;width:auto" data-el="sort-select">
       <option value="default">기본순(최근 발견순)</option>
@@ -61,7 +62,7 @@
     </div>
   </div>
 
-  <div class="wtm-panel" data-panel-view="all,subscribed,unsubscribed,excluded">
+  <div class="wtm-panel" data-panel-view="all,subscribed,unsubscribed,excluded,duplicate">
     <div class="wtm-card-grid" data-el="title-grid"></div>
   </div>
 
@@ -110,7 +111,22 @@
       <button class="wtm-btn wtm-btn-secondary" data-action="test_discord">디스코드 테스트 알림 보내기</button>
     </div>
     <div class="wtm-box">
-      <div class="wtm-box-title">중복 확인 라이브러리</div>
+      <div class="wtm-box-title">중복 확인 (이미 갖고 있는 웹툰 표시)</div>
+      <p class="wtm-hint">
+        이미 갖고 있는 웹툰을 목록에서 <b>"📚 보유중"</b> 뱃지로 표시하고,
+        상단 <b>"중복 🔁"</b> 탭에서 중복된 작품만 모아볼 수 있습니다.
+        비교 기준은 두 가지이며, 둘 다 설정하면 합쳐서 비교합니다.
+      </p>
+      <p class="wtm-hint">
+        <b>① 폴더 기준(권장)</b> — 환경설정 &gt; 플러그인 설정의
+        <b>"중복 확인 폴더"</b>에 이미 갖고 있는 웹툰이 모여있는 폴더의
+        절대경로를 넣으세요. 하위 폴더명과 압축파일명을 시리즈명으로 보고
+        비교하며, 아직 BookOasis에 스캔 등록하지 않은 폴더도 잡아냅니다.
+      </p>
+      <p class="wtm-hint">
+        <b>② 라이브러리 기준</b> — 아래에서 BookOasis 라이브러리를 고르면
+        그 라이브러리에 등록된 시리즈와 비교합니다.
+      </p>
       <p class="wtm-hint">
         특정 BookOasis 라이브러리를 지정하면, 그 라이브러리에 이미 같은
         이름의 시리즈가 있는 작품을 전체목록/구독중 카드에 표시해줍니다.
