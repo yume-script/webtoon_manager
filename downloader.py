@@ -9,6 +9,8 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from xml.sax.saxutils import escape as _xml_escape
 
+import requests
+
 from . import naver_api
 
 _SAFE_RE = re.compile(r'[\\/:*?"<>|]')
@@ -32,6 +34,39 @@ def lower_thread_priority(nice_level=10):
         return True
     except (AttributeError, OSError, ValueError):
         return False
+
+
+# 시리즈 썸네일(메인 이미지)을 회차마다 매번 새로 내려받지 않도록, 프로세스
+# 생존 기간 동안만 URL 기준으로 캐시한다. {url: (bytes, 확장자) | None}
+# None은 "이 URL은 실패했음"을 기억해 같은 실행 내에서 반복 재시도하지 않기
+# 위함이다(다음 프로세스 재시작/재로드 시에는 다시 시도됨).
+_THUMBNAIL_CACHE = {}
+
+
+def fetch_cover_bytes(session, thumbnail_url, timeout=10, log=None):
+    """시리즈 썸네일(메인 이미지)을 다운로드해서 (bytes, 확장자) 튜플로
+    반환한다. 실패하거나 URL이 없으면 None - 호출 측은 이걸 이유로 회차
+    다운로드 자체를 실패로 처리하면 안 된다(부가 기능이므로)."""
+    if not thumbnail_url:
+        return None
+    if thumbnail_url in _THUMBNAIL_CACHE:
+        return _THUMBNAIL_CACHE[thumbnail_url]
+    try:
+        getter = session.get if session is not None else requests.get
+        resp = getter(thumbnail_url, timeout=timeout)
+        resp.raise_for_status()
+        ext = ".jpg"
+        for cand in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+            if cand in thumbnail_url.lower():
+                ext = cand
+                break
+        result = (resp.content, ext)
+    except Exception as e:  # noqa: BLE001
+        if log:
+            log("메인 이미지(썸네일) 다운로드 실패(무시하고 계속) - %s" % e)
+        result = None
+    _THUMBNAIL_CACHE[thumbnail_url] = result
+    return result
 
 
 def safe_name(name):
@@ -313,7 +348,7 @@ def download_episode(session, download_root, temp_root, title, title_id, episode
 
 def compress_episode(download_root, temp_root, title, title_id, episode_no,
                       folder_zero_fill=4, log=None, comicinfo_meta=None,
-                      zip_stored=True):
+                      zip_stored=True, session=None, cover_url=None):
     """2단계(별도 단계): download_episode()로 temp_root 임시 폴더에 완전히
     다 받아진 회차 이미지를 '제목 00xx화#장수.zip'으로 압축해서 실제 웹툰
     폴더(download_root)로 옮기고, 임시 낱장 폴더는 삭제한다. 다운로드
@@ -331,6 +366,15 @@ def compress_episode(download_root, temp_root, title, title_id, episode_no,
     이미지 장수로 자동 채운다. XML 생성에 실패해도(예: 값 이상) 이미지
     압축 자체는 그대로 진행한다 - 메타데이터는 부가 정보일 뿐이라 이것
     때문에 다운로드가 실패로 처리되면 안 된다.
+
+    cover_url이 주어지면(보통 시리즈 썸네일 URL) 그 이미지를 내려받아
+    회차 실제 컷 이미지들보다 파일명이 앞서도록("0000_cover.<확장자>")
+    zip 맨 앞에 함께 넣는다 - 대부분의 리더는 zip 안 이미지를 파일명
+    순서대로 페이지로 넘기므로, 결과적으로 리더에서 폈을 때 메인
+    이미지(표지)가 1페이지로 보인다. session이 주어지면 그 세션(쿠키
+    포함)으로 받고, 없으면 새 요청을 만든다. 같은 URL은 프로세스 생존
+    기간 동안 캐시해서 회차마다 반복 다운로드하지 않는다. 다운로드에
+    실패해도 조용히 건너뛸 뿐 회차 압축 자체는 정상 진행한다.
 
     이미 압축된 파일이 있으면 아무 것도 안 하고 그 경로를 반환한다(스킵).
     압축할 낱장 폴더 자체가 없으면(예: 애초에 이미지 다운로드가 실패한 경우)
@@ -362,8 +406,14 @@ def compress_episode(download_root, temp_root, title, title_id, episode_no,
         os.remove(archive_path)
     tmp_path = archive_path + ".tmp"
     try:
+        cover = fetch_cover_bytes(session, cover_url, log=log) if cover_url else None
         with zipfile.ZipFile(tmp_path, "w",
                               zipfile.ZIP_STORED if zip_stored else zipfile.ZIP_DEFLATED) as zf:
+            if cover:
+                cover_bytes, cover_ext = cover
+                # 파일명이 "0000_cover" < "0001.jpg" 순으로 정렬되어 리더가
+                # 파일명 순으로 페이지를 넘길 때 항상 맨 앞(1페이지)이 된다.
+                zf.writestr("0000_cover" + cover_ext, cover_bytes)
             for fname in files:
                 zf.write(os.path.join(target_dir, fname), arcname=fname)
             if comicinfo_meta:
@@ -377,7 +427,7 @@ def compress_episode(download_root, temp_root, title, title_id, episode_no,
                         genre=comicinfo_meta.get("genre"),
                         web=comicinfo_meta.get("web"),
                         age_rating=comicinfo_meta.get("age_rating"),
-                        page_count=count,
+                        page_count=count + (1 if cover else 0),
                         notes=comicinfo_meta.get("notes"),
                     )
                     zf.writestr("ComicInfo.xml", xml_str)
@@ -398,7 +448,8 @@ def compress_episode(download_root, temp_root, title, title_id, episode_no,
                 os.rmdir(parent_dir)
         except OSError:
             pass
-        return True, archive_path, "압축 완료(%d장)" % count
+        return True, archive_path, "압축 완료(%d장%s)" % (
+            count, "+표지" if cover else "")
     except Exception as e:  # noqa: BLE001
         if log:
             log("압축 실패 titleId=%s no=%s: %s (낱장 폴더는 그대로 둠)" % (title_id, episode_no, e))

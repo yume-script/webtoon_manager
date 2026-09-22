@@ -86,6 +86,7 @@ DEFAULTS = {
     "GENERATE_COMICINFO_XML": True,
     "GENERATE_SERIES_JSON": True,
     "COMPARE_FOLDER": "",
+    "ADD_COVER_AS_FIRST_PAGE": True,
     "LOW_PRIORITY_MODE": True,
     "DOWNLOAD_NICE_LEVEL": 10,
     "ZIP_STORED": True,
@@ -135,6 +136,10 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         {"key": "COMPARE_LIBRARY_NAME",
          "label": "중복 확인 라이브러리 이름(표시용, ID와 함께 자동으로 채워짐)",
          "type": "text", "default": ""},
+        {"key": "ADD_COVER_AS_FIRST_PAGE",
+         "label": "메인 이미지를 1페이지로 포함(회차 zip 맨 앞에 시리즈 썸네일을 표지 페이지로 "
+                  "함께 넣음 - 대부분의 리더에서 첫 장으로 보임)",
+         "type": "checkbox", "default": True},
         {"key": "GENERATE_COMICINFO_XML",
          "label": "ComicInfo.xml 함께 생성(Komga/Kavita 등에서 인식하는 메타데이터 - 회차 zip 안에 포함됨)",
          "type": "checkbox", "default": True},
@@ -364,6 +369,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 "COMPARE_LIBRARY_ID": cfg.get("COMPARE_LIBRARY_ID", ""),
                 "COMPARE_LIBRARY_NAME": cfg.get("COMPARE_LIBRARY_NAME", ""),
                 "COMPARE_FOLDER": cfg.get("COMPARE_FOLDER", ""),
+                "ADD_COVER_AS_FIRST_PAGE": bool(cfg.get("ADD_COVER_AS_FIRST_PAGE", True)),
                 "GENERATE_COMICINFO_XML": bool(cfg.get("GENERATE_COMICINFO_XML", True)),
                 "GENERATE_SERIES_JSON": bool(cfg.get("GENERATE_SERIES_JSON", True)),
                 "LOW_PRIORITY_MODE": bool(cfg.get("LOW_PRIORITY_MODE", True)),
@@ -668,6 +674,9 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                             folder_zero_fill=int(cfg.get("FOLDER_ZERO_FILL", 4)),
                             log=ss.append_log,
                             zip_stored=bool(cfg.get("ZIP_STORED", True)),
+                            session=session,
+                            cover_url=_t_for_comicinfo.get("thumbnail")
+                            if cfg.get("ADD_COVER_AS_FIRST_PAGE", True) else None,
                             comicinfo_meta=pipeline._comicinfo_meta_for(
                                 _t_for_comicinfo, {"no": no, "subtitle": None}, title_id)
                             if cfg.get("GENERATE_COMICINFO_XML", True) else None)
@@ -812,6 +821,9 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                             folder_zero_fill=int(cfg.get("FOLDER_ZERO_FILL", 4)),
                             log=ss.append_log,
                             zip_stored=bool(cfg.get("ZIP_STORED", True)),
+                            session=session,
+                            cover_url=t_info.get("thumbnail")
+                            if cfg.get("ADD_COVER_AS_FIRST_PAGE", True) else None,
                             comicinfo_meta=pipeline._comicinfo_meta_for(t_info, ep, title_id)
                             if cfg.get("GENERATE_COMICINFO_XML", True) else None)
                         if c_ok:

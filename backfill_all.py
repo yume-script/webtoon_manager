@@ -212,6 +212,8 @@ def backfill_title(session, cfg, tid, t, args, stats):
             download_root, temp_root, title, tid, no,
             folder_zero_fill=folder_zero_fill, log=log,
             zip_stored=bool(cfg.get("ZIP_STORED", True)),
+            session=session,
+            cover_url=t.get("thumbnail") if cfg.get("ADD_COVER_AS_FIRST_PAGE", True) else None,
             comicinfo_meta=pipeline._comicinfo_meta_for(t, ep, tid) if comicinfo_on else None)
         if not c_ok:
             log("  %s화 압축 실패: %s (다음 실행 때 재시도됨)" % (no, c_msg))

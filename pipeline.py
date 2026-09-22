@@ -330,6 +330,8 @@ def run_download_cycle(cfg, log=print):
                         download_root, temp_root, t.get("title", tid), tid, ep["no"],
                         folder_zero_fill=folder_zero_fill, log=log,
                         zip_stored=bool(cfg.get("ZIP_STORED", True)),
+                        session=session,
+                        cover_url=t.get("thumbnail") if cfg.get("ADD_COVER_AS_FIRST_PAGE", True) else None,
                         comicinfo_meta=_comicinfo_meta_for(t, ep, tid)
                         if cfg.get("GENERATE_COMICINFO_XML", True) else None)
                     if c_ok:

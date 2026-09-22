@@ -280,6 +280,7 @@
       ['신간 자동 구독', cfg.AUTO_SUBSCRIBE_NEW_TITLES ? '사용' : '사용 안 함(관심 작가만 자동구독)'],
       ['매일+ 자동 구독', cfg.AUTO_SUBSCRIBE_DAILY_PLUS ? '사용' : '사용 안 함'],
       ['ComicInfo.xml 생성', cfg.GENERATE_COMICINFO_XML ? '사용' : '사용 안 함'],
+      ['메인 이미지 1페이지 포함', cfg.ADD_COVER_AS_FIRST_PAGE ? '사용' : '사용 안 함'],
       ['series.json 생성(BookOasis 스캐너용)', cfg.GENERATE_SERIES_JSON ? '사용' : '사용 안 함'],
       ['서버 리소스 양보', cfg.LOW_PRIORITY_MODE ? ('사용 / nice ' + cfg.DOWNLOAD_NICE_LEVEL) : '사용 안 함'],
       ['중복 확인', (state.compare_status && state.compare_status.enabled) ?
