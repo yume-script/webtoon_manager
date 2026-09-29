@@ -74,7 +74,6 @@ DEFAULTS = {
     "ENABLE_SCHEDULER": False,
     "INTERVAL_MINUTES": 240,
     "FINISHED_SCAN_HOUR": 4,
-    "AUTO_UNSUBSCRIBE_ON_FINISH": False,
     "AUTO_SUBSCRIBE_NEW_TITLES": False,
     "AUTO_SUBSCRIBE_DAILY_PLUS": False,
     "MAX_NEW_EPISODES_PER_TITLE": 10,
@@ -118,11 +117,6 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
          "default": 240},
         {"key": "FINISHED_SCAN_HOUR", "label": "완결 전체 목록 수집 시각(0~23시, 하루 1번)", "type": "number",
          "default": 4},
-        {"key": "AUTO_UNSUBSCRIBE_ON_FINISH",
-         "label": "완결 시 자동 구독해제(꺼져 있으면 기존처럼 디스코드 알림만 보내고 카테고리탭에서 "
-                  "직접 구독해제해야 함 - '알람만 끄기'는 아직 별도 기능이 없어 이 옵션을 켜면 알림도 "
-                  "함께 꺼짐)",
-         "type": "checkbox", "default": False},
         {"key": "AUTO_SUBSCRIBE_NEW_TITLES",
          "label": "신간 자동 구독(요일별 목록에 처음 나타나는 작품을 관심 작가와 무관하게 전부 구독)",
          "type": "checkbox", "default": False},
