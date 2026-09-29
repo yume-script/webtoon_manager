@@ -163,13 +163,23 @@ def run_scan_finished(cfg, log=print, max_pages=200):
             finished_events.append({"titleId": tid, "title": item.get("title") or old.get("title")})
         patch[tid] = _autosubscribe_patch(item, old, set())
 
+    # 설정이 켜져 있으면 방금 완결로 확인된(=finished_events) 구독 작품을 자동으로
+    # 구독해제 처리한다. patch[tid]는 위 루프에서 finished_events의 모든 tid에 대해
+    # 이미 만들어져 있으므로(같은 finished dict를 순회) 안전하게 덮어쓸 수 있다.
+    auto_unsubscribe = bool(cfg.get("AUTO_UNSUBSCRIBE_ON_FINISH", False))
+    if auto_unsubscribe:
+        for ev in finished_events:
+            patch[ev["titleId"]]["subscribed"] = False
+            patch[ev["titleId"]]["unsubscribed"] = True
+
     ss.upsert_title(patch)
     ss.save_job_state({"last_finished_scan_at": time.time()})
     log("완결 스캔 완료: 총 %d개 작품" % len(patch))
 
     if finished_events:
         for ev in finished_events:
-            discord_notify.notify_finished(cfg, ev["title"], ev["titleId"])
+            discord_notify.notify_finished(cfg, ev["title"], ev["titleId"],
+                                            auto_unsubscribed=auto_unsubscribe)
     return {"scanned": len(patch), "finished_events": finished_events}
 
 

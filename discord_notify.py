@@ -66,12 +66,19 @@ def notify(cfg, title, description, color=COLOR_INFO, fields=None, mention_manag
     return ok_any, ("; ".join(errs) if errs else "ok")
 
 
-def notify_finished(cfg, title, title_id):
-    return notify(
-        cfg, "📗 완결 감지: %s" % title,
-        "titleId=%s 작품이 완결로 확인되었습니다. 카테고리탭의 '구독중' 목록에서 "
-        "구독해제 또는 알람만 끄기를 선택해주세요." % title_id,
-        color=COLOR_DONE, fields={"titleId": title_id})
+def notify_finished(cfg, title, title_id, auto_unsubscribed=False):
+    """auto_unsubscribed=True면 이미 자동으로 구독해제 처리됐다는 문구로 보낸다
+    (설정 AUTO_UNSUBSCRIBE_ON_FINISH가 켜져 있을 때 pipeline.run_scan_finished가 전달)."""
+    if auto_unsubscribed:
+        description = (
+            "titleId=%s 작품이 완결로 확인되어 자동으로 구독해제 처리했습니다. "
+            "새 시즌 등으로 다시 연재되면 카테고리탭의 '전체 목록'에서 다시 구독해주세요." % title_id)
+    else:
+        description = (
+            "titleId=%s 작품이 완결로 확인되었습니다. 카테고리탭의 '구독중' 목록에서 "
+            "구독해제 또는 알람만 끄기를 선택해주세요." % title_id)
+    return notify(cfg, "📗 완결 감지: %s" % title, description,
+                  color=COLOR_DONE, fields={"titleId": title_id})
 
 
 def notify_cookie_expired(cfg):
