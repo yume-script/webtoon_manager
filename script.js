@@ -84,6 +84,7 @@
   var currentTab = 'all';
   var searchQuery = '';
   var dayFilter = 'all';
+  var platformFilter = 'all';
   var sortMode = 'default';
   var lookupResult = null;
   var pollTimer = null;
@@ -105,8 +106,16 @@
     else if (currentTab === 'duplicate') list = list.filter(function (t) { return t.in_library === true; });
     // 'all' 은 필터 없이 전체
 
+    if (platformFilter !== 'all') {
+      list = list.filter(function (t) { return (t.platform || 'naver') === platformFilter; });
+    }
+
     if (dayFilter === 'finished') {
       list = list.filter(function (t) { return t.status === '완결'; });
+    } else if (dayFilter === 'new') {
+      list = list.filter(function (t) { return !!t.new; });
+    } else if (dayFilter === 'waitfree') {
+      list = list.filter(function (t) { return !!t.waitfree && t.status !== '완결'; });
     } else if (dayFilter !== 'all') {
       list = list.filter(function (t) { return (t.weekdays || []).indexOf(dayFilter) >= 0; });
     }
@@ -142,6 +151,13 @@
 
   function badgeHtml(t) {
     var out = '';
+    if (t.platform === 'kakao') {
+      out += '<span class="wtm-badge" style="background:color-mix(in srgb, #f5c400 30%, transparent);color:color-mix(in srgb, #b08a00 90%, var(--app-text-primary))">카카오</span>';
+    } else {
+      out += '<span class="wtm-badge" style="background:color-mix(in srgb, #03c75a 22%, transparent);color:color-mix(in srgb, #03a14a 90%, var(--app-text-primary))">네이버</span>';
+    }
+    if (t.waitfree && t.status !== '완결') out += '<span class="wtm-badge up">기다무</span>';
+    if ((t.category || '').indexOf('소설') >= 0) out += '<span class="wtm-badge rest">웹소설(미지원)</span>';
     if (t.new) out += '<span class="wtm-badge new">신작</span>';
     if (t.status === '완결') out += '<span class="wtm-badge finished">완결</span>';
     if (t.rest) out += '<span class="wtm-badge rest">휴재</span>';
@@ -157,6 +173,23 @@
 
   function cardActionsHtml(t) {
     var st = statusOf(t);
+    var pAttr = ' data-platform="' + (t.platform || 'naver') + '"';
+    if (t.platform === 'kakao') {
+      var sid = escapeHtml(t.titleId);
+      var open = '<a class="wtm-btn wtm-btn-small wtm-btn-ghost" href="https://page.kakao.com/content/' + sid + '" target="_blank" rel="noopener">열기</a>';
+      var res = t.last_result ? '<div class="wtm-card-author" style="width:100%" title="마지막 확인 결과">' + escapeHtml(t.last_result) + '</div>' : '';
+      if (st === 'subscribed') {
+        return res + '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-card-action="download_title" data-title-id="' + sid + '"' + pAttr + ' title="받지 않은 회차 중 볼 수 있는 회차를 지금 받습니다">다운로드</button>' +
+          '<button class="wtm-btn wtm-btn-small" data-card-action="resync_title" data-title-id="' + sid + '"' + pAttr + '>다시 확인</button>' +
+          '<button class="wtm-btn wtm-btn-small" data-card-action="unsubscribe" data-title-id="' + sid + '"' + pAttr + '>구독해제</button>' +
+          '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-card-action="exclude" data-title-id="' + sid + '"' + pAttr + '>제외</button>' + open;
+      }
+      if (st === 'unsubscribed' || st === 'excluded') {
+        return res + '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-card-action="restore" data-title-id="' + sid + '"' + pAttr + '>다시 구독</button>' + open;
+      }
+      return '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-card-action="subscribe" data-title-id="' + sid + '"' + pAttr + '>구독</button>' +
+        '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-card-action="exclude" data-title-id="' + sid + '"' + pAttr + '>제외</button>' + open;
+    }
     if (st === 'subscribed') {
       return '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-card-action="download_title" data-title-id="' + t.titleId + '" title="last_downloaded_no 이후의 새 회차를 지금 바로 찾아서 받습니다">새회차 다운로드</button>' +
         '<button class="wtm-btn wtm-btn-small" data-goto-manual="' + t.titleId + '">선택 회차 다운로드</button>' +
@@ -203,7 +236,7 @@
     }
     grid.innerHTML = list.map(function (t) {
       return '<div class="wtm-card">' +
-        (t.thumbnail ? '<img class="wtm-card-thumb" src="' + t.thumbnail + '" loading="lazy">' :
+        (t.thumbnail ? '<img class="wtm-card-thumb" src="' + escapeHtml(t.thumbnail) + '" loading="lazy"' + (t.platform === 'kakao' ? ' referrerpolicy="no-referrer"' : '') + '>' :
           '<div class="wtm-card-thumb"></div>') +
         '<div class="wtm-card-body">' +
         '<div class="wtm-card-title">' + escapeHtml(t.title || t.titleId) + '</div>' +
@@ -373,59 +406,25 @@
     if (tjob.running) pollFastUntil = Date.now() + 30000;
   }
 
-  function renderKakao() {
-    var grid = el('[data-el="kakao-grid"]');
+  function renderKakaoStatus() {
     var status = el('[data-el="kakao-status"]');
+    if (!status) return;
     var cfg = state.config_public || {};
-    if (status) {
-      if (!cfg.KAKAO_ENABLE) {
-        status.innerHTML = '⚠️ 환경설정 &gt; 플러그인 설정에서 <b>"[카카오페이지] 카카오페이지 웹툰 다운로드 사용"</b>을 켜야 동작합니다.';
-      } else {
-        status.textContent = '저장 경로: ' + (cfg.KAKAO_DOWNLOAD_ROOT || '') +
-          ' / 로그인 쿠키: ' + (cfg.has_kakao_cookie ? '설정됨' : '없음(무료 회차만)') +
-          ' / 기다무 자동 사용: ' + (cfg.KAKAO_USE_WAITFREE ? '켜짐' : '꺼짐') +
-          ' / 자동 실행 포함: ' + (cfg.KAKAO_AUTO ? '예' : '아니오');
-      }
-    }
-    if (!grid) return;
-    var list = state.kakao_titles || [];
-    if (!list.length) {
-      grid.innerHTML = '<div class="wtm-hint">등록된 카카오페이지 작품이 없습니다. 위에 작품 URL을 넣고 등록하세요.</div>';
+    if (!cfg.KAKAO_ENABLE) {
+      status.innerHTML = '⚠️ 환경설정 &gt; 플러그인 설정에서 <b>"[카카오페이지] 카카오페이지 웹툰 다운로드 사용"</b>을 켜야 목록 수집/다운로드가 동작합니다.';
       return;
     }
-    grid.innerHTML = list.map(function (t) {
-      var sid = escapeHtml(t.seriesId);
-      var badges = '';
-      if (t.status === '완결') badges += '<span class="wtm-badge finished">완결</span>';
-      if (t.adult) badges += '<span class="wtm-badge rest">19</span>';
-      if ((t.category || '').indexOf('소설') >= 0) badges += '<span class="wtm-badge rest" title="이미지 웹툰만 받을 수 있습니다">웹소설(미지원)</span>';
-      if (!t.subscribed) badges += '<span class="wtm-badge">구독해제</span>';
-      var progress = (t.last_downloaded_no != null ? ('마지막 받은 회차 ' + t.last_downloaded_no + '화') : '아직 받은 회차 없음') +
-        (t.episode_count ? (' / 전체 ' + t.episode_count + '화') : '');
-      var actions = '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-kakao-action="kakao_download" data-series-id="' + sid + '">지금 다운로드</button>' +
-        (t.subscribed
-          ? '<button class="wtm-btn wtm-btn-small" data-kakao-action="kakao_unsubscribe" data-series-id="' + sid + '">구독해제</button>'
-          : '<button class="wtm-btn wtm-btn-small" data-kakao-action="kakao_subscribe" data-series-id="' + sid + '">다시 구독</button>') +
-        '<a class="wtm-btn wtm-btn-small wtm-btn-ghost" href="https://page.kakao.com/content/' + sid + '" target="_blank" rel="noopener">열기</a>' +
-        '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-kakao-action="kakao_remove" data-series-id="' + sid + '">삭제</button>';
-      return '<div class="wtm-card">' +
-        (t.thumbnail ? '<img class="wtm-card-thumb" src="' + escapeHtml(t.thumbnail) + '" loading="lazy" referrerpolicy="no-referrer">' :
-          '<div class="wtm-card-thumb"></div>') +
-        '<div class="wtm-card-body">' +
-        '<div class="wtm-card-title">' + escapeHtml(t.title || t.seriesId) + '</div>' +
-        '<div class="wtm-card-author">' + escapeHtml(t.author || '') + '</div>' +
-        '<div class="wtm-card-author">' + escapeHtml(progress) + '</div>' +
-        (t.last_result ? '<div class="wtm-card-author" title="마지막 확인 결과">' + escapeHtml(fmtDate(t.last_result_at) + ' · ' + t.last_result) + '</div>' : '') +
-        '<div class="wtm-badges">' + badges + '</div>' +
-        '<div class="wtm-card-actions">' + actions + '</div>' +
-        '</div></div>';
-    }).join('');
+    var kcount = (state.titles || []).filter(function (t) { return t.platform === 'kakao'; }).length;
+    status.textContent = '작품 ' + kcount + '개 / 저장 경로: ' + (cfg.KAKAO_DOWNLOAD_ROOT || '') +
+      ' / 로그인 쿠키: ' + (cfg.has_kakao_cookie ? '설정됨' : '없음(무료 회차만)') +
+      ' / 기다무 자동 사용: ' + (cfg.KAKAO_USE_WAITFREE ? '켜짐' : '꺼짐') +
+      ' / 자동 실행 포함: ' + (cfg.KAKAO_AUTO ? '예' : '아니오');
   }
 
   function renderAll() {
     renderStatusBar();
     renderGrid();
-    renderKakao();
+    renderKakaoStatus();
     renderAuthorsTags();
     renderHistory();
     renderSettingsSummary();
@@ -496,10 +495,18 @@
     var tabBtn = ev.target.closest('.wtm-tab');
     if (tabBtn) { setTab(tabBtn.getAttribute('data-tab')); return; }
 
-    var dayBtn = ev.target.closest('.wtm-daytab');
+    var platBtn = ev.target.closest('[data-platform-filter]');
+    if (platBtn) {
+      platformFilter = platBtn.getAttribute('data-platform-filter');
+      els('[data-platform-filter]').forEach(function (b) { b.classList.toggle('active', b === platBtn); });
+      renderGrid();
+      return;
+    }
+
+    var dayBtn = ev.target.closest('.wtm-daytab[data-day]');
     if (dayBtn) {
       dayFilter = dayBtn.getAttribute('data-day');
-      els('.wtm-daytab').forEach(function (b) { b.classList.toggle('active', b === dayBtn); });
+      els('.wtm-daytab[data-day]').forEach(function (b) { b.classList.toggle('active', b === dayBtn); });
       renderGrid();
       return;
     }
@@ -510,7 +517,7 @@
       if (action === 'refresh') { await refresh(); return; }
       if (action === 'scan_now' || action === 'scan_finished_now' || action === 'run_full_cycle_now' || action === 'cancel_job' ||
           action === 'cancel_title_job' || action === 'test_discord' || action === 'force_reset_job' ||
-          action === 'kavita_yaml_all' || action === 'kakao_run_all') {
+          action === 'kavita_yaml_all' || action === 'kakao_run_all' || action === 'kakao_scan') {
         if (action === 'force_reset_job' && !confirm('정말로 작업 상태를 강제 초기화할까요? 지금 실제로 뭔가 진행 중이라면 중간에 끊길 수 있습니다.')) return;
         headerAction.disabled = true;
         var r = await callAction(action, {});
@@ -639,8 +646,10 @@
     if (cardAction) {
       var actName = cardAction.getAttribute('data-card-action');
       var titleId2 = cardAction.getAttribute('data-title-id');
+      var platform2 = cardAction.getAttribute('data-platform') || 'naver';
       cardAction.disabled = true;
-      var r5 = await callAction(actName, { titleId: titleId2 });
+      var r5 = await callAction(actName, { titleId: titleId2, platform: platform2 });
+      if (r5.success && actName === 'download_title') pollFastUntil = Date.now() + 30000;
       cardAction.disabled = false;
       if (!r5.success) alert(r5.message || '실패');
       await refresh();

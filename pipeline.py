@@ -132,12 +132,20 @@ def run_scan_weekday(cfg, log=print):
     patch = _apply_daily_plus_autosubscribe(patch, bool(cfg.get("AUTO_SUBSCRIBE_DAILY_PLUS")), log=log)
 
     ss.upsert_title(patch)
+    kakao_count = 0
+    if _cfg_bool(cfg, "KAKAO_ENABLE", False) and not _cancelled():
+        try:
+            from . import kakao_pipeline
+            kakao_count = kakao_pipeline.run_kakao_scan_weekday(
+                cfg, log=log, should_cancel=_cancelled).get("scanned", 0)
+        except Exception as e:  # noqa: BLE001
+            log("카카오페이지 요일별 스캔 실패(네이버 결과에는 영향 없음): %s" % e)
     if _cancelled():
         log("요일별 스캔 취소됨 - 지금까지 모은 %d개 작품만 반영" % len(patch))
     else:
         ss.save_job_state({"last_scan_at": time.time()})
-        log("요일별 스캔 완료: 총 %d개 작품" % len(patch))
-    return {"scanned": len(patch)}
+        log("요일별 스캔 완료: 네이버 %d개 / 카카오 %d개 작품" % (len(patch), kakao_count))
+    return {"scanned": len(patch) + kakao_count}
 
 
 def run_scan_finished(cfg, log=print, max_pages=200):
@@ -171,6 +179,14 @@ def run_scan_finished(cfg, log=print, max_pages=200):
         patch[tid] = _autosubscribe_patch(item, old, set())
 
     ss.upsert_title(patch)
+    if _cfg_bool(cfg, "KAKAO_ENABLE", False):
+        try:
+            from . import kakao_pipeline
+            kakao_pipeline.run_kakao_scan_finished(
+                cfg, log=log,
+                should_cancel=lambda: bool(ss.load_job_state().get("cancel_requested")))
+        except Exception as e:  # noqa: BLE001
+            log("카카오페이지 완결 스캔 실패(네이버 결과에는 영향 없음): %s" % e)
     ss.save_job_state({"last_finished_scan_at": time.time()})
     log("완결 스캔 완료: 총 %d개 작품" % len(patch))
 

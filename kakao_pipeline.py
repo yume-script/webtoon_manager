@@ -166,6 +166,126 @@ def repair_old_records_async(cfg):
 
 
 # ---------------------------------------------------------------------------
+# 연재 목록 스캔 (네이버 요일별/완결 스캔과 같은 역할)
+# ---------------------------------------------------------------------------
+# 목록 항목에 표지 정보가 없는 작품은 작품 정보 API로 표지를 채우는데, 한 번의
+# 스캔에서 너무 많이 요청하지 않도록 상한을 둔다(나머지는 다음 스캔 때 채움).
+THUMB_FILL_PER_SCAN = 60
+
+
+def _merge_scan_result(cfg, merged, log=print, finished_scan=False):
+    """스캔으로 모은 {sid: rec}를 kakao_titles.json에 반영한다. 사용자가 고른
+    구독/구독해제/제외는 그대로 두고, 새로 발견한 작품은 네이버와 같은 규칙
+    (작가 자동구독 / 신간 자동구독 설정)으로 판단한다."""
+    from . import pipeline
+    old = ss.load_kakao_titles()
+    at = ss.load_authors_tags()
+    author_names = set(a.strip() for a in at.get("authors", []) if a.strip())
+    auto_new = bool(cfg.get("AUTO_SUBSCRIBE_NEW_TITLES")) and bool(old)
+    if finished_scan:
+        # 네이버 완결 스캔과 동일: 완결작은 작가/신간 자동구독 대상에서 뺀다
+        author_names, auto_new = set(), False
+
+    patch = {}
+    for sid, rec in merged.items():
+        o = old.get(sid, {})
+        p = pipeline._autosubscribe_patch(rec, o, author_names, auto_new=auto_new)
+        if o.get("thumbnail"):
+            # 작품 정보 API로 받아둔 정식 표지를 목록의 카드 이미지로 덮어쓰지 않는다
+            # (표지가 바뀌면 kavita.yaml cover도 매번 바뀌어 파일이 계속 다시 써짐)
+            p["thumbnail"] = o["thumbnail"]
+        if finished_scan and o.get("weekdays"):
+            p["weekdays"] = o["weekdays"]   # 완결 스캔은 요일 정보를 지우지 않음
+        if not o and not p.get("subscribed"):
+            p.setdefault("last_downloaded_no", None)
+        patch[sid] = p
+    ss.upsert_kakao_title(patch)
+    return patch
+
+
+def _fill_missing_thumbnails(session, log=print, limit=THUMB_FILL_PER_SCAN, should_cancel=None):
+    titles = ss.load_kakao_titles()
+    todo = [sid for sid, t in titles.items() if not t.get("thumbnail")][:limit]
+    filled = 0
+    for sid in todo:
+        if should_cancel and should_cancel():
+            break
+        info = kakao_api.fetch_series_info(session, sid)
+        if info.get("thumbnail"):
+            ss.upsert_kakao_title({sid: {"thumbnail": info["thumbnail"],
+                                         "cover_url": info.get("cover_url") or info["thumbnail"],
+                                         "synopsis": info.get("synopsis") or ""}})
+            filled += 1
+        time.sleep(0.2)
+    if filled:
+        log("카카오페이지: 표지 %d개 채움" % filled)
+
+
+def run_kakao_scan_weekday(cfg, log=print, should_cancel=None):
+    """월~일(tab 1~7) + 신작(tab 11) 목록을 모아 반영한다."""
+    session = build_session_from_cfg(cfg)
+    merged = {}
+    for tab, day in sorted(kakao_api.WEEKDAY_TABS.items()):
+        if should_cancel and should_cancel():
+            break
+        ss.save_job_state({"message": "카카오페이지 %s요일 목록 수집 중" % "월화수목금토일"[tab - 1]})
+        try:
+            items = kakao_api.fetch_landing_all(session, tab_uid=tab, should_cancel=should_cancel)
+        except Exception as e:  # noqa: BLE001
+            log("카카오페이지 %s 목록 수집 실패: %s" % (day, e))
+            continue
+        for it in items:
+            sid = str(it.get("series_id"))
+            rec = merged.get(sid)
+            if rec is None:
+                rec = kakao_api.landing_item_to_title(it)
+                rec["weekdays"] = []
+                rec["new"] = False
+                merged[sid] = rec
+            if day not in rec["weekdays"]:
+                rec["weekdays"].append(day)
+    if not (should_cancel and should_cancel()):
+        try:
+            for it in kakao_api.fetch_landing_all(session, tab_uid=kakao_api.TAB_NEW,
+                                                  should_cancel=should_cancel):
+                sid = str(it.get("series_id"))
+                rec = merged.get(sid)
+                if rec is None:
+                    rec = kakao_api.landing_item_to_title(it)
+                    rec["weekdays"] = []
+                    merged[sid] = rec
+                rec["new"] = True
+        except Exception as e:  # noqa: BLE001
+            log("카카오페이지 신작 목록 수집 실패: %s" % e)
+
+    patch = _merge_scan_result(cfg, merged, log=log)
+    log("카카오페이지 요일별 스캔 완료: %d개 작품" % len(patch))
+    _fill_missing_thumbnails(session, log=log, should_cancel=should_cancel)
+    return {"scanned": len(patch)}
+
+
+def run_kakao_scan_finished(cfg, log=print, should_cancel=None, max_pages=200):
+    """완결(tab 12) 전체 목록. 수천 개라 네이버 완결 스캔과 같은 시각에 따로 돈다."""
+    session = build_session_from_cfg(cfg)
+    ss.save_job_state({"message": "카카오페이지 완결 목록 수집 중"})
+    try:
+        items = kakao_api.fetch_landing_all(session, tab_uid=kakao_api.TAB_FINISHED,
+                                            max_pages=max_pages, should_cancel=should_cancel)
+    except Exception as e:  # noqa: BLE001
+        log("카카오페이지 완결 목록 수집 실패: %s" % e)
+        return {"scanned": 0}
+    merged = {}
+    for it in items:
+        rec = kakao_api.landing_item_to_title(it)
+        rec["status"] = "완결"
+        merged[str(it.get("series_id"))] = rec
+    patch = _merge_scan_result(cfg, merged, log=log, finished_scan=True)
+    log("카카오페이지 완결 스캔 완료: %d개 작품" % len(patch))
+    _fill_missing_thumbnails(session, log=log, should_cancel=should_cancel)
+    return {"scanned": len(patch)}
+
+
+# ---------------------------------------------------------------------------
 # 등록 / 해제
 # ---------------------------------------------------------------------------
 def add_series(cfg, text, log=print):
@@ -185,8 +305,10 @@ def add_series(cfg, text, log=print):
     if existing and patch.get("title") and patch["title"] != existing.get("title"):
         _migrate_title_folder(kakao_root(cfg), existing.get("title"), patch["title"], sid, log=log)
     patch.setdefault("title", (existing or {}).get("title") or sid)
-    patch["subscribed"] = True
+    patch.update({"subscribed": True, "unsubscribed": False, "excluded": False,
+                  "last_seen_at": time.time()})
     if not existing:
+        patch.setdefault("weekdays", [])
         patch["added_at"] = time.time()
         patch["last_downloaded_no"] = None
     ss.upsert_kakao_title({sid: patch})
@@ -379,7 +501,9 @@ def run_kakao_cycle(cfg, log=print, manage_job=False):
              "auth_expired": False, "cancelled": False}
     if not (cfg.get("KAKAO_COOKIE") or "").strip():
         log("카카오페이지: 로그인 쿠키가 없어 무료 회차만 시도합니다.")
-    titles = {k: v for k, v in ss.load_kakao_titles().items() if v.get("subscribed")}
+    titles = {k: v for k, v in ss.load_kakao_titles().items()
+              if v.get("subscribed") and not v.get("excluded") and not v.get("unsubscribed")
+              and not _is_novel(v)}
     if not titles:
         log("카카오페이지: 구독 중인 작품 없음")
         if manage_job:

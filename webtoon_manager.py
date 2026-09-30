@@ -369,16 +369,26 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         for tid, t in titles.items():
             item = dict(t)
             item["titleId"] = tid
+            item["platform"] = "naver"
             if compare_set is None:
                 item["in_library"] = None
             else:
                 item["in_library"] = _normalize_series_name(item.get("title", "")) in compare_set
             items_list.append(item)
+        # 카카오페이지 작품도 같은 목록에 합친다(platform으로 구분)
+        if cfg.get("KAKAO_ENABLE"):
+            for item in self._kakao_items(cfg):
+                item["titleId"] = item["seriesId"]
+                item["platform"] = "kakao"
+                if compare_set is None:
+                    item["in_library"] = None
+                else:
+                    item["in_library"] = _normalize_series_name(item.get("title", "")) in compare_set
+                items_list.append(item)
         items_list.sort(key=lambda x: x.get("last_seen_at", 0), reverse=True)
 
         bundle = {
             "titles": items_list,
-            "kakao_titles": self._kakao_items(cfg),
             "authors_tags": ss.load_authors_tags(),
             "history": ss.load_history(limit=200),
             "job": ss.load_job_state(),
@@ -454,6 +464,9 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 return self._act_run_bg(db_type, pipeline.run_kavita_yaml_all, "kavita.yaml 일괄 생성")
             if action.startswith("kakao_"):
                 return self._dispatch_kakao(db_type, action, payload)
+            if payload.get("platform") == "kakao" and action in (
+                    "subscribe", "unsubscribe", "exclude", "restore", "resync_title", "download_title"):
+                return self._kakao_card_action(db_type, action, payload)
             if action == "cancel_job":
                 ss.save_job_state({"cancel_requested": True})
                 return True, "취소 요청됨"
@@ -518,6 +531,25 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         out.sort(key=lambda x: x.get("added_at") or 0, reverse=True)
         return out
 
+    def _kakao_card_action(self, db_type, action, payload):
+        """통합 목록 카드에서 카카오 작품에 대해 누른 버튼(네이버와 같은 액션 이름)."""
+        sid = str(payload.get("titleId") or "").strip()
+        if sid not in ss.load_kakao_titles():
+            return False, "목록에 없는 카카오 작품입니다"
+        flags = {
+            "subscribe": {"subscribed": True, "excluded": False, "unsubscribed": False},
+            "restore": {"subscribed": True, "excluded": False, "unsubscribed": False},
+            "unsubscribe": {"subscribed": False, "unsubscribed": True},
+            "exclude": {"subscribed": False, "excluded": True},
+        }
+        if action in flags:
+            ss.upsert_kakao_title({sid: flags[action]})
+            return True, "적용됨"
+        if action == "resync_title":
+            ss.upsert_kakao_title({sid: {"checked_no": 0, "last_downloaded_no": None}})
+            return True, "다음 다운로드부터 전체 회차를 다시 확인합니다(이미 있는 파일은 스킵됨)"
+        return self._dispatch_kakao(db_type, "kakao_download", {"seriesId": sid})
+
     def _dispatch_kakao(self, db_type, action, payload):
         from . import kakao_pipeline
         cfg = self._get_cfg(db_type)
@@ -531,11 +563,20 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         if action in ("kakao_subscribe", "kakao_unsubscribe"):
             if sid not in ss.load_kakao_titles():
                 return False, "등록되지 않은 작품입니다"
-            ss.upsert_kakao_title({sid: {"subscribed": action == "kakao_subscribe"}})
+            ss.upsert_kakao_title({sid: {"subscribed": action == "kakao_subscribe",
+                                         "unsubscribed": action != "kakao_subscribe",
+                                         "excluded": False}})
             return True, "변경됨"
         if action == "kakao_remove":
             removed = ss.remove_kakao_title(sid)
             return (True, "목록에서 삭제됨(받은 파일은 그대로 둠)") if removed else (False, "없는 작품")
+        if action == "kakao_scan":
+            def _scan(c, log):
+                kakao_pipeline.run_kakao_scan_weekday(
+                    c, log=log, should_cancel=lambda: ss.load_job_state().get("cancel_requested"))
+                ss.save_job_state({"running": False, "stage": "done", "finished_at": time.time(),
+                                    "message": "카카오페이지 요일별 목록 수집 완료"})
+            return self._act_run_bg(db_type, _scan, "카카오페이지 목록 수집")
         if action == "kakao_run_all":
             def _run(c, log):
                 return kakao_pipeline.run_kakao_cycle(c, log=log, manage_job=True)

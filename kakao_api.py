@@ -257,6 +257,75 @@ def fetch_series_info(session, series_id):
 
 
 # ---------------------------------------------------------------------------
+# 요일 연재 목록 (page.kakao.com/menu/10010/screen/52 의 데이터)
+# ---------------------------------------------------------------------------
+LANDING_API = BFF + "/api/gateway/view/v2/landing/dayofweek"
+WEBTOON_CATEGORY_UID = 10
+TAB_NEW = 11
+TAB_FINISHED = 12
+# tab_uid 1~7 = 월~일 (네이버 쪽 weekdays 키와 맞춘다)
+WEEKDAY_TABS = {1: "mon", 2: "tue", 3: "wed", 4: "thu", 5: "fri", 6: "sat", 7: "sun"}
+
+
+def fetch_landing_page(session, tab_uid=None, bm=None, page=0):
+    params = {"category_uid": WEBTOON_CATEGORY_UID, "page": page}
+    if tab_uid is not None:
+        params["tab_uid"] = tab_uid
+    if bm:
+        params["bm"] = bm
+        params["subcategory_uid"] = 0
+    r = session.get(LANDING_API, params=params, timeout=session.request_timeout)
+    if r.status_code >= 300:
+        raise RuntimeError("카카오 연재 목록 조회 실패: %s" % _api_error_text(r)[1])
+    body = json.loads(r.content.decode("utf-8"))
+    return body.get("result") or {}
+
+
+def fetch_landing_all(session, tab_uid=None, bm=None, max_pages=200, should_cancel=None,
+                      delay=0.2):
+    """해당 탭의 전체 작품 목록(페이지를 끝까지). 반환: [landing item dict]"""
+    out, seen = [], set()
+    for page in range(max_pages):
+        if should_cancel and should_cancel():
+            break
+        res = fetch_landing_page(session, tab_uid=tab_uid, bm=bm, page=page)
+        items = res.get("list") or []
+        for it in items:
+            sid = it.get("series_id")
+            if sid and sid not in seen:
+                seen.add(sid)
+                out.append(it)
+        if not items or res.get("is_end"):
+            break
+        time.sleep(delay)
+    return out
+
+
+def landing_item_to_title(it):
+    """연재 목록 항목 -> 카카오 작품 레코드(네이버 titles.json과 같은 필드 이름)."""
+    ap = it.get("asset_property") or {}
+    kid = ap.get("card_img") or (ap.get("card_set") or {}).get("background_img") or ""
+    on_issue = str(it.get("on_issue") or "").upper()
+    rec = {
+        "title": (it.get("title") or "").strip(),
+        "author": ",".join(a.strip() for a in str(it.get("authors") or "").split(",") if a.strip()),
+        "genre": it.get("sub_category") or "",
+        "tags": [it["sub_category"]] if it.get("sub_category") else [],
+        "category": it.get("category") or "",
+        "adult": str(it.get("age_grade")) == "19",
+        "is_adult": str(it.get("age_grade")) == "19",
+        "waitfree": bool(it.get("is_waitfree")),
+        "status": "완결" if on_issue in ("N", "END") else "연재",
+        "release_date": str(it.get("start_sale_dt") or "")[:10].replace("-", ""),
+    }
+    if kid:
+        rec["thumbnail"] = _image_url(kid, THUMB_URL)
+    out = {k: v for k, v in rec.items() if v not in ("", None)}
+    out.update({"adult": rec["adult"], "is_adult": rec["is_adult"], "waitfree": rec["waitfree"]})
+    return out
+
+
+# ---------------------------------------------------------------------------
 # 회차 목록
 # ---------------------------------------------------------------------------
 def _episode_from_item(entry):

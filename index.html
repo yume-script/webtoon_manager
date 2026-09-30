@@ -35,7 +35,6 @@
     <button class="wtm-tab" data-tab="excluded">제외됨</button>
     <button class="wtm-tab" data-tab="duplicate">중복 🔁</button>
     <button class="wtm-tab" data-tab="manual">선택 회차 다운로드</button>
-    <button class="wtm-tab" data-tab="kakao">카카오페이지</button>
     <button class="wtm-tab" data-tab="authors">작가·태그 관리</button>
     <button class="wtm-tab" data-tab="history">다운로드 이력</button>
     <button class="wtm-tab" data-tab="settings">설정</button>
@@ -49,8 +48,14 @@
       <option value="rating">평점순</option>
       <option value="title">가나다순</option>
     </select>
+    <div class="wtm-daytabs" data-el="platform-tabs">
+      <button class="wtm-daytab active" data-platform-filter="all">전체</button>
+      <button class="wtm-daytab" data-platform-filter="naver">네이버</button>
+      <button class="wtm-daytab" data-platform-filter="kakao">카카오</button>
+    </div>
     <div class="wtm-daytabs" data-el="day-tabs">
       <button class="wtm-daytab active" data-day="all">전체</button>
+      <button class="wtm-daytab" data-day="new">신작</button>
       <button class="wtm-daytab" data-day="mon">월</button>
       <button class="wtm-daytab" data-day="tue">화</button>
       <button class="wtm-daytab" data-day="wed">수</button>
@@ -58,7 +63,8 @@
       <button class="wtm-daytab" data-day="fri">금</button>
       <button class="wtm-daytab" data-day="sat">토</button>
       <button class="wtm-daytab" data-day="sun">일</button>
-      <button class="wtm-daytab" data-day="dailyPlus">매일+</button>
+      <button class="wtm-daytab" data-day="dailyPlus" title="네이버 매일+">매일+</button>
+      <button class="wtm-daytab" data-day="waitfree" title="카카오페이지 기다리면 무료">기다무</button>
       <button class="wtm-daytab" data-day="finished">완결</button>
     </div>
   </div>
@@ -73,25 +79,6 @@
       <button class="wtm-btn wtm-btn-primary" data-action="manual_lookup">조회</button>
     </div>
     <div data-el="manual-result"></div>
-  </div>
-
-  <div class="wtm-panel" data-panel-view="kakao" style="display:none">
-    <div class="wtm-box" style="margin-bottom:14px">
-      <div class="wtm-box-title">카카오페이지 작품 등록</div>
-      <div class="wtm-hint" data-el="kakao-status"></div>
-      <div class="wtm-form-row">
-        <input type="text" class="wtm-input" data-el="kakao-input"
-               placeholder="작품 URL 또는 번호 (예: https://page.kakao.com/content/54801072)">
-        <button class="wtm-btn wtm-btn-primary" data-action="kakao_add">등록</button>
-        <button class="wtm-btn wtm-btn-secondary" data-action="kakao_run_all" title="구독 중인 카카오페이지 작품 전체의 새 회차를 확인합니다">전체 확인</button>
-      </div>
-      <p class="wtm-hint">
-        로그인 계정으로 볼 수 있는 회차(무료 / 이미 대여·소장한 회차)만 받습니다. 유료 구매는 하지 않습니다.
-        기다무 자동 사용은 환경설정에서 켠 경우에만, 작품당 실행 1회에 대여권 1장까지 씁니다.
-        <b>지금 다운로드</b>는 받지 않은 회차를 전부 확인하고, 자동 실행은 새 회차 위주로 확인합니다.
-      </p>
-    </div>
-    <div class="wtm-card-grid" data-el="kakao-grid"></div>
   </div>
 
   <div class="wtm-panel" data-panel-view="authors" style="display:none">
@@ -129,6 +116,22 @@
         여기서는 확인 및 디스코드 테스트만 가능합니다.
       </p>
       <button class="wtm-btn wtm-btn-secondary" data-action="test_discord">디스코드 테스트 알림 보내기</button>
+    </div>
+    <div class="wtm-box">
+      <div class="wtm-box-title">카카오페이지</div>
+      <p class="wtm-hint" data-el="kakao-status"></p>
+      <div class="wtm-form-row">
+        <input type="text" class="wtm-input" data-el="kakao-input"
+               placeholder="목록에 없는 작품 URL로 직접 추가 (예: https://page.kakao.com/content/54801072)">
+        <button class="wtm-btn wtm-btn-primary" data-action="kakao_add">추가</button>
+      </div>
+      <button class="wtm-btn wtm-btn-secondary" data-action="kakao_scan">카카오 요일별 목록 수집</button>
+      <button class="wtm-btn wtm-btn-secondary" data-action="kakao_run_all">카카오 구독작 새 회차 확인</button>
+      <p class="wtm-hint">
+        카카오페이지 작품은 [전체목록]에 네이버 작품과 함께 표시됩니다(상단 [네이버]/[카카오]로 구분).
+        요일별/신작 목록은 "지금 스캔"과 스케줄러의 요일별 스캔 때, 완결 목록은 완결 스캔 때 함께 수집됩니다.
+        로그인 계정으로 볼 수 있는 회차(무료 / 대여·소장)만 받고, 유료 구매는 하지 않습니다.
+      </p>
     </div>
     <div class="wtm-box">
       <div class="wtm-box-title">kavita.yaml</div>
