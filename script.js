@@ -282,6 +282,7 @@
       ['ComicInfo.xml 생성', cfg.GENERATE_COMICINFO_XML ? '사용' : '사용 안 함'],
       ['메인 이미지 1페이지 포함', cfg.ADD_COVER_AS_FIRST_PAGE ? '사용' : '사용 안 함'],
       ['series.json 생성(BookOasis 스캐너용)', cfg.GENERATE_SERIES_JSON ? '사용' : '사용 안 함'],
+      ['kavita.yaml 생성', cfg.GENERATE_KAVITA_YAML ? ('사용' + (cfg.KAVITA_YAML_EMBED_COVER ? ' / 표지 포함' : '')) : '사용 안 함'],
       ['서버 리소스 양보', cfg.LOW_PRIORITY_MODE ? ('사용 / nice ' + cfg.DOWNLOAD_NICE_LEVEL) : '사용 안 함'],
       ['중복 확인', (state.compare_status && state.compare_status.enabled) ?
         ((state.compare_status.sources || []).join(' + ') + ' / ' + state.compare_status.count + '개') :
@@ -457,7 +458,8 @@
       var action = headerAction.getAttribute('data-action');
       if (action === 'refresh') { await refresh(); return; }
       if (action === 'scan_now' || action === 'scan_finished_now' || action === 'run_full_cycle_now' || action === 'cancel_job' ||
-          action === 'cancel_title_job' || action === 'test_discord' || action === 'force_reset_job') {
+          action === 'cancel_title_job' || action === 'test_discord' || action === 'force_reset_job' ||
+          action === 'kavita_yaml_all') {
         if (action === 'force_reset_job' && !confirm('정말로 작업 상태를 강제 초기화할까요? 지금 실제로 뭔가 진행 중이라면 중간에 끊길 수 있습니다.')) return;
         headerAction.disabled = true;
         var r = await callAction(action, {});

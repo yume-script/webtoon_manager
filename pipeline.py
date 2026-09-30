@@ -2,7 +2,7 @@
 import os
 import time
 
-from . import naver_api, downloader, discord_notify, state_store as ss
+from . import naver_api, downloader, discord_notify, kavita_yaml, state_store as ss
 
 # 한 작품 안에서 연속으로 이 횟수만큼 다운로드가 실패하면(네이버 일시 차단/
 # 레이트리밋 가능성) 남은 회차는 포기하고 다음 작품으로 넘어간다.
@@ -168,8 +168,11 @@ def run_scan_finished(cfg, log=print, max_pages=200):
     log("완결 스캔 완료: 총 %d개 작품" % len(patch))
 
     if finished_events:
+        dl_root = cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR
         for ev in finished_events:
             discord_notify.notify_finished(cfg, ev["title"], ev["titleId"])
+            # 완결로 바뀌었으니 kavita.yaml의 Publication Status도 갱신
+            update_kavita_yaml(cfg, session, dl_root, ev["titleId"], log=log, force_info=True)
     return {"scanned": len(patch), "finished_events": finished_events}
 
 
@@ -205,8 +208,65 @@ def _comicinfo_meta_for(t, ep, title_id):
     }
 
 
+def _remember_release_date(title_id, episodes):
+    """회차 목록에서 1화 공개일을 뽑아 titles.json에 release_date(YYYYMMDD)로
+    저장한다(kavita.yaml의 Release Date/Year/Month/Day용). 값이 바뀔 때만 쓴다."""
+    try:
+        rd = kavita_yaml.release_date_from_episodes(episodes)
+        if not rd:
+            return
+        cur = ss.load_titles().get(str(title_id), {})
+        # 목록 API가 가장 오래된 회차까지 다 주지 못한 경우를 대비해, 이미 저장된
+        # 날짜보다 늦은 날짜로는 덮어쓰지 않는다.
+        if not cur.get("release_date") or rd < cur.get("release_date"):
+            ss.upsert_title({str(title_id): {"release_date": rd}})
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def update_kavita_yaml(cfg, session, download_root, title_id, log=print, force_info=False):
+    """설정(GENERATE_KAVITA_YAML)이 켜져 있으면 시리즈 폴더의 kavita.yaml을
+    생성/갱신한다. 내용이 같으면 파일을 건드리지 않는다."""
+    if not cfg.get("GENERATE_KAVITA_YAML", True):
+        return "disabled"
+    return kavita_yaml.write_kavita_yaml(
+        download_root, title_id, session=session,
+        embed_cover=bool(cfg.get("KAVITA_YAML_EMBED_COVER", True)),
+        force_info=force_info, log=log)
+
+
+def run_kavita_yaml_all(cfg, log=print):
+    """다운로드 경로에 폴더가 있는 모든 작품의 kavita.yaml을 일괄 생성/갱신한다
+    (카테고리탭 '설정' 탭의 버튼용). 작품 상세정보도 강제로 다시 조회한다."""
+    session = build_session_from_cfg(cfg)
+    download_root = cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR
+    titles = ss.load_titles()
+    targets = [tid for tid, t in titles.items()
+               if os.path.isdir(downloader.title_dir(download_root, t.get("title") or tid, tid))]
+    ss.save_job_state({"stage": "kavita_yaml", "message": "kavita.yaml 일괄 생성 중",
+                        "progress": 0, "total": len(targets)})
+    log("kavita.yaml 일괄 생성 시작: 대상 %d개 작품" % len(targets))
+    counts = {"written": 0, "unchanged": 0, "skipped": 0, "error": 0, "disabled": 0}
+    cfg_forced = dict(cfg, GENERATE_KAVITA_YAML=True)
+    for i, tid in enumerate(targets):
+        if ss.load_job_state().get("cancel_requested"):
+            log("kavita.yaml 일괄 생성 취소됨")
+            break
+        ss.save_job_state({"progress": i, "message": "kavita.yaml: %s" % titles[tid].get("title", tid)})
+        r = update_kavita_yaml(cfg_forced, session, download_root, tid, log=log, force_info=True)
+        counts[r] = counts.get(r, 0) + 1
+        time.sleep(0.2)
+    msg = "kavita.yaml 일괄 생성 완료: 갱신 %d / 변경없음 %d / 건너뜀 %d / 실패 %d" % (
+        counts["written"], counts["unchanged"], counts["skipped"], counts["error"])
+    log(msg)
+    ss.save_job_state({"running": False, "stage": "done", "finished_at": time.time(),
+                        "progress": len(targets), "message": msg})
+    return counts
+
+
 def _episodes_to_download(session, cfg, title_id, known_last_no):
     episodes = naver_api.fetch_episode_list(session, title_id)
+    _remember_release_date(title_id, episodes)
     # 최신 -> 과거 순으로 오므로 known_last_no보다 큰(새 회차)만, 오래된 순으로 반환
     new_eps = [e for e in episodes if isinstance(e.get("no"), int) and e["no"] > (known_last_no or 0)]
     new_eps.sort(key=lambda e: e["no"])
@@ -260,6 +320,10 @@ def run_download_cycle(cfg, log=print):
             continue
 
         if not new_eps:
+            # 새 회차가 없어도 작품 정보(완결/휴재/줄거리 등)가 바뀌었을 수 있으니
+            # kavita.yaml을 다시 맞춰본다. 상세정보 조회는 작품당 하루 1회로
+            # 제한되고, 내용이 같으면 파일은 건드리지 않는다.
+            update_kavita_yaml(cfg, session, download_root, tid, log=log)
             continue
 
         capped = new_eps if max_new <= 0 else new_eps[:max_new]
@@ -380,6 +444,11 @@ def run_download_cycle(cfg, log=print):
         if last_ok_no != t.get("last_downloaded_no"):
             patch["last_downloaded_no"] = last_ok_no
         ss.upsert_title({tid: patch})
+
+        # 새 회차를 받았거나(목록 변경) 작품 정보가 바뀌었으면 kavita.yaml 갱신.
+        # 내용이 같으면 파일은 건드리지 않는다.
+        if not cookie_expired:
+            update_kavita_yaml(cfg, session, download_root, tid, log=log)
 
         if cookie_expired or cancelled:
             break

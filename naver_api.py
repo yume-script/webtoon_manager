@@ -315,6 +315,9 @@ def fetch_episode_list(session, title_id, max_pages=200):
                 "subtitle": it.get("subtitle", ""),
                 "thumbnail": it.get("thumbnailUrl", ""),
                 "charge": bool(it.get("charge")),
+                # 회차 공개일(예: "19.08.19"). kavita.yaml의 Release Date(1화
+                # 공개일)를 채우는 데 쓴다. 응답에 없으면 빈 문자열.
+                "date": it.get("serviceDateDescription") or it.get("serviceDate") or "",
                 "up_type": it.get("serviceUpType", ""),
             })
             new_count += 1
@@ -398,6 +401,73 @@ def fetch_episode_images(session, title_id, episode_no, log=None):
         raise ValueError("titleId=%s no=%s: 이미지 목록을 찾지 못함(페이지 구조 변경 가능성)" %
                           (title_id, episode_no))
     return imgs
+
+
+TITLE_INFO_API = BASE + "/api/article/list/info"
+
+
+def fetch_title_info(session, title_id):
+    """작품 상세 정보(줄거리/작가/태그/연령등급/완결여부)를 가져온다.
+    kavita.yaml의 Summary/Person Writers/Tags/Age Rating 등을 채우는 용도.
+
+    응답 스키마가 바뀌어도 다운로드 자체에 영향이 없도록 모든 필드를 방어적으로
+    파싱하고, 실패하면 None을 반환한다(호출 측은 titles.json에 있는 값만으로
+    yaml을 만든다). 로그인 리다이렉트는 다른 API와 동일하게 NaverAuthExpired."""
+    try:
+        resp = _get(session, TITLE_INFO_API, params={"titleId": title_id},
+                    referer="%s?titleId=%s" % (DETAIL_URL, title_id))
+    except requests.RequestException:
+        return None
+    if "nid.naver.com" in resp.url:
+        raise NaverAuthExpired(
+            "titleId=%s: 로그인 페이지로 리다이렉트됨 - 로그인/성인 인증이 필요하거나 "
+            "쿠키가 만료된 것으로 보임" % title_id)
+    try:
+        body = resp.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    if isinstance(body.get("result"), dict) and "titleName" not in body:
+        body = body["result"]
+
+    writers, painters, origins = [], [], []
+    for a in body.get("communityArtists") or []:
+        if not isinstance(a, dict):
+            continue
+        name = (a.get("name") or "").strip()
+        if not name:
+            continue
+        types = a.get("artistTypeList") or []
+        if "ARTIST_WRITER" in types and name not in writers:
+            writers.append(name)
+        if "ARTIST_PAINTER" in types and name not in painters:
+            painters.append(name)
+        if "ARTIST_ORIGIN" in types and name not in origins:
+            origins.append(name)
+
+    tags = []
+    for tg in body.get("curationTagList") or []:
+        name = tg.get("tagName") if isinstance(tg, dict) else tg
+        if name and name not in tags:
+            tags.append(str(name))
+
+    age = body.get("age")
+    age_type = age.get("type") if isinstance(age, dict) else (age or "")
+
+    return {
+        "title": body.get("titleName") or "",
+        "synopsis": (body.get("synopsis") or "").strip(),
+        "writers": writers,
+        "painters": painters,
+        "origins": origins,
+        "tags": tags,
+        "age_type": str(age_type or ""),
+        "finished": bool(body.get("finished")),
+        "rest": bool(body.get("rest")),
+        "adult": bool(body.get("adult")),
+        "thumbnail": body.get("thumbnailUrl") or body.get("sharedThumbnailUrl") or "",
+    }
 
 
 def guess_title_meta(session, title_id):

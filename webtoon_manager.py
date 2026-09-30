@@ -85,6 +85,8 @@ DEFAULTS = {
     "IMAGE_ZERO_FILL": 4,
     "GENERATE_COMICINFO_XML": True,
     "GENERATE_SERIES_JSON": True,
+    "GENERATE_KAVITA_YAML": True,
+    "KAVITA_YAML_EMBED_COVER": True,
     "COMPARE_FOLDER": "",
     "ADD_COVER_AS_FIRST_PAGE": True,
     "LOW_PRIORITY_MODE": True,
@@ -147,6 +149,13 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
          "label": "series.json 함께 생성(BookOasis 자체 스캐너가 인식하는 시리즈 메타데이터 - "
                   "시리즈 폴더에 zip과 별도로 저장됨)",
          "type": "checkbox", "default": True},
+        {"key": "GENERATE_KAVITA_YAML",
+         "label": "kavita.yaml 함께 생성(시리즈 폴더에 회차 목록/작품 메타데이터를 담은 kavita.yaml 저장 - "
+                  "새 회차를 받거나 작품 정보가 바뀌었을 때만 갱신)",
+         "type": "checkbox", "default": True},
+        {"key": "KAVITA_YAML_EMBED_COVER",
+         "label": "kavita.yaml 첫 회차 cover에 시리즈 썸네일(base64) 포함(끄면 모든 회차가 FIRST)",
+         "type": "checkbox", "default": True},
         {"key": "LOW_PRIORITY_MODE",
          "label": "다운로드 시 서버 리소스 양보(다운로드/압축 작업의 CPU 우선순위를 낮춰 BookOasis "
                   "웹서버 응답이 밀리지 않게 함, 리눅스 전용 - 다른 환경에선 조용히 무시됨)",
@@ -190,7 +199,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                   "requirements.txt",
                   "state_store.py", "naver_api.py",
                   "downloader.py", "discord_notify.py", "scheduler.py",
-                  "pipeline.py"],
+                  "pipeline.py", "kavita_yaml.py"],
         "version_file": "VERSION",
         "version_key": "plugin version",
         "show_sample_update_button": True,
@@ -372,6 +381,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 "ADD_COVER_AS_FIRST_PAGE": bool(cfg.get("ADD_COVER_AS_FIRST_PAGE", True)),
                 "GENERATE_COMICINFO_XML": bool(cfg.get("GENERATE_COMICINFO_XML", True)),
                 "GENERATE_SERIES_JSON": bool(cfg.get("GENERATE_SERIES_JSON", True)),
+                "GENERATE_KAVITA_YAML": bool(cfg.get("GENERATE_KAVITA_YAML", True)),
+                "KAVITA_YAML_EMBED_COVER": bool(cfg.get("KAVITA_YAML_EMBED_COVER", True)),
                 "LOW_PRIORITY_MODE": bool(cfg.get("LOW_PRIORITY_MODE", True)),
                 "DOWNLOAD_NICE_LEVEL": cfg.get("DOWNLOAD_NICE_LEVEL", 10),
                 "ZIP_STORED": bool(cfg.get("ZIP_STORED", True)),
@@ -412,6 +423,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 return self._act_run_bg(db_type, pipeline.run_finished_scan_job, "완결 목록 수집")
             if action == "run_full_cycle_now":
                 return self._act_run_bg(db_type, pipeline.run_full_cycle, "전체 실행(요일별+다운로드)")
+            if action == "kavita_yaml_all":
+                return self._act_run_bg(db_type, pipeline.run_kavita_yaml_all, "kavita.yaml 일괄 생성")
             if action == "cancel_job":
                 ss.save_job_state({"cancel_requested": True})
                 return True, "취소 요청됨"
@@ -700,6 +713,10 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                     ss.append_log("인증 만료: %s" % e)
                     discord_notify.notify_cookie_expired(cfg)
                     break
+            # 회차 목록이 바뀌었을 수 있으니 kavita.yaml 갱신(내용이 같으면 그대로 둠)
+            pipeline.update_kavita_yaml(
+                cfg, session, cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR,
+                title_id, log=ss.append_log)
             ss.save_title_job_state({"running": False, "finished_at": time.time(),
                                       "message": "선택 회차 다운로드 완료(%d화)" % ok_count})
 
@@ -852,6 +869,10 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
 
             if last_ok_no != t_info.get("last_downloaded_no"):
                 ss.upsert_title({str(title_id): {"last_downloaded_no": last_ok_no}})
+            # 새 회차가 추가됐으면 kavita.yaml 갱신(내용이 같으면 그대로 둠)
+            pipeline.update_kavita_yaml(
+                cfg, session, cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR,
+                title_id, log=ss.append_log)
             ss.save_title_job_state({"running": False, "finished_at": time.time(),
                                       "message": "%s 다운로드 완료(%d화)" % (title_name, ok_count)})
 

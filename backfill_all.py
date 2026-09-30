@@ -132,6 +132,7 @@ def backfill_title(session, cfg, tid, t, args, stats):
         stats["errors"] += 1
         return "ok"
 
+    pipeline._remember_release_date(tid, episodes)
     # fetch_episode_list는 최신->과거 순이라 뒤집어서 1화부터 받는다.
     episodes = sorted(episodes, key=lambda e: e.get("no") or 0)
 
@@ -232,6 +233,7 @@ def backfill_title(session, cfg, tid, t, args, stats):
 
     if last_ok_no != t.get("last_downloaded_no"):
         ss.upsert_title({tid: {"last_downloaded_no": last_ok_no}})
+    pipeline.update_kavita_yaml(cfg, session, download_root, tid, log=log)
     return "ok"
 
 
