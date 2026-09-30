@@ -31,6 +31,7 @@ import json
 import os
 import re
 import time
+import zipfile
 
 from . import downloader, naver_api, state_store as ss
 
@@ -55,7 +56,16 @@ _NAVER_GENRES = ("일상", "개그", "판타지", "액션", "드라마", "로맨
                  "스릴러", "무협", "사극", "시대극", "스포츠", "로맨스판타지", "호러", "공포",
                  "무협/사극", "순정/로맨스", "시대극/무협")
 
-_ARCHIVE_RE = re.compile(r"(\d+)화#(\d+)\.(zip|cbz)$", re.I)
+_ARCHIVE_EXTS = (".zip", ".cbz")
+_EP_NO_RE = re.compile(r"(\d+)화")
+_LEADING_NO_RE = re.compile(r"^(\d+)")
+_COUNT_RE = re.compile(r"#(\d+)\.(zip|cbz)$", re.I)
+_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif")
+# 시리즈 폴더 이름: "제목 (titleId)" (downloader.title_dir 규칙)
+SERIES_DIR_RE = re.compile(r"^(.*) \((\d+)\)$")
+# titles.json(구독/목록)에 없는 작품의 상세정보 캐시. titles.json에 넣으면
+# 카테고리탭 목록에 원치 않는 작품이 섞여 보이므로 별도 파일에 둔다.
+INFO_CACHE_PATH = os.path.join(ss.DATA_DIR, "kavita_info_cache.json")
 _EP_DATE_RE = re.compile(r"^(\d{2}|\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})")
 _PLAIN_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_ ]*$")
 
@@ -132,20 +142,36 @@ def release_date_from_episodes(episodes):
     return parse_episode_date(first.get("date"))
 
 
+def _zip_image_count(path):
+    try:
+        with zipfile.ZipFile(path) as zf:
+            return sum(1 for n in zf.namelist()
+                       if n.lower().endswith(_IMAGE_EXTS) and not os.path.basename(n).startswith("0000_cover"))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def _list_archives(series_dir):
-    """시리즈 폴더의 회차 압축파일 [(파일명, 회차번호, 장수)] 을 회차순으로."""
+    """시리즈 폴더의 회차 압축파일 [(파일명, 회차번호, 장수)] 을 회차순으로.
+
+    지금 규칙("제목 0001화#79.zip")뿐 아니라 예전 형식("0089.cbz",
+    "1화#246.zip", "제목 0022화 110.zip" 등)과 사용자가 직접 넣은 zip/cbz도
+    모두 포함한다. 장수는 파일명의 "#장수"를 우선 쓰고, 없으면 zip을 열어
+    이미지 개수를 센다(원격 마운트에서 느릴 수 있어 파일명에 있으면 열지 않음)."""
     out = []
     try:
         names = os.listdir(series_dir)
     except OSError:
         return out
     for fname in names:
-        if fname.endswith(".tmp"):
+        low = fname.lower()
+        if not low.endswith(_ARCHIVE_EXTS):
             continue
-        m = _ARCHIVE_RE.search(fname)
-        if not m:
-            continue
-        out.append((fname, int(m.group(1)), int(m.group(2))))
+        m = _EP_NO_RE.search(fname) or _LEADING_NO_RE.match(fname)
+        no = int(m.group(1)) if m else 10 ** 9  # 번호를 모르면 맨 뒤로
+        mc = _COUNT_RE.search(fname)
+        count = int(mc.group(1)) if mc else _zip_image_count(os.path.join(series_dir, fname))
+        out.append((fname, no, count))
     out.sort(key=lambda x: (x[1], x[0]))
     return out
 
@@ -302,24 +328,76 @@ def refresh_title_info(session, title_id, t, force=False, log=None):
         })
         if not t.get("thumbnail") and info.get("thumbnail"):
             patch["thumbnail"] = info["thumbnail"]
-    titles = ss.upsert_title({str(title_id): patch})
-    return titles.get(str(title_id), dict(t, **patch))
+    if str(title_id) in ss.load_titles():
+        titles = ss.upsert_title({str(title_id): patch})
+        return titles.get(str(title_id), dict(t, **patch))
+    _save_info_cache(title_id, patch)
+    return dict(t, **patch)
+
+
+def _load_info_cache():
+    return ss.read_json(INFO_CACHE_PATH, {})
+
+
+def _save_info_cache(title_id, patch):
+    cache = _load_info_cache()
+    cur = cache.get(str(title_id), {})
+    cur.update(patch)
+    cache[str(title_id)] = cur
+    ss.write_json(INFO_CACHE_PATH, cache)
+
+
+def _fetch_release_date(session, title_id, log=None):
+    """1화 공개일을 모를 때(titles.json에 없는 작품 등) 회차 목록을 오래된 순
+    (sort=ASC)으로 한 페이지만 받아 구한다. 응답이 정렬 파라미터를 무시하면
+    가장 작은 번호가 1이 아닐 수 있으므로 그때는 버린다(틀린 날짜보다 빈 값이 낫다)."""
+    if session is None:
+        return ""
+    try:
+        resp = naver_api._get(session, naver_api.ARTICLE_LIST_API,
+                              params={"titleId": title_id, "page": 1, "sort": "ASC"},
+                              referer="%s?titleId=%s" % (naver_api.DETAIL_URL, title_id))
+        body = resp.json()
+        items = body.get("articleList") if isinstance(body, dict) else None
+        if not items and isinstance(body, dict) and isinstance(body.get("result"), dict):
+            items = body["result"].get("articleList")
+        eps = [{"no": it.get("no"), "date": it.get("serviceDateDescription") or ""}
+               for it in (items or []) if isinstance(it, dict)]
+        eps = [e for e in eps if isinstance(e["no"], int)]
+        if not eps or min(e["no"] for e in eps) != 1:
+            return ""
+        return release_date_from_episodes(eps)
+    except Exception as e:  # noqa: BLE001
+        if log:
+            log("titleId=%s: 1화 공개일 조회 실패(무시) - %s" % (title_id, e))
+        return ""
 
 
 def write_kavita_yaml(download_root, title_id, session=None, embed_cover=True,
-                      refresh_info=True, force_info=False, log=None):
+                      refresh_info=True, force_info=False, log=None,
+                      series_dir=None, folder_title=None):
     """시리즈 폴더에 kavita.yaml을 생성/갱신한다.
+
+    series_dir를 주면(폴더 전체 스캔 시) 그 폴더를 그대로 쓴다. 제목이 나중에
+    바뀌어 titles.json의 제목과 폴더명이 달라진 작품도 놓치지 않기 위함이다.
+    titles.json에 없는 작품이면 폴더명 제목 + 네이버 상세정보(별도 캐시)로 만든다.
     반환: "written" | "unchanged" | "skipped" | "error"
     """
     tid = str(title_id)
     try:
         t = ss.load_titles().get(tid)
         if not t:
-            return "skipped"
+            if not series_dir:
+                return "skipped"
+            t = dict(_load_info_cache().get(tid, {}))
+            t.setdefault("title", folder_title or tid)
+        if not series_dir:
+            series_dir = downloader.title_dir(download_root, t.get("title") or tid, tid)
         title = t.get("title") or tid
-        series_dir = downloader.title_dir(download_root, title, tid)
         archives = _list_archives(series_dir)
         if not archives:
+            if log and folder_title is not None:
+                log("%s: 회차 압축파일(zip/cbz)이 없어 건너뜀" % os.path.basename(series_dir))
             return "skipped"  # 받은 회차가 없는 작품은 만들지 않음
 
         if refresh_info:
@@ -328,6 +406,17 @@ def write_kavita_yaml(download_root, title_id, session=None, embed_cover=True,
             except naver_api.NaverAuthExpired as e:
                 if log:
                     log("titleId=%s: 상세정보 조회 중 인증 만료 - 기존 정보로 yaml 생성 (%s)" % (tid, e))
+            # titles.json에 없는 작품은 상세정보의 제목/썸네일/성인 여부로 보강
+            if not t.get("title") or t.get("title") == tid:
+                t["title"] = folder_title or tid
+            if not t.get("release_date") and (force_info or tid not in ss.load_titles()):
+                rd = _fetch_release_date(session, tid, log=log)
+                if rd:
+                    t["release_date"] = rd
+                    if tid in ss.load_titles():
+                        ss.upsert_title({tid: {"release_date": rd}})
+                    else:
+                        _save_info_cache(tid, {"release_date": rd})
 
         cover = _cover_b64(session, t.get("thumbnail"), log=log) if embed_cover else None
         path = os.path.join(series_dir, YAML_NAME)

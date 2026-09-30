@@ -236,28 +236,58 @@ def update_kavita_yaml(cfg, session, download_root, title_id, log=print, force_i
 
 
 def run_kavita_yaml_all(cfg, log=print):
-    """다운로드 경로에 폴더가 있는 모든 작품의 kavita.yaml을 일괄 생성/갱신한다
-    (카테고리탭 '설정' 탭의 버튼용). 작품 상세정보도 강제로 다시 조회한다."""
+    """다운로드 경로 바로 아래의 시리즈 폴더를 전부 훑어 kavita.yaml을 일괄
+    생성/갱신한다(카테고리탭 '설정' 탭의 버튼용).
+
+    예전에는 titles.json에 있는 작품 중 "현재 제목으로 계산한 폴더"가 있는
+    것만 대상으로 해서, 제목이 바뀐 작품/목록에 없는 작품(수동 조회로 받은
+    작품 등)/예전 파일명 형식만 있는 폴더가 빠졌다. 이제는 실제 폴더를 기준으로
+    "제목 (titleId)" 이름에서 titleId를 읽어 처리한다."""
     session = build_session_from_cfg(cfg)
     download_root = cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR
-    titles = ss.load_titles()
-    targets = [tid for tid, t in titles.items()
-               if os.path.isdir(downloader.title_dir(download_root, t.get("title") or tid, tid))]
+    try:
+        names = sorted(os.listdir(download_root))
+    except OSError as e:
+        msg = "kavita.yaml 일괄 생성 실패: 다운로드 경로를 읽을 수 없음 (%s)" % e
+        log(msg)
+        ss.save_job_state({"running": False, "stage": "error", "finished_at": time.time(),
+                            "last_error": str(e), "message": msg})
+        return {}
+
+    targets, unmatched = [], []
+    for name in names:
+        full = os.path.join(download_root, name)
+        if not os.path.isdir(full):
+            continue
+        m = kavita_yaml.SERIES_DIR_RE.match(name)
+        if not m:
+            unmatched.append(name)
+            continue
+        targets.append((full, m.group(1), m.group(2)))
+
     ss.save_job_state({"stage": "kavita_yaml", "message": "kavita.yaml 일괄 생성 중",
                         "progress": 0, "total": len(targets)})
-    log("kavita.yaml 일괄 생성 시작: 대상 %d개 작품" % len(targets))
-    counts = {"written": 0, "unchanged": 0, "skipped": 0, "error": 0, "disabled": 0}
-    cfg_forced = dict(cfg, GENERATE_KAVITA_YAML=True)
-    for i, tid in enumerate(targets):
+    log("kavita.yaml 일괄 생성 시작: 경로 %s / 시리즈 폴더 %d개" % (download_root, len(targets)))
+    if unmatched:
+        log("'제목 (titleId)' 형식이 아니라 titleId를 알 수 없어 건너뛴 폴더 %d개: %s%s" % (
+            len(unmatched), ", ".join(unmatched[:20]),
+            "" if len(unmatched) <= 20 else " ...외 %d개" % (len(unmatched) - 20)))
+
+    counts = {"written": 0, "unchanged": 0, "skipped": 0, "error": 0}
+    for i, (full, folder_title, tid) in enumerate(targets):
         if ss.load_job_state().get("cancel_requested"):
             log("kavita.yaml 일괄 생성 취소됨")
             break
-        ss.save_job_state({"progress": i, "message": "kavita.yaml: %s" % titles[tid].get("title", tid)})
-        r = update_kavita_yaml(cfg_forced, session, download_root, tid, log=log, force_info=True)
+        ss.save_job_state({"progress": i, "message": "kavita.yaml: %s" % folder_title})
+        r = kavita_yaml.write_kavita_yaml(
+            download_root, tid, session=session,
+            embed_cover=bool(cfg.get("KAVITA_YAML_EMBED_COVER", True)),
+            force_info=True, log=log, series_dir=full, folder_title=folder_title)
         counts[r] = counts.get(r, 0) + 1
         time.sleep(0.2)
-    msg = "kavita.yaml 일괄 생성 완료: 갱신 %d / 변경없음 %d / 건너뜀 %d / 실패 %d" % (
-        counts["written"], counts["unchanged"], counts["skipped"], counts["error"])
+    msg = ("kavita.yaml 일괄 생성 완료: 갱신 %d / 변경없음 %d / 회차파일없음 %d / 실패 %d"
+           " / 형식불일치 폴더 %d" % (counts["written"], counts["unchanged"], counts["skipped"],
+                                   counts["error"], len(unmatched)))
     log(msg)
     ss.save_job_state({"running": False, "stage": "done", "finished_at": time.time(),
                         "progress": len(targets), "message": msg})
