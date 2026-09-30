@@ -1,7 +1,7 @@
 # webtoon_manager (BookOasis 플러그인) — 표시 이름 "웹툰 다운로더"
 
 원본: https://github.com/murianwind/webtoon-manager (네이버웹툰 무료 회차 자동 구독/다운로드 독립 웹앱)
-을 BookOasis 카테고리탭 플러그인으로 이식. **버전 1.18.0**
+을 BookOasis 카테고리탭 플러그인으로 이식. **버전 1.18.1**
 
 ⚠️ **이 README가 진실입니다.** 지금까지 이 저장소가 오래도록 최신 상태로 갱신되지 않아
 `plugin_board`로 업데이트/재설치할 때마다 예전 버전으로 조용히 되돌아가는 문제가 있었습니다.
