@@ -87,6 +87,11 @@ DEFAULTS = {
     "GENERATE_SERIES_JSON": True,
     "GENERATE_KAVITA_YAML": True,
     "KAVITA_YAML_EMBED_COVER": True,
+    "KAKAO_ENABLE": False,
+    "KAKAO_COOKIE": "",
+    "KAKAO_DOWNLOAD_ROOT": "",
+    "KAKAO_AUTO": True,
+    "KAKAO_USE_WAITFREE": False,
     "COMPARE_FOLDER": "",
     "ADD_COVER_AS_FIRST_PAGE": True,
     "LOW_PRIORITY_MODE": True,
@@ -156,6 +161,22 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         {"key": "KAVITA_YAML_EMBED_COVER",
          "label": "kavita.yaml 첫 회차 cover에 시리즈 썸네일(base64) 포함(끄면 모든 회차가 FIRST)",
          "type": "checkbox", "default": True},
+        {"key": "KAKAO_ENABLE", "label": "[카카오페이지] 카카오페이지 웹툰 다운로드 사용",
+         "type": "checkbox", "default": False},
+        {"key": "KAKAO_COOKIE",
+         "label": "[카카오페이지] 로그인 쿠키(page.kakao.com 요청의 Cookie 헤더 문자열 또는 "
+                  "Cookie-Editor JSON). 비우면 무료 회차만 시도",
+         "type": "password", "required": False},
+        {"key": "KAKAO_DOWNLOAD_ROOT",
+         "label": "[카카오페이지] 저장 경로(비우면 플러그인 데이터 폴더/kakao_downloads)",
+         "type": "text"},
+        {"key": "KAKAO_AUTO",
+         "label": "[카카오페이지] 스케줄러 자동 실행에 포함(네이버 다운로드가 끝난 뒤 이어서 확인)",
+         "type": "checkbox", "default": True},
+        {"key": "KAKAO_USE_WAITFREE",
+         "label": "[카카오페이지] 기다무 대여권 자동 사용(작품당 실행 1회에 1장, 계정의 대여권이 "
+                  "실제로 소모됨)",
+         "type": "checkbox", "default": False},
         {"key": "LOW_PRIORITY_MODE",
          "label": "다운로드 시 서버 리소스 양보(다운로드/압축 작업의 CPU 우선순위를 낮춰 BookOasis "
                   "웹서버 응답이 밀리지 않게 함, 리눅스 전용 - 다른 환경에선 조용히 무시됨)",
@@ -199,7 +220,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                   "requirements.txt",
                   "state_store.py", "naver_api.py",
                   "downloader.py", "discord_notify.py", "scheduler.py",
-                  "pipeline.py", "kavita_yaml.py"],
+                  "pipeline.py", "kavita_yaml.py", "kakao_api.py", "kakao_pipeline.py"],
         "version_file": "VERSION",
         "version_key": "plugin version",
         "show_sample_update_button": True,
@@ -357,6 +378,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
 
         bundle = {
             "titles": items_list,
+            "kakao_titles": self._kakao_items(cfg),
             "authors_tags": ss.load_authors_tags(),
             "history": ss.load_history(limit=200),
             "job": ss.load_job_state(),
@@ -391,6 +413,11 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 "MAX_CONCURRENT_DOWNLOADS": cfg.get("MAX_CONCURRENT_DOWNLOADS"),
                 "DELAY_SECONDS": cfg.get("DELAY_SECONDS"),
                 "has_cookie": bool(cfg.get("NAVER_COOKIE_JSON")),
+                "KAKAO_ENABLE": bool(cfg.get("KAKAO_ENABLE")),
+                "KAKAO_AUTO": bool(cfg.get("KAKAO_AUTO", True)),
+                "KAKAO_USE_WAITFREE": bool(cfg.get("KAKAO_USE_WAITFREE")),
+                "KAKAO_DOWNLOAD_ROOT": cfg.get("KAKAO_DOWNLOAD_ROOT") or ss.KAKAO_DOWNLOAD_DEFAULT_DIR,
+                "has_kakao_cookie": bool((cfg.get("KAKAO_COOKIE") or "").strip()),
                 "has_discord": bool(cfg.get("DISCORD_WEBHOOK_URL") or
                                      (cfg.get("DISCORD_BOT_TOKEN") and cfg.get("DISCORD_CHANNEL_ID"))),
             },
@@ -425,6 +452,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 return self._act_run_bg(db_type, pipeline.run_full_cycle, "전체 실행(요일별+다운로드)")
             if action == "kavita_yaml_all":
                 return self._act_run_bg(db_type, pipeline.run_kavita_yaml_all, "kavita.yaml 일괄 생성")
+            if action.startswith("kakao_"):
+                return self._dispatch_kakao(db_type, action, payload)
             if action == "cancel_job":
                 ss.save_job_state({"cancel_requested": True})
                 return True, "취소 요청됨"
@@ -470,6 +499,68 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             return False, "알 수 없는 action: %s" % action
         except Exception as e:  # noqa: BLE001
             return False, "오류: %s" % e
+
+    # ------------------------------------------------------------------
+    # 카카오페이지
+    # ------------------------------------------------------------------
+    def _kakao_items(self, cfg):
+        out = []
+        for sid, t in ss.load_kakao_titles().items():
+            item = dict(t)
+            item["seriesId"] = sid
+            out.append(item)
+        out.sort(key=lambda x: x.get("added_at") or 0, reverse=True)
+        return out
+
+    def _dispatch_kakao(self, db_type, action, payload):
+        from . import kakao_pipeline
+        cfg = self._get_cfg(db_type)
+        if not cfg.get("KAKAO_ENABLE"):
+            return False, "환경설정에서 '[카카오페이지] 카카오페이지 웹툰 다운로드 사용'을 먼저 켜주세요."
+        sid = str(payload.get("seriesId") or "").strip()
+
+        if action == "kakao_add":
+            ok, msg, _sid = kakao_pipeline.add_series(cfg, payload.get("value"), log=ss.append_log)
+            return ok, msg
+        if action in ("kakao_subscribe", "kakao_unsubscribe"):
+            if sid not in ss.load_kakao_titles():
+                return False, "등록되지 않은 작품입니다"
+            ss.upsert_kakao_title({sid: {"subscribed": action == "kakao_subscribe"}})
+            return True, "변경됨"
+        if action == "kakao_remove":
+            removed = ss.remove_kakao_title(sid)
+            return (True, "목록에서 삭제됨(받은 파일은 그대로 둠)") if removed else (False, "없는 작품")
+        if action == "kakao_run_all":
+            def _run(c, log):
+                return kakao_pipeline.run_kakao_cycle(c, log=log, manage_job=True)
+            return self._act_run_bg(db_type, _run, "카카오페이지 전체 확인")
+        if action == "kakao_download":
+            t = ss.load_kakao_titles().get(sid)
+            if not t:
+                return False, "등록되지 않은 작품입니다"
+            acquired = ss.try_acquire_title_job({
+                "title_id": sid, "title": "[카카오] %s" % t.get("title", sid),
+                "message": "카카오 %s 회차 확인 중" % t.get("title", sid),
+                "started_at": time.time(), "cancel_requested": False,
+                "last_error": None, "progress": 0, "total": 0,
+            })
+            if not acquired:
+                tjob = ss.load_title_job_state()
+                return False, "이미 다른 작품을 다운로드 중입니다(%s)." % (tjob.get("title") or "")
+
+            def _runner():
+                if cfg.get("LOW_PRIORITY_MODE", True):
+                    downloader.lower_thread_priority(int(cfg.get("DOWNLOAD_NICE_LEVEL", 10)))
+                try:
+                    kakao_pipeline.run_kakao_series_job(cfg, sid, log=ss.append_log)
+                except Exception as e:  # noqa: BLE001
+                    ss.append_log("카카오 다운로드 실패: %s" % e)
+                    ss.save_title_job_state({"running": False, "finished_at": time.time(),
+                                              "last_error": str(e), "message": "실패: %s" % e})
+
+            threading.Thread(target=_runner, name="webtoon_manager_kakao_dl", daemon=True).start()
+            return True, "카카오 %s 다운로드 시작됨(백그라운드)" % t.get("title", sid)
+        return False, "알 수 없는 카카오 액션: %s" % action
 
     def _act_force_reset(self):
         """job_state/title_job_state가 컨테이너 재시작 등으로 running=true인

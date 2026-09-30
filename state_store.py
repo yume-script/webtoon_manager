@@ -109,6 +109,36 @@ def upsert_title(patch_by_id):
     return titles
 
 
+# ---- kakao_titles.json : 카카오페이지 작품 { series_id(str): {...} } ------------
+# 네이버 titles.json과 섞지 않는다(ID 체계가 다르고, 네이버 목록 화면/스캔
+# 로직이 titles.json 전체를 네이버 작품으로 가정하기 때문).
+KAKAO_TITLES_PATH = os.path.join(DATA_DIR, "kakao_titles.json")
+KAKAO_DOWNLOAD_DEFAULT_DIR = os.path.join(DATA_DIR, "kakao_downloads")
+
+
+def load_kakao_titles():
+    return read_json(KAKAO_TITLES_PATH, {})
+
+
+def upsert_kakao_title(patch_by_id):
+    with _lock:
+        titles = load_kakao_titles()
+        for sid, patch in patch_by_id.items():
+            cur = titles.get(str(sid), {})
+            cur.update(patch)
+            titles[str(sid)] = cur
+        write_json(KAKAO_TITLES_PATH, titles)
+    return titles
+
+
+def remove_kakao_title(series_id):
+    with _lock:
+        titles = load_kakao_titles()
+        removed = titles.pop(str(series_id), None)
+        write_json(KAKAO_TITLES_PATH, titles)
+    return removed
+
+
 # ---- authors_tags.json ---------------------------------------------------
 def load_authors_tags():
     return read_json(AUTHORS_TAGS_PATH, {"authors": [], "tags": []})

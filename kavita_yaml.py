@@ -37,6 +37,14 @@ from . import downloader, naver_api, state_store as ss
 
 YAML_NAME = "kavita.yaml"
 PUBLISHER = "네이버 웹툰"
+
+# 플랫폼별 코드 접두어/링크/출판사. 카카오페이지 작품은 kakao_titles.json에서 읽는다.
+PLATFORMS = {
+    "naver": {"code": "BNW", "publisher": "네이버 웹툰",
+              "link": "https://comic.naver.com/webtoon/list?titleId=%s"},
+    "kakao": {"code": "KKP", "publisher": "카카오페이지",
+              "link": "https://page.kakao.com/content/%s"},
+}
 # 작품 상세정보(줄거리 등)는 자주 바뀌지 않으므로 하루 한 번만 다시 조회한다.
 INFO_REFRESH_SECONDS = 24 * 3600
 
@@ -199,11 +207,13 @@ def _cover_b64(session, thumbnail_url, log=None):
     return base64.b64encode(cover[0]).decode("ascii")
 
 
-def build_data(t, title_id, archives, cover_b64=None):
+def build_data(t, title_id, archives, cover_b64=None, platform="naver"):
     """titles.json 레코드(t)와 폴더의 압축파일 목록으로 yaml dict를 만든다."""
+    plat = PLATFORMS.get(platform, PLATFORMS["naver"])
+    publisher = plat["publisher"]
     title = t.get("title") or str(title_id)
-    code = "BNW%s" % title_id
-    link = "https://comic.naver.com/webtoon/list?titleId=%s" % title_id
+    code = "%s%s" % (plat["code"], title_id)
+    link = plat["link"] % title_id
 
     writers = t.get("info_writers") or _split_names(t.get("author"))
     painters = t.get("info_painters") or []
@@ -216,7 +226,7 @@ def build_data(t, title_id, archives, cover_b64=None):
     if not genres and tags:
         genres = tags[:1]
     genre_str = ",".join(genres)
-    tag_str = ",".join(_dedupe([PUBLISHER] + tags))
+    tag_str = ",".join(_dedupe([publisher] + tags))
 
     finished = (t.get("status") == "완결") or bool(t.get("info_finished"))
     if finished:
@@ -259,7 +269,7 @@ def build_data(t, title_id, archives, cover_b64=None):
         "Person Letterer": "",
         "Person Location": "",
         "Person Penciller": illustrator_str if illustrator_str and illustrator_str != writers_str else "",
-        "Person Publisher": PUBLISHER,
+        "Person Publisher": publisher,
         "Person Team": "",
         "Person Translator": "",
         "Person Writers": writers_str,
@@ -284,7 +294,7 @@ def build_data(t, title_id, archives, cover_b64=None):
         "illustrator": illustrator_str,
         "link": link,
         "poster_url": t.get("thumbnail") or "",
-        "publisher": PUBLISHER,
+        "publisher": publisher,
         "score": 100,
         "tag": tag_str,
         "title": title,
@@ -375,7 +385,7 @@ def _fetch_release_date(session, title_id, log=None):
 
 def write_kavita_yaml(download_root, title_id, session=None, embed_cover=True,
                       refresh_info=True, force_info=False, log=None,
-                      series_dir=None, folder_title=None):
+                      series_dir=None, folder_title=None, platform="naver"):
     """시리즈 폴더에 kavita.yaml을 생성/갱신한다.
 
     series_dir를 주면(폴더 전체 스캔 시) 그 폴더를 그대로 쓴다. 제목이 나중에
@@ -384,8 +394,16 @@ def write_kavita_yaml(download_root, title_id, session=None, embed_cover=True,
     반환: "written" | "unchanged" | "skipped" | "error"
     """
     tid = str(title_id)
+    if platform == "kakao":
+        # 카카오 작품 정보는 kakao_pipeline이 회차 목록을 볼 때 이미 갱신한다
+        refresh_info = False
     try:
-        t = ss.load_titles().get(tid)
+        if platform == "kakao":
+            t = ss.load_kakao_titles().get(tid)
+        else:
+            t = ss.load_titles().get(tid)
+        if t is not None:
+            t = dict(t)
         if not t:
             if not series_dir:
                 return "skipped"
@@ -426,7 +444,7 @@ def write_kavita_yaml(download_root, title_id, session=None, embed_cover=True,
         if embed_cover and not cover and os.path.exists(path):
             cover = _existing_first_cover(path)
 
-        text = dump_yaml(build_data(t, tid, archives, cover_b64=cover))
+        text = dump_yaml(build_data(t, tid, archives, cover_b64=cover, platform=platform))
 
         if os.path.exists(path):
             try:

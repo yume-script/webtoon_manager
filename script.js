@@ -282,6 +282,7 @@
       ['ComicInfo.xml 생성', cfg.GENERATE_COMICINFO_XML ? '사용' : '사용 안 함'],
       ['메인 이미지 1페이지 포함', cfg.ADD_COVER_AS_FIRST_PAGE ? '사용' : '사용 안 함'],
       ['series.json 생성(BookOasis 스캐너용)', cfg.GENERATE_SERIES_JSON ? '사용' : '사용 안 함'],
+      ['카카오페이지', cfg.KAKAO_ENABLE ? ('사용' + (cfg.KAKAO_USE_WAITFREE ? ' / 기다무 자동' : '') + (cfg.KAKAO_AUTO ? ' / 자동 실행 포함' : '')) : '사용 안 함'],
       ['kavita.yaml 생성', cfg.GENERATE_KAVITA_YAML ? ('사용' + (cfg.KAVITA_YAML_EMBED_COVER ? ' / 표지 포함' : '')) : '사용 안 함'],
       ['서버 리소스 양보', cfg.LOW_PRIORITY_MODE ? ('사용 / nice ' + cfg.DOWNLOAD_NICE_LEVEL) : '사용 안 함'],
       ['중복 확인', (state.compare_status && state.compare_status.enabled) ?
@@ -372,9 +373,57 @@
     if (tjob.running) pollFastUntil = Date.now() + 30000;
   }
 
+  function renderKakao() {
+    var grid = el('[data-el="kakao-grid"]');
+    var status = el('[data-el="kakao-status"]');
+    var cfg = state.config_public || {};
+    if (status) {
+      if (!cfg.KAKAO_ENABLE) {
+        status.innerHTML = '⚠️ 환경설정 &gt; 플러그인 설정에서 <b>"[카카오페이지] 카카오페이지 웹툰 다운로드 사용"</b>을 켜야 동작합니다.';
+      } else {
+        status.textContent = '저장 경로: ' + (cfg.KAKAO_DOWNLOAD_ROOT || '') +
+          ' / 로그인 쿠키: ' + (cfg.has_kakao_cookie ? '설정됨' : '없음(무료 회차만)') +
+          ' / 기다무 자동 사용: ' + (cfg.KAKAO_USE_WAITFREE ? '켜짐' : '꺼짐') +
+          ' / 자동 실행 포함: ' + (cfg.KAKAO_AUTO ? '예' : '아니오');
+      }
+    }
+    if (!grid) return;
+    var list = state.kakao_titles || [];
+    if (!list.length) {
+      grid.innerHTML = '<div class="wtm-hint">등록된 카카오페이지 작품이 없습니다. 위에 작품 URL을 넣고 등록하세요.</div>';
+      return;
+    }
+    grid.innerHTML = list.map(function (t) {
+      var sid = escapeHtml(t.seriesId);
+      var badges = '';
+      if (t.status === '완결') badges += '<span class="wtm-badge finished">완결</span>';
+      if (t.adult) badges += '<span class="wtm-badge rest">19</span>';
+      if (!t.subscribed) badges += '<span class="wtm-badge">구독해제</span>';
+      var progress = (t.last_downloaded_no != null ? ('마지막 받은 회차 ' + t.last_downloaded_no + '화') : '아직 받은 회차 없음') +
+        (t.episode_count ? (' / 전체 ' + t.episode_count + '화') : '');
+      var actions = '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-kakao-action="kakao_download" data-series-id="' + sid + '">지금 다운로드</button>' +
+        (t.subscribed
+          ? '<button class="wtm-btn wtm-btn-small" data-kakao-action="kakao_unsubscribe" data-series-id="' + sid + '">구독해제</button>'
+          : '<button class="wtm-btn wtm-btn-small" data-kakao-action="kakao_subscribe" data-series-id="' + sid + '">다시 구독</button>') +
+        '<a class="wtm-btn wtm-btn-small wtm-btn-ghost" href="https://page.kakao.com/content/' + sid + '" target="_blank" rel="noopener">열기</a>' +
+        '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-kakao-action="kakao_remove" data-series-id="' + sid + '">삭제</button>';
+      return '<div class="wtm-card">' +
+        (t.thumbnail ? '<img class="wtm-card-thumb" src="' + escapeHtml(t.thumbnail) + '" loading="lazy" referrerpolicy="no-referrer">' :
+          '<div class="wtm-card-thumb"></div>') +
+        '<div class="wtm-card-body">' +
+        '<div class="wtm-card-title">' + escapeHtml(t.title || t.seriesId) + '</div>' +
+        '<div class="wtm-card-author">' + escapeHtml(t.author || '') + '</div>' +
+        '<div class="wtm-card-author">' + escapeHtml(progress) + '</div>' +
+        '<div class="wtm-badges">' + badges + '</div>' +
+        '<div class="wtm-card-actions">' + actions + '</div>' +
+        '</div></div>';
+    }).join('');
+  }
+
   function renderAll() {
     renderStatusBar();
     renderGrid();
+    renderKakao();
     renderAuthorsTags();
     renderHistory();
     renderSettingsSummary();
@@ -459,7 +508,7 @@
       if (action === 'refresh') { await refresh(); return; }
       if (action === 'scan_now' || action === 'scan_finished_now' || action === 'run_full_cycle_now' || action === 'cancel_job' ||
           action === 'cancel_title_job' || action === 'test_discord' || action === 'force_reset_job' ||
-          action === 'kavita_yaml_all') {
+          action === 'kavita_yaml_all' || action === 'kakao_run_all') {
         if (action === 'force_reset_job' && !confirm('정말로 작업 상태를 강제 초기화할까요? 지금 실제로 뭔가 진행 중이라면 중간에 끊길 수 있습니다.')) return;
         headerAction.disabled = true;
         var r = await callAction(action, {});
@@ -480,6 +529,15 @@
         var statusEl = el('[data-el="compare-library-status"]');
         if (statusEl) statusEl.textContent = r6.message || (r6.success ? '저장됨' : '실패');
         if (r6.success) await refresh();
+        return;
+      }
+      if (action === 'kakao_add') {
+        var kin = el('[data-el="kakao-input"]');
+        if (!kin || !kin.value.trim()) return;
+        headerAction.disabled = true;
+        var rk = await callAction('kakao_add', { value: kin.value.trim() });
+        headerAction.disabled = false;
+        if (rk.success) { kin.value = ''; await refresh(); } else { alert(rk.message || '등록 실패'); }
         return;
       }
       if (action === 'add_author' || action === 'add_tag') {
@@ -558,6 +616,20 @@
       if (idInputForManual) idInputForManual.value = tidForManual;
       var lookupBtn = document.querySelector('[data-action="manual_lookup"]');
       if (lookupBtn) lookupBtn.click();
+      return;
+    }
+
+    var kakaoAction = ev.target.closest('[data-kakao-action]');
+    if (kakaoAction) {
+      var kAct = kakaoAction.getAttribute('data-kakao-action');
+      var kSid = kakaoAction.getAttribute('data-series-id');
+      if (kAct === 'kakao_remove' && !confirm('목록에서 삭제할까요? (받은 파일은 지우지 않습니다)')) return;
+      kakaoAction.disabled = true;
+      var rk2 = await callAction(kAct, { seriesId: kSid });
+      kakaoAction.disabled = false;
+      if (!rk2.success) alert(rk2.message || '실패');
+      else if (kAct === 'kakao_download') pollFastUntil = Date.now() + 30000;
+      await refresh();
       return;
     }
 

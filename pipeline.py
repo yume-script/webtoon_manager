@@ -17,6 +17,13 @@ def _cfg_num(cfg, key, default):
         return default
 
 
+def _cfg_bool(cfg, key, default=False):
+    v = cfg.get(key, default)
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower() in ("1", "true", "on", "y", "yes")
+
+
 def build_session_from_cfg(cfg):
     return naver_api.build_session(
         cookie_storage_state_json=cfg.get("NAVER_COOKIE_JSON"),
@@ -254,16 +261,31 @@ def run_kavita_yaml_all(cfg, log=print):
                             "last_error": str(e), "message": msg})
         return {}
 
+    naver_ids = set(ss.load_titles().keys())
+    kakao_ids = set(ss.load_kakao_titles().keys())
+    roots = [(download_root, names)]
+    # 카카오페이지 저장 경로가 따로 있으면 그쪽 폴더도 함께 처리
+    from . import kakao_pipeline
+    k_root = kakao_pipeline.kakao_root(cfg)
+    if os.path.abspath(k_root) != os.path.abspath(download_root) and os.path.isdir(k_root):
+        try:
+            roots.append((k_root, sorted(os.listdir(k_root))))
+        except OSError:
+            pass
+
     targets, unmatched = [], []
-    for name in names:
-        full = os.path.join(download_root, name)
-        if not os.path.isdir(full):
-            continue
-        m = kavita_yaml.SERIES_DIR_RE.match(name)
-        if not m:
-            unmatched.append(name)
-            continue
-        targets.append((full, m.group(1), m.group(2)))
+    for root, root_names in roots:
+        for name in root_names:
+            full = os.path.join(root, name)
+            if not os.path.isdir(full):
+                continue
+            m = kavita_yaml.SERIES_DIR_RE.match(name)
+            if not m:
+                unmatched.append(name)
+                continue
+            tid = m.group(2)
+            is_kakao = tid in kakao_ids and (root == k_root or tid not in naver_ids)
+            targets.append((full, m.group(1), tid, "kakao" if is_kakao else "naver"))
 
     ss.save_job_state({"stage": "kavita_yaml", "message": "kavita.yaml 일괄 생성 중",
                         "progress": 0, "total": len(targets)})
@@ -274,7 +296,7 @@ def run_kavita_yaml_all(cfg, log=print):
             "" if len(unmatched) <= 20 else " ...외 %d개" % (len(unmatched) - 20)))
 
     counts = {"written": 0, "unchanged": 0, "skipped": 0, "error": 0}
-    for i, (full, folder_title, tid) in enumerate(targets):
+    for i, (full, folder_title, tid, platform) in enumerate(targets):
         if ss.load_job_state().get("cancel_requested"):
             log("kavita.yaml 일괄 생성 취소됨")
             break
@@ -282,7 +304,8 @@ def run_kavita_yaml_all(cfg, log=print):
         r = kavita_yaml.write_kavita_yaml(
             download_root, tid, session=session,
             embed_cover=bool(cfg.get("KAVITA_YAML_EMBED_COVER", True)),
-            force_info=True, log=log, series_dir=full, folder_title=folder_title)
+            force_info=True, log=log, series_dir=full, folder_title=folder_title,
+            platform=platform)
         counts[r] = counts.get(r, 0) + 1
         time.sleep(0.2)
     msg = ("kavita.yaml 일괄 생성 완료: 갱신 %d / 변경없음 %d / 회차파일없음 %d / 실패 %d"
@@ -527,14 +550,25 @@ def run_full_cycle(cfg, log=print):
     try:
         scan_result = run_scan_weekday(cfg, log=log)
         dl_result = run_download_cycle(cfg, log=log)
+        kakao_result = None
+        if (_cfg_bool(cfg, "KAKAO_ENABLE", False) and _cfg_bool(cfg, "KAKAO_AUTO", True)
+                and not dl_result.get("cancelled")
+                and not ss.load_job_state().get("cancel_requested")):
+            try:
+                from . import kakao_pipeline
+                kakao_result = kakao_pipeline.run_kakao_cycle(cfg, log=log)
+            except Exception as e:  # noqa: BLE001
+                log("카카오페이지 사이클 오류(네이버 결과에는 영향 없음): %s" % e)
+        cancelled = dl_result.get("cancelled") or (kakao_result or {}).get("cancelled")
         ss.save_job_state({"running": False,
-                            "stage": "cancelled" if dl_result.get("cancelled") else "done",
+                            "stage": "cancelled" if cancelled else "done",
                             "finished_at": time.time(),
-                            "message": "완료: 스캔 %d개 / 신규 %d화 / 실패 %d건%s" % (
+                            "message": "완료: 스캔 %d개 / 신규 %d화 / 실패 %d건%s%s" % (
                                 scan_result["scanned"], dl_result["downloaded"],
                                 len(dl_result["failures"]),
-                                " (도중 취소됨)" if dl_result.get("cancelled") else "")})
-        return {"scan": scan_result, "download": dl_result}
+                                (" / 카카오 신규 %d화" % kakao_result["downloaded"]) if kakao_result else "",
+                                " (도중 취소됨)" if cancelled else "")})
+        return {"scan": scan_result, "download": dl_result, "kakao": kakao_result}
     except Exception as e:  # noqa: BLE001
         log("파이프라인 실행 중 오류: %s" % e)
         ss.save_job_state({"running": False, "stage": "error", "finished_at": time.time(),

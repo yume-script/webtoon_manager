@@ -200,7 +200,7 @@ def find_existing_episode_archive(download_root, title, title_id, episode_no, fo
 def download_episode(session, download_root, temp_root, title, title_id, episode_no,
                       image_zero_fill=4, folder_zero_fill=4,
                       max_concurrent=5, delay_seconds=1.0, timeout=10, log=None,
-                      force=False):
+                      force=False, image_list_func=None, referer=None):
     """
     1단계: 이미지만 내려받는다(압축은 하지 않음 - compress_episode()가 별도
     단계로 처리). 이미 압축까지 끝난 회차는 네트워크 요청 없이 즉시 스킵한다.
@@ -217,6 +217,9 @@ def download_episode(session, download_root, temp_root, title, title_id, episode
     명시적으로 재다운로드를 요청한 경우용). force=False(기본값, 자동
     다운로드 경로들이 사용)에서도, 기존 압축파일 자체가 손상돼 열리지 않으면
     "이미 완료"로 잘못 취급하지 않고 자동으로 재다운로드한다.
+    image_list_func/referer: 네이버 외 플랫폼(카카오페이지)용. image_list_func()가
+    이미지 URL 목록을 돌려주면 그걸 쓰고, 플랫폼별 예외(인증 만료/미구매)는
+    그대로 호출 측으로 올린다. 없으면 기존처럼 네이버에서 조회한다.
     반환: (ok: bool, skipped: bool, image_count: int, error: str|None)
     """
     existing_archive = find_existing_episode_archive(
@@ -262,14 +265,18 @@ def download_episode(session, download_root, temp_root, title, title_id, episode
         # 이미 압축이 끝난 회차는 위쪽의 find_existing_episode_archive()
         # 단계에서 이 네트워크 요청 없이 걸러지므로 실제 영향 범위는 "다운로드는
         # 됐는데 아직 압축 전인" 좁은 구간뿐이다.
-        try:
-            images = naver_api.fetch_episode_images(session, title_id, episode_no, log=log)
-        except naver_api.NaverAuthExpired:
-            raise
-        except naver_api.NaverPaidEpisode:
-            raise
-        except Exception as e:  # noqa: BLE001
-            return False, False, 0, str(e)
+        if image_list_func is not None:
+            # 다른 플랫폼: 예외(인증 만료/미구매/네트워크)는 호출 측이 직접 처리
+            images = image_list_func()
+        else:
+            try:
+                images = naver_api.fetch_episode_images(session, title_id, episode_no, log=log)
+            except naver_api.NaverAuthExpired:
+                raise
+            except naver_api.NaverPaidEpisode:
+                raise
+            except Exception as e:  # noqa: BLE001
+                return False, False, 0, str(e)
 
         expected_count = len(images)
 
@@ -283,7 +290,8 @@ def download_episode(session, download_root, temp_root, title, title_id, episode
                     (title_id, episode_no, len(existing_files), expected_count))
 
         os.makedirs(target_dir, exist_ok=True)
-        referer = "%s?titleId=%s&no=%s" % (naver_api.DETAIL_URL, title_id, episode_no)
+        if referer is None:
+            referer = "%s?titleId=%s&no=%s" % (naver_api.DETAIL_URL, title_id, episode_no)
 
         def _dl_one(idx_url):
             idx, img_url = idx_url
