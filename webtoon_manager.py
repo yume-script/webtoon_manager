@@ -504,6 +504,12 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
     # 카카오페이지
     # ------------------------------------------------------------------
     def _kakao_items(self, cfg):
+        if cfg.get("KAKAO_ENABLE"):
+            try:
+                from . import kakao_pipeline
+                kakao_pipeline.repair_old_records_async(cfg)
+            except Exception:  # noqa: BLE001
+                pass
         out = []
         for sid, t in ss.load_kakao_titles().items():
             item = dict(t)

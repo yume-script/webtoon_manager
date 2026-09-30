@@ -54,6 +54,10 @@ class KakaoNotPurchased(Exception):
     """구매/대여하지 않은 회차(api_content_not_purchased_item 등)"""
 
 
+class KakaoUnsupported(Exception):
+    """이미지 웹툰이 아닌 회차(웹소설 텍스트 뷰어 등)"""
+
+
 def parse_series_id(text):
     """'https://page.kakao.com/content/54801072' 또는 '54801072' -> '54801072'"""
     text = str(text or "").strip()
@@ -197,38 +201,59 @@ def _unescape(s):
     return _html.unescape(s or "")
 
 
-def fetch_series_info(session, series_id):
-    """작품 페이지 HTML에서 제목/표지/소개/작가를 읽는다. 실패하면 빈 dict."""
-    try:
-        r = session.get("%s/content/%s" % (BASE, series_id),
-                        headers={"Accept": "text/html"}, timeout=session.request_timeout)
-    except requests.RequestException:
+THUMB_URL = "https://page-images.kakaoentcdn.com/download/resource?kid=%s&filename=th3"
+COVER_URL = "https://page-images.kakaoentcdn.com/download/resource?kid=%s"
+
+
+def _image_url(kid, fmt):
+    kid = (kid or "").strip()
+    if not kid:
+        return ""
+    if kid.startswith("http"):
+        return kid
+    if kid.startswith("//"):
+        return "https:" + kid
+    return fmt % kid
+
+
+def series_info_from_item(si):
+    """회차 목록/뷰어 API 응답의 series_item -> 작품 정보 dict"""
+    if not isinstance(si, dict):
         return {}
-    if r.status_code >= 400:
-        return {}
-    html = r.text
-    title = _meta(html, "og:title")
-    title = re.sub(r"\s*[-|]\s*카카오페이지\s*$", "", title).strip()
+    age = si.get("age_grade")
+    on_issue = str(si.get("on_issue") or "").upper()
     info = {
-        "title": title,
-        "thumbnail": _meta(html, "og:image"),
-        "synopsis": _meta(html, "og:description") or _meta(html, "description"),
+        "title": (si.get("title") or "").strip(),
+        "thumbnail": _image_url(si.get("thumbnail"), THUMB_URL),   # 카드/kavita.yaml용(작은 크기)
+        "cover_url": _image_url(si.get("thumbnail"), COVER_URL),   # zip 첫 페이지용(원본)
+        "synopsis": (si.get("description") or "").strip(),
+        "author": ",".join(a.strip() for a in str(si.get("authors") or "").split(",") if a.strip()),
+        "genre": si.get("sub_category") or "",
+        "category": si.get("category") or "",
+        "adult": str(age) in ("19", "Nineteen"),
+        "finished": on_issue in ("N", "END"),
+        "waitfree": bool(si.get("is_waitfree")),
+        "release_date": str(si.get("start_sale_dt") or "")[:10].replace("-", ""),
     }
-    # Next.js 데이터 안의 작가/장르/완결 여부 (없으면 무시)
-    m = re.search(r'"authors"\s*:\s*"([^"]+)"', html)
-    if m:
-        try:
-            info["author"] = json.loads('"%s"' % m.group(1))
-        except ValueError:
-            info["author"] = m.group(1)
-    m = re.search(r'"subcategory"\s*:\s*"([^"]+)"', html)
-    if m:
-        info["genre"] = m.group(1)
-    if re.search(r'"onIssue"\s*:\s*"End"|"on_issue"\s*:\s*"End"', html):
-        info["finished"] = True
-    if re.search(r'"ageGrade"\s*:\s*"Nineteen"|"age_grade"\s*:\s*19', html):
-        info["adult"] = True
-    return {k: v for k, v in info.items() if v}
+    return {k: v for k, v in info.items() if v not in ("", None)}
+
+
+def fetch_series_info(session, series_id):
+    """작품 정보(제목/표지/소개/작가/장르/완결 여부).
+
+    작품 페이지 HTML은 SPA 껍데기라 og 메타가 사이트 공통값("카카오페이지",
+    기본 로고)이고, requests가 문자셋을 잘못 추정하면 제목이 깨진다. 그래서
+    회차 목록 API(1개만 요청)의 series_item에서 읽는다. 실패하면 빈 dict."""
+    try:
+        r = session.get(PRODUCT_LIST_API, params={
+            "series_id": series_id, "cursor_index": 0, "cursor_direction": "NEXT",
+            "window_size": 1, "sort_type": "asc"}, timeout=session.request_timeout)
+        if r.status_code >= 300:
+            return {}
+        body = json.loads(r.content.decode("utf-8"))
+    except (requests.RequestException, ValueError):
+        return {}
+    return series_info_from_item((body.get("result") or {}).get("series_item"))
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +282,7 @@ def _episode_from_item(entry):
     except (TypeError, ValueError):
         return None
     date = ""
-    for k in ("open_dt", "sale_open_dt", "service_start_dt", "free_change_dt"):
+    for k in ("start_sale_dt", "last_release_dt"):
         if item.get(k):
             date = str(item[k])[:10].replace("-", ".")
             break
@@ -282,7 +307,7 @@ def fetch_episode_list(session, series_id, max_pages=400, log=None):
         _check_auth(r, "회차 목록")
         if r.status_code >= 300:
             raise RuntimeError("회차 목록 조회 실패: %s" % _api_error_text(r)[1])
-        body = r.json()
+        body = json.loads(r.content.decode("utf-8"))
         result = body.get("result") or {}
         items = result.get("list") or []
         total = int(result.get("total_count") or 0)
@@ -311,8 +336,11 @@ def fetch_episode_images(session, series_id, product_id):
         if "not_purchased" in key or "purchase" in key or r.status_code == 402:
             raise KakaoNotPurchased(text)
         raise RuntimeError("이미지 목록 조회 실패: %s" % text)
-    body = r.json()
+    body = json.loads(r.content.decode("utf-8"))
     vd = body.get("viewer_data") or body.get("viewerData") or {}
+    if isinstance(vd, dict) and (vd.get("contents_list") or
+                                 str(vd.get("type") or "").lower().startswith("text")):
+        raise KakaoUnsupported("웹소설(텍스트) 회차라 이미지로 받을 수 없음")
     idd = vd.get("imageDownloadData") or vd.get("image_download_data") or {}
     files = idd.get("files") or []
     files = sorted((f for f in files if isinstance(f, dict)), key=lambda f: f.get("no") or 0)

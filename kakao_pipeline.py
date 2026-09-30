@@ -18,6 +18,9 @@ import time
 from . import discord_notify, downloader, kakao_api, kavita_yaml, state_store as ss
 
 PLATFORM = "kakao"
+# 1.16.0은 작품 HTML에서 정보를 읽어 제목이 깨지고(문자셋 오판) 표지가 사이트
+# 기본 로고로 저장됐다. 이 값보다 낮은 레코드는 다음 실행 때 API로 다시 채운다.
+INFO_VERSION = 3
 # 예약(자동) 실행에서 볼 수 없는 회차가 이만큼 연달아 나오면 그 작품은 멈춘다
 # (유료 구간에서 회차마다 요청을 보내지 않기 위함).
 MAX_CONSECUTIVE_LOCKED = 3
@@ -72,9 +75,12 @@ def _comicinfo_meta(t, ep, sid):
 
 def _info_patch(info):
     patch = {}
-    for k in ("title", "thumbnail", "synopsis", "author", "genre"):
+    for k in ("title", "thumbnail", "cover_url", "synopsis", "author", "genre", "release_date",
+              "category"):
         if info.get(k):
             patch[k] = info[k]
+    if info.get("title"):
+        patch["info_version"] = INFO_VERSION
     patch["adult"] = bool(info.get("adult"))
     patch["status"] = "완결" if info.get("finished") else "연재"
     # kavita.yaml(build_data)가 쓰는 필드 이름에 맞춰 둔다
@@ -84,6 +90,79 @@ def _info_patch(info):
         patch["tags"] = [info["genre"]]
     patch["info_fetched_at"] = time.time()
     return patch
+
+
+def _is_novel(t):
+    return "소설" in str((t or {}).get("category") or "")
+
+
+def _migrate_title_folder(root, old_title, new_title, sid, log=print):
+    """제목이 바뀌면(예: 1.16.0에서 깨진 제목으로 저장된 경우) 기존 시리즈 폴더와
+    그 안의 회차 파일 이름을 새 제목으로 옮긴다. 새 폴더가 이미 있으면 파일만
+    새 폴더로 옮긴다."""
+    if not old_title or old_title == new_title:
+        return
+    old_dir = downloader.title_dir(root, old_title, sid)
+    new_dir = downloader.title_dir(root, new_title, sid)
+    if not os.path.isdir(old_dir) or os.path.abspath(old_dir) == os.path.abspath(new_dir):
+        return
+    try:
+        os.makedirs(new_dir, exist_ok=True)
+        old_prefix = downloader.safe_name(old_title) + " "
+        new_prefix = downloader.safe_name(new_title) + " "
+        for f in os.listdir(old_dir):
+            nf = new_prefix + f[len(old_prefix):] if f.startswith(old_prefix) else f
+            src, dst = os.path.join(old_dir, f), os.path.join(new_dir, nf)
+            if os.path.exists(dst):
+                continue
+            os.replace(src, dst)
+        try:
+            os.rmdir(old_dir)
+        except OSError:
+            pass
+        log("카카오 %s: 제목 변경에 맞춰 폴더/파일 이름 정리 (%s -> %s)" % (sid, old_title, new_title))
+    except OSError as e:
+        log("카카오 %s: 폴더 이름 정리 실패(무시) - %s" % (sid, e))
+
+
+def _refresh_info(cfg, session, sid, t, log=print):
+    info = kakao_api.fetch_series_info(session, sid)
+    if not info:
+        return t
+    patch = _info_patch(info)
+    if patch.get("title") and patch["title"] != t.get("title"):
+        _migrate_title_folder(kakao_root(cfg), t.get("title"), patch["title"], sid, log=log)
+    ss.upsert_kakao_title({sid: patch})
+    t = dict(t)
+    t.update(patch)
+    return t
+
+
+_repair_started = False
+
+
+def repair_old_records_async(cfg):
+    """예전 버전(INFO_VERSION 미만)으로 저장된 작품 정보를 백그라운드에서 한 번 고친다
+    (대시보드 폴링에서 호출, 프로세스당 1회)."""
+    global _repair_started
+    if _repair_started:
+        return
+    bad = [sid for sid, t in ss.load_kakao_titles().items()
+           if int(t.get("info_version") or 0) < INFO_VERSION]
+    _repair_started = True
+    if not bad:
+        return
+
+    def _run():
+        session = build_session_from_cfg(cfg)
+        for sid in bad:
+            t = ss.load_kakao_titles().get(sid)
+            if t:
+                _refresh_info(cfg, session, sid, t, log=ss.append_log)
+                time.sleep(0.3)
+
+    import threading
+    threading.Thread(target=_run, name="webtoon_manager_kakao_repair", daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +178,12 @@ def add_series(cfg, text, log=print):
     info = kakao_api.fetch_series_info(session, sid)
     if not info.get("title") and not existing:
         return False, "작품 정보를 찾지 못했습니다(series_id=%s). 번호를 확인해주세요." % sid, None
+    if _is_novel(info):
+        return False, ("'%s'은(는) 카카오페이지 웹소설입니다. 이 플러그인은 이미지 웹툰만 받을 수 "
+                       "있어 등록하지 않았습니다." % info.get("title", sid)), None
     patch = _info_patch(info)
+    if existing and patch.get("title") and patch["title"] != existing.get("title"):
+        _migrate_title_folder(kakao_root(cfg), existing.get("title"), patch["title"], sid, log=log)
     patch.setdefault("title", (existing or {}).get("title") or sid)
     patch["subscribed"] = True
     if not existing:
@@ -137,14 +221,17 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
     if not t:
         return res
 
-    # 작품 정보는 하루 한 번만 갱신
-    if time.time() - float(t.get("info_fetched_at") or 0) > 24 * 3600:
-        info = kakao_api.fetch_series_info(session, sid)
-        if info:
-            t.update(_info_patch(info))
-            ss.upsert_kakao_title({sid: _info_patch(info)})
+    # 작품 정보는 하루 한 번만 갱신(예전 버전에서 잘못 저장된 정보는 즉시 갱신)
+    if (int(t.get("info_version") or 0) < INFO_VERSION or
+            time.time() - float(t.get("info_fetched_at") or 0) > 24 * 3600):
+        t = _refresh_info(cfg, session, sid, t, log=log)
 
     title = t.get("title") or sid
+    if _is_novel(t):
+        ss.upsert_kakao_title({sid: {"last_result": "웹소설이라 받을 수 없음(웹툰만 지원) - 삭제해주세요",
+                                     "last_result_at": time.time(), "subscribed": False}})
+        log("%s: 웹소설이라 건너뜀(이미지 웹툰만 지원)" % title)
+        return res
     root = kakao_root(cfg)
     temp_root = kakao_temp_root(cfg)
     fz = _num(cfg, "FOLDER_ZERO_FILL", 4)
@@ -177,6 +264,8 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
             targets.append(ep)
 
     if not targets:
+        ss.upsert_kakao_title({sid: {"last_result": "받을 새 회차 없음(보유 %d화)" % len(have),
+                                     "last_result_at": time.time()}})
         return res
     log("%s: 시도할 회차 %d개 (보유 %d / 전체 %d)" % (title, len(targets), len(have), len(episodes)))
 
@@ -184,7 +273,7 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
         downloader.write_series_json(root, title, sid, _series_json_meta(t, sid), log=log)
 
     comicinfo_on = bool(cfg.get("GENERATE_COMICINFO_XML", True))
-    cover_url = t.get("thumbnail") if cfg.get("ADD_COVER_AS_FIRST_PAGE", True) else None
+    cover_url = (t.get("cover_url") or t.get("thumbnail")) if cfg.get("ADD_COVER_AS_FIRST_PAGE", True) else None
     last_ok = t.get("last_downloaded_no")
     max_checked = checked_no
     locked_run = 0
@@ -227,6 +316,10 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
             log("%s: %s" % (title, e))
             res["auth_expired"] = True
             break
+        except kakao_api.KakaoUnsupported as e:
+            log("%s: %s - 이 작품은 중단" % (title, e))
+            res["failures"].append({"title": title, "title_id": sid, "episode_no": no, "error": str(e)})
+            break
         except kakao_api.KakaoNotPurchased:
             res["locked"] += 1
             locked_run += 1
@@ -263,7 +356,15 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
         if last_ok is None or no > last_ok:
             last_ok = no
 
-    ss.upsert_kakao_title({sid: {"last_downloaded_no": last_ok, "checked_no": max_checked}})
+    summary = "신규 %d화" % res["downloaded"]
+    if res["locked"]:
+        summary += " / 볼 수 없는 회차 %d" % res["locked"]
+    if res["failures"]:
+        summary += " / 실패 %d" % len(res["failures"])
+    if res["auth_expired"]:
+        summary += " / 쿠키 만료"
+    ss.upsert_kakao_title({sid: {"last_downloaded_no": last_ok, "checked_no": max_checked,
+                                 "last_result": summary, "last_result_at": time.time()}})
 
     if cfg.get("GENERATE_KAVITA_YAML", True):
         kavita_yaml.write_kavita_yaml(

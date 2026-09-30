@@ -398,6 +398,7 @@
       var badges = '';
       if (t.status === '완결') badges += '<span class="wtm-badge finished">완결</span>';
       if (t.adult) badges += '<span class="wtm-badge rest">19</span>';
+      if ((t.category || '').indexOf('소설') >= 0) badges += '<span class="wtm-badge rest" title="이미지 웹툰만 받을 수 있습니다">웹소설(미지원)</span>';
       if (!t.subscribed) badges += '<span class="wtm-badge">구독해제</span>';
       var progress = (t.last_downloaded_no != null ? ('마지막 받은 회차 ' + t.last_downloaded_no + '화') : '아직 받은 회차 없음') +
         (t.episode_count ? (' / 전체 ' + t.episode_count + '화') : '');
@@ -414,6 +415,7 @@
         '<div class="wtm-card-title">' + escapeHtml(t.title || t.seriesId) + '</div>' +
         '<div class="wtm-card-author">' + escapeHtml(t.author || '') + '</div>' +
         '<div class="wtm-card-author">' + escapeHtml(progress) + '</div>' +
+        (t.last_result ? '<div class="wtm-card-author" title="마지막 확인 결과">' + escapeHtml(fmtDate(t.last_result_at) + ' · ' + t.last_result) + '</div>' : '') +
         '<div class="wtm-badges">' + badges + '</div>' +
         '<div class="wtm-card-actions">' + actions + '</div>' +
         '</div></div>';
