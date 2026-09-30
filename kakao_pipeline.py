@@ -425,10 +425,20 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
                 (use_waitfree and ep["waitfree_ok"]):
             targets.append(ep)
 
+    def _update_yaml():
+        # 회차 zip이 하나라도 있으면 kavita.yaml 생성/갱신(내용이 같으면 파일은 그대로)
+        if cfg.get("GENERATE_KAVITA_YAML", True):
+            kavita_yaml.write_kavita_yaml(
+                root, sid, session=session,
+                embed_cover=bool(cfg.get("KAVITA_YAML_EMBED_COVER", True)),
+                log=log, platform=PLATFORM)
+
     if not targets:
         ss.upsert_kakao_title({sid: {"last_result": "받을 새 회차 없음(보유 %d화)" % len(have),
                                      "last_result_at": time.time(), "has_locked": False,
                                      "checked_slide_dt": t.get("last_slide_added_dt") or ""}})
+        # 예전에 받아둔 회차만 있고 kavita.yaml이 없던 작품도 여기서 만들어진다
+        _update_yaml()
         return res
     log("%s: 시도할 회차 %d개 (보유 %d / 전체 %d)" % (title, len(targets), len(have), len(episodes)))
 
@@ -519,6 +529,9 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
             continue
         res["downloaded"] += 1
         log("%s %d화 완료 (%d장)" % (title, no, cnt))
+        # 회차가 추가될 때마다 바로 갱신 - 긴 다운로드가 중간에 끊겨도(재시작 등)
+        # 이미 받은 회차는 kavita.yaml에 반영돼 있도록
+        _update_yaml()
         ss.append_history({"type": "download", "source": "kakao", "platform": "kakao",
                            "title_id": sid, "title": "[카카오] %s" % title, "episode_no": no,
                            "subtitle": ep.get("subtitle"), "image_count": cnt})
@@ -542,10 +555,7 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
         done_patch["checked_slide_dt"] = t.get("last_slide_added_dt") or ""
     ss.upsert_kakao_title({sid: done_patch})
 
-    if cfg.get("GENERATE_KAVITA_YAML", True):
-        kavita_yaml.write_kavita_yaml(
-            root, sid, session=session, embed_cover=bool(cfg.get("KAVITA_YAML_EMBED_COVER", True)),
-            log=log, platform=PLATFORM)
+    _update_yaml()   # 작품 정보(완결 등)만 바뀐 경우도 반영
     return res
 
 
