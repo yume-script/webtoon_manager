@@ -203,6 +203,45 @@ def _merge_scan_result(cfg, merged, log=print, finished_scan=False):
     return patch
 
 
+def _apply_waitfree_autosubscribe(cfg, patch, log=print):
+    """'기다무 자동 구독'이 켜져 있으면 연재 중인 기다무 작품을 구독으로 올린다.
+    네이버 '매일+ 자동 구독'과 같은 규칙: 사용자가 구독/구독해제/제외를 한 번도
+    고르지 않은(전부 기본값인) 작품만 건드린다. 완결작은 대상이 아니다."""
+    if not cfg.get("KAKAO_AUTO_SUBSCRIBE_WAITFREE", True):
+        return 0
+    current = ss.load_kakao_titles()
+    promote = {}
+    for sid in patch:
+        t = current.get(sid) or {}
+        if not t.get("waitfree") or t.get("status") == "완결" or _is_novel(t):
+            continue
+        if t.get("subscribed") or t.get("excluded") or t.get("unsubscribed"):
+            continue
+        promote[sid] = {"subscribed": True, "auto_subscribed": "waitfree"}
+    if promote:
+        ss.upsert_kakao_title(promote)
+        log("카카오 기다무 자동 구독: %d개 작품을 새로 구독 처리함" % len(promote))
+    return len(promote)
+
+
+def _needs_check(cfg, t, now=None):
+    """자동 사이클에서 이 작품의 회차 목록을 다시 볼 필요가 있는지.
+    - 새 회차가 올라왔거나(last_slide_added_dt 변경) 아직 한 번도 안 봤으면 확인
+    - 기다무 사용이 켜져 있고, 볼 수 없는 회차가 남아 있고, 대여권 충전 시간이
+      지났으면 확인
+    그 외에는 건너뛴다(구독작이 수백~천 개일 때 매 주기 전체 조회를 피하기 위함)."""
+    now = now or time.time()
+    if not t.get("checked_slide_dt") or t.get("checked_slide_dt") != t.get("last_slide_added_dt"):
+        return True
+    if not t.get("last_slide_added_dt"):
+        return True
+    if cfg.get("KAKAO_USE_WAITFREE") and t.get("waitfree") and t.get("has_locked"):
+        period = max(60, int(t.get("waitfree_period_min") or 1440)) * 60
+        if now - float(t.get("last_ticket_at") or 0) >= period:
+            return True
+    return False
+
+
 def _fill_missing_thumbnails(session, log=print, limit=THUMB_FILL_PER_SCAN, should_cancel=None):
     titles = ss.load_kakao_titles()
     todo = [sid for sid, t in titles.items() if not t.get("thumbnail")][:limit]
@@ -259,6 +298,7 @@ def run_kakao_scan_weekday(cfg, log=print, should_cancel=None):
             log("카카오페이지 신작 목록 수집 실패: %s" % e)
 
     patch = _merge_scan_result(cfg, merged, log=log)
+    _apply_waitfree_autosubscribe(cfg, patch, log=log)
     log("카카오페이지 요일별 스캔 완료: %d개 작품" % len(patch))
     _fill_missing_thumbnails(session, log=log, should_cancel=should_cancel)
     return {"scanned": len(patch)}
@@ -387,7 +427,8 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
 
     if not targets:
         ss.upsert_kakao_title({sid: {"last_result": "받을 새 회차 없음(보유 %d화)" % len(have),
-                                     "last_result_at": time.time()}})
+                                     "last_result_at": time.time(), "has_locked": False,
+                                     "checked_slide_dt": t.get("last_slide_added_dt") or ""}})
         return res
     log("%s: 시도할 회차 %d개 (보유 %d / 전체 %d)" % (title, len(targets), len(have), len(episodes)))
 
@@ -400,10 +441,16 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
     max_checked = checked_no
     locked_run = 0
     ticket_available = use_waitfree
+    # 자동 실행은 작품당 1회 실행에 받는 회차 수를 네이버와 같은 설정으로 제한
+    cap = 0 if full else _num(cfg, "MAX_NEW_EPISODES_PER_TITLE", 10)
 
     for i, ep in enumerate(targets):
         if cancel_check and cancel_check():
             res["cancelled"] = True
+            break
+        if cap and res["downloaded"] >= cap:
+            log("%s: 이번 실행 상한(%d화) 도달 - 나머지는 다음 실행 때" % (title, cap))
+            res["capped"] = True
             break
         if on_progress:
             on_progress(i, len(targets), "%s %d화" % (title, ep["no"]))
@@ -485,8 +532,15 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
         summary += " / 실패 %d" % len(res["failures"])
     if res["auth_expired"]:
         summary += " / 쿠키 만료"
-    ss.upsert_kakao_title({sid: {"last_downloaded_no": last_ok, "checked_no": max_checked,
-                                 "last_result": summary, "last_result_at": time.time()}})
+    done_patch = {"last_downloaded_no": last_ok, "checked_no": max_checked,
+                  "last_result": summary, "last_result_at": time.time(),
+                  "has_locked": bool(res["locked"])}
+    if res["waitfree_used"]:
+        done_patch["last_ticket_at"] = time.time()
+    if not res.get("capped") and not res["cancelled"] and not res["auth_expired"]:
+        # 이번에 끝까지 확인했으니, 새 회차가 올라오기 전까지는 다시 안 봐도 됨
+        done_patch["checked_slide_dt"] = t.get("last_slide_added_dt") or ""
+    ss.upsert_kakao_title({sid: done_patch})
 
     if cfg.get("GENERATE_KAVITA_YAML", True):
         kavita_yaml.write_kavita_yaml(
@@ -518,6 +572,11 @@ def run_kakao_cycle(cfg, log=print, manage_job=False):
         log("카카오페이지: %s" % e)
         total["auth_expired"] = True
 
+    now = time.time()
+    all_count = len(titles)
+    titles = {k: v for k, v in titles.items() if _needs_check(cfg, v, now)}
+    log("카카오페이지: 구독 %d개 중 이번에 확인할 작품 %d개(새 회차/기다무 충전된 작품만)" %
+        (all_count, len(titles)))
     items = sorted(titles.items(), key=lambda kv: str(kv[1].get("title") or ""))
     try:
         for i, (sid, t) in enumerate(items):

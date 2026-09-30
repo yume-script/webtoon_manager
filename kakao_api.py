@@ -317,6 +317,9 @@ def landing_item_to_title(it):
         "waitfree": bool(it.get("is_waitfree")),
         "status": "완결" if on_issue in ("N", "END") else "연재",
         "release_date": str(it.get("start_sale_dt") or "")[:10].replace("-", ""),
+        # 새 회차가 올라왔는지 판단하는 값(바뀌었을 때만 회차 목록을 다시 조회)
+        "last_slide_added_dt": str(it.get("last_slide_added_dt") or ""),
+        "waitfree_period_min": int(it.get("waitfree_period_by_minute") or 0),
     }
     if kid:
         rec["thumbnail"] = _image_url(kid, THUMB_URL)

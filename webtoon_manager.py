@@ -92,6 +92,7 @@ DEFAULTS = {
     "KAKAO_DOWNLOAD_ROOT": "",
     "KAKAO_AUTO": True,
     "KAKAO_USE_WAITFREE": False,
+    "KAKAO_AUTO_SUBSCRIBE_WAITFREE": True,
     "COMPARE_FOLDER": "",
     "ADD_COVER_AS_FIRST_PAGE": True,
     "LOW_PRIORITY_MODE": True,
@@ -172,6 +173,10 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
          "type": "text"},
         {"key": "KAKAO_AUTO",
          "label": "[카카오페이지] 스케줄러 자동 실행에 포함(네이버 다운로드가 끝난 뒤 이어서 확인)",
+         "type": "checkbox", "default": True},
+        {"key": "KAKAO_AUTO_SUBSCRIBE_WAITFREE",
+         "label": "[카카오페이지] 기다무 작품 자동 구독(연재 중인 기다무 작품을 전부 구독 -> 자동 다운로드 대상. "
+                  "구독해제/제외한 작품은 건드리지 않음)",
          "type": "checkbox", "default": True},
         {"key": "KAKAO_USE_WAITFREE",
          "label": "[카카오페이지] 기다무 대여권 자동 사용(작품당 실행 1회에 1장, 계정의 대여권이 "
@@ -426,6 +431,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 "KAKAO_ENABLE": bool(cfg.get("KAKAO_ENABLE")),
                 "KAKAO_AUTO": bool(cfg.get("KAKAO_AUTO", True)),
                 "KAKAO_USE_WAITFREE": bool(cfg.get("KAKAO_USE_WAITFREE")),
+                "KAKAO_AUTO_SUBSCRIBE_WAITFREE": bool(cfg.get("KAKAO_AUTO_SUBSCRIBE_WAITFREE", True)),
                 "KAKAO_DOWNLOAD_ROOT": cfg.get("KAKAO_DOWNLOAD_ROOT") or ss.KAKAO_DOWNLOAD_DEFAULT_DIR,
                 "has_kakao_cookie": bool((cfg.get("KAKAO_COOKIE") or "").strip()),
                 "has_discord": bool(cfg.get("DISCORD_WEBHOOK_URL") or

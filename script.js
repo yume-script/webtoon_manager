@@ -315,7 +315,7 @@
       ['ComicInfo.xml 생성', cfg.GENERATE_COMICINFO_XML ? '사용' : '사용 안 함'],
       ['메인 이미지 1페이지 포함', cfg.ADD_COVER_AS_FIRST_PAGE ? '사용' : '사용 안 함'],
       ['series.json 생성(BookOasis 스캐너용)', cfg.GENERATE_SERIES_JSON ? '사용' : '사용 안 함'],
-      ['카카오페이지', cfg.KAKAO_ENABLE ? ('사용' + (cfg.KAKAO_USE_WAITFREE ? ' / 기다무 자동' : '') + (cfg.KAKAO_AUTO ? ' / 자동 실행 포함' : '')) : '사용 안 함'],
+      ['카카오페이지', cfg.KAKAO_ENABLE ? ('사용' + (cfg.KAKAO_AUTO_SUBSCRIBE_WAITFREE ? ' / 기다무 자동구독' : '') + (cfg.KAKAO_USE_WAITFREE ? ' / 대여권 사용' : '') + (cfg.KAKAO_AUTO ? ' / 자동 실행 포함' : '')) : '사용 안 함'],
       ['kavita.yaml 생성', cfg.GENERATE_KAVITA_YAML ? ('사용' + (cfg.KAVITA_YAML_EMBED_COVER ? ' / 표지 포함' : '')) : '사용 안 함'],
       ['서버 리소스 양보', cfg.LOW_PRIORITY_MODE ? ('사용 / nice ' + cfg.DOWNLOAD_NICE_LEVEL) : '사용 안 함'],
       ['중복 확인', (state.compare_status && state.compare_status.enabled) ?
@@ -417,7 +417,8 @@
     var kcount = (state.titles || []).filter(function (t) { return t.platform === 'kakao'; }).length;
     status.textContent = '작품 ' + kcount + '개 / 저장 경로: ' + (cfg.KAKAO_DOWNLOAD_ROOT || '') +
       ' / 로그인 쿠키: ' + (cfg.has_kakao_cookie ? '설정됨' : '없음(무료 회차만)') +
-      ' / 기다무 자동 사용: ' + (cfg.KAKAO_USE_WAITFREE ? '켜짐' : '꺼짐') +
+      ' / 기다무 자동 구독: ' + (cfg.KAKAO_AUTO_SUBSCRIBE_WAITFREE ? '켜짐' : '꺼짐') +
+      ' / 기다무 대여권 사용: ' + (cfg.KAKAO_USE_WAITFREE ? '켜짐' : '꺼짐') +
       ' / 자동 실행 포함: ' + (cfg.KAKAO_AUTO ? '예' : '아니오');
   }
 
