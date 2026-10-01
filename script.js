@@ -401,8 +401,13 @@
     var tjob = state.title_job || {};
     var tbar = el('[data-el="title-job-bar"]');
     var tmsg = el('[data-el="title-job-message"]');
-    if (tbar) tbar.style.display = tjob.running ? '' : 'none';
-    if (tmsg) tmsg.textContent = tjob.message || '';
+    var recentlyDone = !tjob.running && tjob.finished_at && (Date.now() / 1000 - tjob.finished_at) < 120;
+    if (tbar) tbar.style.display = (tjob.running || recentlyDone) ? '' : 'none';
+    if (tmsg) tmsg.textContent = (recentlyDone ? (tjob.last_error ? '❌ ' : '✅ ') : '') +
+      (tjob.message || '') + (recentlyDone && tjob.last_error ? ' (' + tjob.last_error + ')' : '') +
+      ((state.kakao_queue || []).length ? ' · 카카오 대기 ' + state.kakao_queue.length + '개' : '');
+    var tcancel = tbar ? tbar.querySelector('[data-action="cancel_title_job"]') : null;
+    if (tcancel) tcancel.style.display = tjob.running ? '' : 'none';
     if (tjob.running) pollFastUntil = Date.now() + 30000;
   }
 
@@ -650,7 +655,12 @@
       var platform2 = cardAction.getAttribute('data-platform') || 'naver';
       cardAction.disabled = true;
       var r5 = await callAction(actName, { titleId: titleId2, platform: platform2 });
-      if (r5.success && actName === 'download_title') pollFastUntil = Date.now() + 30000;
+      if (actName === 'download_title') {
+        pollFastUntil = Date.now() + 30000;
+        var tmsg2 = el('[data-el="title-job-message"]');
+        var tbar2 = el('[data-el="title-job-bar"]');
+        if (tbar2 && tmsg2) { tbar2.style.display = ''; tmsg2.textContent = (r5.success ? '' : '❌ ') + (r5.message || ''); }
+      }
       cardAction.disabled = false;
       if (!r5.success) alert(r5.message || '실패');
       await refresh();

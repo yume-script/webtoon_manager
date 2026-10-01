@@ -143,8 +143,9 @@ def run_scan_weekday(cfg, log=print):
     if _cancelled():
         log("요일별 스캔 취소됨 - 지금까지 모은 %d개 작품만 반영" % len(patch))
     else:
-        ss.save_job_state({"last_scan_at": time.time()})
-        log("요일별 스캔 완료: 네이버 %d개 / 카카오 %d개 작품" % (len(patch), kakao_count))
+        msg = "요일별 스캔 완료: 네이버 %d개 / 카카오 %d개 작품" % (len(patch), kakao_count)
+        ss.save_job_state({"last_scan_at": time.time(), "message": msg})
+        log(msg)
     return {"scanned": len(patch) + kakao_count}
 
 
@@ -187,7 +188,8 @@ def run_scan_finished(cfg, log=print, max_pages=200):
                 should_cancel=lambda: bool(ss.load_job_state().get("cancel_requested")))
         except Exception as e:  # noqa: BLE001
             log("카카오페이지 완결 스캔 실패(네이버 결과에는 영향 없음): %s" % e)
-    ss.save_job_state({"last_finished_scan_at": time.time()})
+    ss.save_job_state({"last_finished_scan_at": time.time(),
+                        "message": "완결 스캔 완료: 네이버 %d개 작품" % len(patch)})
     log("완결 스캔 완료: 총 %d개 작품" % len(patch))
 
     if finished_events:

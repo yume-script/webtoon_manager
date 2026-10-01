@@ -367,6 +367,10 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             pass
 
         update_status = self._check_update_available()
+        try:
+            self._maybe_drain_kakao_queue(cfg)
+        except Exception:  # noqa: BLE001
+            pass
 
         titles = ss.load_titles()
         compare_set, compare_status = self._build_compare_set(db_type, cfg)
@@ -398,6 +402,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             "history": ss.load_history(limit=200),
             "job": ss.load_job_state(),
             "title_job": ss.load_title_job_state(),
+            "kakao_queue": ss.kakao_queue_list(),
             "log_tail": ss.tail_log(60),
             "plugin_version": self._read_version(),
             "update_status": update_status,
@@ -537,6 +542,59 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         out.sort(key=lambda x: x.get("added_at") or 0, reverse=True)
         return out
 
+    def _start_kakao_worker(self, cfg, sid):
+        """title_job 락을 잡을 수 있으면 sid부터 받기 시작하고, 끝나면 대기열을
+        이어서 비운다. 락을 못 잡으면 False."""
+        from . import kakao_pipeline
+
+        def _acquire(cur):
+            nt = ss.load_kakao_titles().get(cur) or {}
+            return ss.try_acquire_title_job({
+                "title_id": cur, "title": "[카카오] %s" % nt.get("title", cur),
+                "message": "카카오 %s 회차 확인 중" % nt.get("title", cur),
+                "started_at": time.time(), "finished_at": None, "cancel_requested": False,
+                "last_error": None, "progress": 0, "total": 0})
+
+        if not _acquire(sid):
+            return False
+
+        def _runner():
+            if cfg.get("LOW_PRIORITY_MODE", True):
+                downloader.lower_thread_priority(int(cfg.get("DOWNLOAD_NICE_LEVEL", 10)))
+            cur = sid
+            while cur:
+                try:
+                    kakao_pipeline.run_kakao_series_job(cfg, cur, log=ss.append_log)
+                except Exception as e:  # noqa: BLE001
+                    ss.append_log("카카오 다운로드 실패(%s): %s" % (cur, e))
+                    ss.upsert_kakao_title({cur: {"last_result": "다운로드 실패: %s" % e,
+                                                 "last_result_at": time.time()}})
+                    ss.save_title_job_state({"running": False, "finished_at": time.time(),
+                                              "last_error": str(e), "message": "실패: %s" % e})
+                if ss.load_title_job_state().get("cancel_requested"):
+                    break
+                cur = ss.kakao_queue_pop()
+                if cur and not _acquire(cur):
+                    ss.kakao_queue_push(cur)   # 다른 작업이 잡았으면 되돌려 두고 종료
+                    break
+
+        threading.Thread(target=_runner, name="webtoon_manager_kakao_dl", daemon=True).start()
+        return True
+
+    def _maybe_drain_kakao_queue(self, cfg):
+        """대기열에 남은 작품이 있는데 아무것도 안 받고 있으면(재시작으로 스레드가
+        죽은 경우 등) 대시보드 폴링 때 다시 시작한다."""
+        q = ss.kakao_queue_list()
+        if not q or not cfg.get("KAKAO_ENABLE"):
+            return
+        tj = ss.load_title_job_state()
+        last = tj.get("updated_at") or tj.get("started_at") or 0
+        if tj.get("running") and time.time() - float(last) < ss.TITLE_JOB_STALE_SECONDS:
+            return   # 지금 받는 중 - 끝나면 그 스레드가 이어서 비운다
+        sid = ss.kakao_queue_pop()
+        if sid and not self._start_kakao_worker(cfg, sid):
+            ss.kakao_queue_push(sid)
+
     def _kakao_card_action(self, db_type, action, payload):
         """통합 목록 카드에서 카카오 작품에 대해 누른 버튼(네이버와 같은 액션 이름)."""
         sid = str(payload.get("titleId") or "").strip()
@@ -591,28 +649,12 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             t = ss.load_kakao_titles().get(sid)
             if not t:
                 return False, "등록되지 않은 작품입니다"
-            acquired = ss.try_acquire_title_job({
-                "title_id": sid, "title": "[카카오] %s" % t.get("title", sid),
-                "message": "카카오 %s 회차 확인 중" % t.get("title", sid),
-                "started_at": time.time(), "cancel_requested": False,
-                "last_error": None, "progress": 0, "total": 0,
-            })
-            if not acquired:
-                tjob = ss.load_title_job_state()
-                return False, "이미 다른 작품을 다운로드 중입니다(%s)." % (tjob.get("title") or "")
-
-            def _runner():
-                if cfg.get("LOW_PRIORITY_MODE", True):
-                    downloader.lower_thread_priority(int(cfg.get("DOWNLOAD_NICE_LEVEL", 10)))
-                try:
-                    kakao_pipeline.run_kakao_series_job(cfg, sid, log=ss.append_log)
-                except Exception as e:  # noqa: BLE001
-                    ss.append_log("카카오 다운로드 실패: %s" % e)
-                    ss.save_title_job_state({"running": False, "finished_at": time.time(),
-                                              "last_error": str(e), "message": "실패: %s" % e})
-
-            threading.Thread(target=_runner, name="webtoon_manager_kakao_dl", daemon=True).start()
-            return True, "카카오 %s 다운로드 시작됨(백그라운드)" % t.get("title", sid)
+            if self._start_kakao_worker(cfg, sid):
+                return True, "카카오 %s 다운로드 시작됨(백그라운드)" % t.get("title", sid)
+            # 다른 작품을 받는 중이면 거절하지 않고 대기열에 넣는다(끝나면 이어서 받음)
+            n = ss.kakao_queue_push(sid)
+            tjob = ss.load_title_job_state()
+            return True, "대기열에 추가됨(%d번째) - 지금 '%s' 다운로드 중" % (n, tjob.get("title") or "")
         return False, "알 수 없는 카카오 액션: %s" % action
 
     def _act_force_reset(self):
@@ -653,8 +695,14 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 # 다음 실행 시 "이미 실행 중인 작업이 있습니다"만 반복되는 버그가 있었음)
                 job_now = ss.load_job_state()
                 if job_now.get("running"):
-                    ss.save_job_state({"running": False,
-                                        "stage": "done" if not job_now.get("cancel_requested") else "cancelled"})
+                    cancelled = bool(job_now.get("cancel_requested"))
+                    msg = job_now.get("message") or ""
+                    # 진행 중 문구("~ 중")가 그대로 남아 완료 후에도 계속 수집 중처럼
+                    # 보이던 문제 - 끝났으면 완료/취소 문구로 바꿔 둔다
+                    if not msg or msg.rstrip().endswith("중"):
+                        msg = "%s %s" % (label, "취소됨" if cancelled else "완료")
+                    ss.save_job_state({"running": False, "finished_at": time.time(), "message": msg,
+                                        "stage": "done" if not cancelled else "cancelled"})
 
         t = threading.Thread(target=_runner, name="webtoon_manager_%s" % action_slug(label),
                               daemon=True)

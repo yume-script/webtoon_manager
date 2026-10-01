@@ -255,10 +255,14 @@ def load_title_job_state():
     return st
 
 
+TITLE_JOB_STALE_SECONDS = 15 * 60
+
+
 def save_title_job_state(patch):
     with _lock:
         st = load_title_job_state()
         st.update(patch)
+        st["updated_at"] = time.time()
         write_json(TITLE_JOB_STATE_PATH, st)
     return st
 
@@ -269,11 +273,43 @@ def try_acquire_title_job(patch=None):
     with _lock:
         st = load_title_job_state()
         if st.get("running"):
-            return False
+            # 컨테이너 재시작 등으로 스레드가 죽어 running=True로 굳은 상태면
+            # (15분 넘게 진행 갱신이 없으면) 새 작업이 시작될 수 있게 풀어준다.
+            last = st.get("updated_at") or st.get("started_at") or 0
+            if time.time() - float(last) < TITLE_JOB_STALE_SECONDS:
+                return False
         st.update(patch or {})
         st["running"] = True
+        st["updated_at"] = time.time()
         write_json(TITLE_JOB_STATE_PATH, st)
         return True
+
+
+# ---- kakao_dl_queue.json : 카카오 '다운로드' 버튼 대기열 -------------------
+KAKAO_QUEUE_PATH = os.path.join(DATA_DIR, "kakao_dl_queue.json")
+
+
+def kakao_queue_push(series_id):
+    with _lock:
+        q = read_json(KAKAO_QUEUE_PATH, [])
+        if str(series_id) not in q:
+            q.append(str(series_id))
+        write_json(KAKAO_QUEUE_PATH, q)
+        return len(q)
+
+
+def kakao_queue_pop():
+    with _lock:
+        q = read_json(KAKAO_QUEUE_PATH, [])
+        if not q:
+            return None
+        sid = q.pop(0)
+        write_json(KAKAO_QUEUE_PATH, q)
+        return sid
+
+
+def kakao_queue_list():
+    return read_json(KAKAO_QUEUE_PATH, [])
 
 
 def append_log(line):

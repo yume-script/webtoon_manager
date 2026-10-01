@@ -284,6 +284,7 @@ def run_kakao_scan_weekday(cfg, log=print, should_cancel=None):
             if day not in rec["weekdays"]:
                 rec["weekdays"].append(day)
     if not (should_cancel and should_cancel()):
+        ss.save_job_state({"message": "카카오페이지 신작 목록 수집 중"})
         try:
             for it in kakao_api.fetch_landing_all(session, tab_uid=kakao_api.TAB_NEW,
                                                   should_cancel=should_cancel):
@@ -297,10 +298,13 @@ def run_kakao_scan_weekday(cfg, log=print, should_cancel=None):
         except Exception as e:  # noqa: BLE001
             log("카카오페이지 신작 목록 수집 실패: %s" % e)
 
+    ss.save_job_state({"message": "카카오페이지 목록 반영 중"})
     patch = _merge_scan_result(cfg, merged, log=log)
     _apply_waitfree_autosubscribe(cfg, patch, log=log)
     log("카카오페이지 요일별 스캔 완료: %d개 작품" % len(patch))
+    ss.save_job_state({"message": "카카오페이지 표지 채우는 중"})
     _fill_missing_thumbnails(session, log=log, should_cancel=should_cancel)
+    ss.save_job_state({"message": "카카오페이지 요일별 목록 수집 완료: %d개 작품" % len(patch)})
     return {"scanned": len(patch)}
 
 
@@ -322,6 +326,7 @@ def run_kakao_scan_finished(cfg, log=print, should_cancel=None, max_pages=200):
     patch = _merge_scan_result(cfg, merged, log=log, finished_scan=True)
     log("카카오페이지 완결 스캔 완료: %d개 작품" % len(patch))
     _fill_missing_thumbnails(session, log=log, should_cancel=should_cancel)
+    ss.save_job_state({"message": "카카오페이지 완결 목록 수집 완료: %d개 작품" % len(patch)})
     return {"scanned": len(patch)}
 
 
@@ -403,6 +408,19 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
     except kakao_api.KakaoAuthExpired as e:
         log("%s: %s" % (title, e))
         res["auth_expired"] = True
+        ss.upsert_kakao_title({sid: {"last_result": "쿠키 만료로 회차 목록 조회 실패",
+                                     "last_result_at": time.time()}})
+        return res
+    except Exception as e:  # noqa: BLE001
+        log("%s: 회차 목록 조회 실패 - %s" % (title, e))
+        res["failures"].append({"title": title, "title_id": sid, "episode_no": None,
+                                "error": "회차 목록 조회 실패: %s" % e})
+        ss.upsert_kakao_title({sid: {"last_result": "회차 목록 조회 실패: %s" % e,
+                                     "last_result_at": time.time()}})
+        return res
+    if not episodes:
+        log("%s: 회차 목록이 비어 있음" % title)
+        ss.upsert_kakao_title({sid: {"last_result": "회차 목록이 비어 있음", "last_result_at": time.time()}})
         return res
 
     rd = kavita_yaml.release_date_from_episodes(episodes)
@@ -495,6 +513,11 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
             log("%s: %s" % (title, e))
             res["auth_expired"] = True
             break
+        except kakao_api.KakaoSkip as e:
+            log("%s %d화(%s): 받을 수 없는 회차라 건너뜀 - %s" % (title, no, ep.get("subtitle", ""), e))
+            res["skipped"] = res.get("skipped", 0) + 1
+            max_checked = max(max_checked, no)
+            continue
         except kakao_api.KakaoUnsupported as e:
             log("%s: %s - 이 작품은 중단" % (title, e))
             res["failures"].append({"title": title, "title_id": sid, "episode_no": no, "error": str(e)})
@@ -632,6 +655,9 @@ def run_kakao_cycle(cfg, log=print, manage_job=False):
 def run_kakao_series_job(cfg, sid, log=print):
     """작품 하나 '지금 다운로드'(title_job 상태 사용). 미보유 회차 전부 시도."""
     t = ss.load_kakao_titles().get(sid) or {}
+    log("카카오 다운로드 시작: %s (series_id=%s) / 저장 경로 %s / 로그인 쿠키 %s" % (
+        t.get("title", sid), sid, kakao_root(cfg),
+        "있음" if (cfg.get("KAKAO_COOKIE") or "").strip() else "없음(무료 회차만)"))
     session = build_session_from_cfg(cfg)
     try:
         kakao_api.refresh_token(session, log=log)
@@ -650,6 +676,12 @@ def run_kakao_series_job(cfg, sid, log=print):
     msg = "카카오 %s: 신규 %d화 / 볼 수 없는 회차 %d / 실패 %d%s" % (
         t.get("title", sid), r["downloaded"], r["locked"], len(r["failures"]),
         " / 쿠키 만료" if r["auth_expired"] else "")
+    if r["failures"]:
+        msg += " - 첫 실패: %s" % (r["failures"][0].get("error") or "")[:150]
+    if not r["downloaded"] and not r["failures"] and not r["locked"]:
+        cur = ss.load_kakao_titles().get(sid) or {}
+        if cur.get("last_result"):
+            msg += " (%s)" % cur["last_result"]
     log(msg)
     ss.save_title_job_state({"running": False, "finished_at": time.time(), "message": msg,
                               "last_error": "쿠키 만료" if r["auth_expired"] else None})

@@ -54,6 +54,10 @@ class KakaoNotPurchased(Exception):
     """구매/대여하지 않은 회차(api_content_not_purchased_item 등)"""
 
 
+class KakaoSkip(Exception):
+    """받을 수 없는 특수 회차(동영상 트레일러 등 - 서버가 오류 코드로 응답). 건너뛴다."""
+
+
 class KakaoUnsupported(Exception):
     """이미지 웹툰이 아닌 회차(웹소설 텍스트 뷰어 등)"""
 
@@ -409,6 +413,13 @@ def fetch_episode_images(session, series_id, product_id):
             raise KakaoNotPurchased(text)
         raise RuntimeError("이미지 목록 조회 실패: %s" % text)
     body = json.loads(r.content.decode("utf-8"))
+    rc = body.get("result_code")
+    if rc not in (None, 0, "0"):
+        key = str(body.get("message_key") or "")
+        text = "%s (%s)" % (body.get("message") or "", key)
+        if "purchase" in key:
+            raise KakaoNotPurchased(text)
+        raise KakaoSkip(text)
     vd = body.get("viewer_data") or body.get("viewerData") or {}
     if isinstance(vd, dict) and (vd.get("contents_list") or
                                  str(vd.get("type") or "").lower().startswith("text")):
