@@ -210,7 +210,7 @@
       return '⚠️ 중복 확인 중 문제가 발생했습니다: ' + escapeHtml(cs.errors.join(' / '));
     }
     if (!cs.enabled) {
-      return '중복 확인이 설정되지 않았습니다. [설정] 탭 또는 환경설정 &gt; 플러그인 설정의 ' +
+      return '중복 확인이 설정되지 않았습니다. [설정] 탭의 ' +
         '<b>"중복 확인 폴더"</b>에 이미 갖고 있는 웹툰 폴더 경로를 넣어주세요.';
     }
     return '중복 확인 기준: ' + escapeHtml((cs.sources || []).join(' + ')) +
@@ -429,7 +429,7 @@
     if (!status) return;
     var cfg = state.config_public || {};
     if (!cfg.KAKAO_ENABLE) {
-      status.innerHTML = '⚠️ 환경설정 &gt; 플러그인 설정에서 <b>"[카카오페이지] 카카오페이지 웹툰 다운로드 사용"</b>을 켜야 목록 수집/다운로드가 동작합니다.';
+      status.innerHTML = '⚠️ [설정] 탭의 카카오페이지 항목에서 <b>"[카카오페이지] 카카오페이지 웹툰 다운로드 사용"</b>을 켜야 목록 수집/다운로드가 동작합니다.';
       return;
     }
     var kcount = (state.titles || []).filter(function (t) { return t.platform === 'kakao'; }).length;
@@ -511,6 +511,77 @@
   // ------------------------------------------------------------------
   // 탭 전환
   // ------------------------------------------------------------------
+  // ------------------------------------------------------------------
+  // 설정 폼 (코어 플러그인 설정 화면 대신 여기서 모든 값을 편집)
+  // ------------------------------------------------------------------
+  var settingsLoaded = false;
+  var settingsMeta = null;
+
+  async function loadSettingsForm(force) {
+    var box = el('[data-el="settings-form"]');
+    if (!box || (settingsLoaded && !force)) return;
+    box.innerHTML = '<div class="wtm-hint">불러오는 중...</div>';
+    var r = await callAction('get_settings', {});
+    var data = r.success ? parseMaybeJson(r.message) : null;
+    if (!data || !data.groups) {
+      box.innerHTML = '<div class="wtm-hint">설정을 불러오지 못했습니다: ' + escapeHtml(r.message || '') + '</div>';
+      return;
+    }
+    settingsMeta = data;
+    settingsLoaded = true;
+    box.innerHTML = data.groups.map(function (g) {
+      return '<div style="margin:14px 0 6px;font-weight:700;font-size:13px;border-bottom:1px dashed var(--app-border, rgba(127,127,127,.25));padding-bottom:4px">' +
+        escapeHtml(g.label) + '</div>' +
+        '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px 16px">' +
+        g.fields.map(function (f) { return settingFieldHtml(f, data.values[f.key], (data.secret_set || {})[f.key]); }).join('') +
+        '</div>';
+    }).join('');
+  }
+
+  function settingFieldHtml(f, value, secretSet) {
+    var key = escapeHtml(f.key);
+    var label = escapeHtml(f.label || f.key);
+    if (f.type === 'checkbox') {
+      return '<label style="display:flex;gap:8px;align-items:flex-start;font-size:12.5px;cursor:pointer">' +
+        '<input type="checkbox" data-setting="' + key + '"' + (value ? ' checked' : '') + ' style="margin-top:2px">' +
+        '<span>' + label + '</span></label>';
+    }
+    var input;
+    if (f.type === 'password') {
+      input = '<div style="display:flex;gap:6px;align-items:center">' +
+        '<input type="password" class="wtm-input" autocomplete="new-password" data-setting="' + key + '" placeholder="' +
+        (secretSet ? '저장됨 - 바꾸려면 새 값 입력' : '(비어 있음)') + '">' +
+        (secretSet ? '<label style="font-size:11px;white-space:nowrap"><input type="checkbox" data-setting-clear="' + key + '"> 지우기</label>' : '') +
+        '</div>';
+    } else {
+      var isLong = /COOKIE|JSON/.test(f.key);
+      input = '<input type="' + (f.type === 'number' ? 'number' : 'text') + '" class="wtm-input" data-setting="' + key + '"' +
+        (f.type === 'number' ? ' step="any"' : '') + (isLong ? '' : '') +
+        ' value="' + escapeHtml(value == null ? '' : String(value)) + '">';
+    }
+    return '<div style="display:flex;flex-direction:column;gap:4px;font-size:12px">' +
+      '<span style="color:var(--app-text-secondary, inherit)">' + label + '</span>' + input + '</div>';
+  }
+
+  async function saveSettingsForm() {
+    var msg = el('[data-el="settings-save-msg"]');
+    var values = {};
+    var clear = [];
+    els('[data-setting]').forEach(function (inp) {
+      var k = inp.getAttribute('data-setting');
+      values[k] = inp.type === 'checkbox' ? inp.checked : inp.value;
+    });
+    els('[data-setting-clear]').forEach(function (c) { if (c.checked) clear.push(c.getAttribute('data-setting-clear')); });
+    els('[data-el="settings-save"]').forEach(function (b) { b.disabled = true; });
+    var r = await callAction('save_settings', { values: values, clear: clear });
+    els('[data-el="settings-save"]').forEach(function (b) { b.disabled = false; });
+    if (msg) msg.textContent = (r.success ? '✅ ' : '❌ ') + (r.message || '');
+    if (r.success) {
+      await loadSettingsForm(true);
+      await refresh();
+    }
+  }
+
   function setTab(tab) {
     currentTab = tab;
     els('.wtm-tab').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-tab') === tab); });
@@ -520,10 +591,11 @@
       var views = p.getAttribute('data-panel-view').split(',');
       p.style.display = views.indexOf(tab) >= 0 ? '' : 'none';
     });
-    var toolbar = el('[data-panel="all,subscribed,unsubscribed,excluded"]');
+    // 목록 탭이 아닐 때(설정/이력 등)는 검색·필터 줄을 숨긴다
+    var toolbar = el('.wtm-toolbar[data-panel]');
     if (toolbar) toolbar.style.display = isListTab ? '' : 'none';
 
-    if (tab === 'settings') loadLibraryOptionsIfNeeded();
+    if (tab === 'settings') { loadLibraryOptionsIfNeeded(); loadSettingsForm(false); }
 
     renderGrid();
   }
@@ -534,6 +606,11 @@
   container.addEventListener('click', async function (ev) {
     var tabBtn = ev.target.closest('.wtm-tab');
     if (tabBtn) { setTab(tabBtn.getAttribute('data-tab')); return; }
+
+    var saveBtn = ev.target.closest('[data-el="settings-save"]');
+    if (saveBtn) { saveSettingsForm(); return; }
+    var reloadBtn = ev.target.closest('[data-el="settings-reload"]');
+    if (reloadBtn) { loadSettingsForm(true); return; }
 
     var moreBtn = ev.target.closest('[data-el="grid-more"]');
     if (moreBtn) {

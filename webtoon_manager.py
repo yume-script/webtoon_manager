@@ -107,7 +107,11 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
     name = "웹툰 다운로더"
     is_searchable = False
 
-    config_schema = [
+    # 모든 설정은 카테고리탭 '설정' 탭에서 편집한다(get_settings/save_settings 액션).
+    # 코어의 플러그인 설정 화면에는 아무것도 보이지 않도록 config_schema는 비워 둔다.
+    config_schema = []
+
+    settings_schema = [
         {"key": "NAVER_ID", "label": "네이버 아이디", "type": "text"},
         {"key": "NAVER_PW", "label": "네이버 비밀번호", "type": "password"},
         {"key": "NAVER_COOKIE_JSON", "label": "네이버 쿠키(JSON, storage_state 형식)",
@@ -468,6 +472,10 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 return self._act_run_bg(db_type, pipeline.run_kavita_yaml_all, "kavita.yaml 일괄 생성")
             if action == "poll_status":
                 return self._poll_status(db_type)
+            if action == "get_settings":
+                return self._act_get_settings(db_type)
+            if action == "save_settings":
+                return self._act_save_settings(db_type, payload)
             if action.startswith("kakao_"):
                 return self._dispatch_kakao(db_type, action, payload)
             if payload.get("platform") == "kakao" and action in (
@@ -1167,6 +1175,99 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         if library_id:
             return True, "'%s' 라이브러리와 중복 확인을 시작합니다" % library_name
         return True, "중복 확인 기능을 껐습니다"
+
+    # ------------------------------------------------------------------
+    # 카테고리탭 설정 편집 (코어 플러그인 설정 화면 대신)
+    # ------------------------------------------------------------------
+    _SETTINGS_GROUPS = [
+        ("naver", "네이버 계정", ("NAVER_ID", "NAVER_PW", "NAVER_COOKIE_JSON")),
+        ("paths", "저장 경로", ("DOWNLOAD_ROOT", "TEMP_DOWNLOAD_ROOT", "COMPARE_FOLDER")),
+        ("auto", "자동 실행 / 자동 구독", ("ENABLE_SCHEDULER", "INTERVAL_MINUTES", "FINISHED_SCAN_HOUR",
+                                       "AUTO_SUBSCRIBE_NEW_TITLES", "AUTO_SUBSCRIBE_DAILY_PLUS")),
+        ("kakao", "카카오페이지", ("KAKAO_ENABLE", "KAKAO_COOKIE", "KAKAO_DOWNLOAD_ROOT", "KAKAO_AUTO",
+                               "KAKAO_AUTO_SUBSCRIBE_WAITFREE", "KAKAO_USE_WAITFREE")),
+        ("files", "생성 파일", ("ADD_COVER_AS_FIRST_PAGE", "GENERATE_COMICINFO_XML", "GENERATE_SERIES_JSON",
+                             "GENERATE_KAVITA_YAML", "KAVITA_YAML_EMBED_COVER", "ZIP_STORED")),
+        ("perf", "다운로드 속도 / 서버 부하", ("MAX_NEW_EPISODES_PER_TITLE", "BATCH_REST_MINUTES",
+                                         "MAX_CONCURRENT_DOWNLOADS", "DELAY_SECONDS",
+                                         "REQUEST_TIMEOUT_SECONDS", "LOW_PRIORITY_MODE",
+                                         "DOWNLOAD_NICE_LEVEL", "FOLDER_ZERO_FILL", "IMAGE_ZERO_FILL")),
+        ("discord", "디스코드 알림", ("DISCORD_WEBHOOK_URL", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID")),
+    ]
+    # 설정 탭의 다른 UI(중복 확인 라이브러리 드롭다운)가 따로 관리하는 키
+    _SETTINGS_HIDDEN = ("COMPARE_LIBRARY_ID", "COMPARE_LIBRARY_NAME")
+
+    def _settings_fields(self):
+        by_key = {f["key"]: f for f in self.settings_schema}
+        groups, seen = [], set()
+        for gid, glabel, keys in self._SETTINGS_GROUPS:
+            fields = [dict(by_key[k]) for k in keys if k in by_key]
+            seen.update(f["key"] for f in fields)
+            if fields:
+                groups.append({"id": gid, "label": glabel, "fields": fields})
+        rest = [dict(f) for f in self.settings_schema
+                if f["key"] not in seen and f["key"] not in self._SETTINGS_HIDDEN]
+        if rest:
+            groups.append({"id": "etc", "label": "기타", "fields": rest})
+        return groups
+
+    def _act_get_settings(self, db_type):
+        """설정 폼용 스키마 + 현재 값. 비밀번호/토큰/쿠키 값 자체는 내려보내지
+        않고 '저장돼 있음' 여부만 알려준다(빈 칸으로 저장하면 기존 값 유지)."""
+        cfg = self._get_cfg(db_type)
+        groups = self._settings_fields()
+        values, secret_set = {}, {}
+        for g in groups:
+            for f in g["fields"]:
+                k = f["key"]
+                v = cfg.get(k, f.get("default"))
+                if f.get("type") == "password":
+                    secret_set[k] = bool(str(v or "").strip())
+                    values[k] = ""
+                else:
+                    values[k] = v
+        return True, json.dumps({"groups": groups, "values": values, "secret_set": secret_set},
+                                ensure_ascii=False)
+
+    def _act_save_settings(self, db_type, payload):
+        raw = payload.get("values")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except ValueError:
+                raw = None
+        if not isinstance(raw, dict):
+            return False, "저장할 값이 없습니다"
+        clear = set(payload.get("clear") or [])
+        types = {f["key"]: f.get("type", "text") for f in self.settings_schema}
+        patch, errors = {}, []
+        for k, v in raw.items():
+            t = types.get(k)
+            if t is None or k in self._SETTINGS_HIDDEN:
+                continue
+            if t == "checkbox":
+                patch[k] = v if isinstance(v, bool) else str(v).lower() in ("1", "true", "on", "yes")
+            elif t == "number":
+                if v in ("", None):
+                    patch[k] = DEFAULTS.get(k, "")
+                    continue
+                try:
+                    num = float(v)
+                    patch[k] = int(num) if num == int(num) and not isinstance(DEFAULTS.get(k), float) else num
+                except (TypeError, ValueError):
+                    errors.append(k)
+            elif t == "password":
+                if k in clear:
+                    patch[k] = ""
+                elif str(v or "").strip():
+                    patch[k] = str(v)      # 빈 칸이면 기존 값 유지
+            else:
+                patch[k] = str(v if v is not None else "").strip()
+        if errors:
+            return False, "숫자가 아닌 값이 있습니다: %s" % ", ".join(errors)
+        if not self._save_cfg_patch(db_type, patch):
+            return False, "설정 저장 실패"
+        return True, "설정을 저장했습니다(%d개 항목)" % len(patch)
 
     def _save_cfg_patch(self, db_type, patch):
         cfg = self.get_plugin_config(db_type, default={}) or {}
