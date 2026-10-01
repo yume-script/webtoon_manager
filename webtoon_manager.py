@@ -298,11 +298,23 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         구현은 이 자리에서 동기적으로 requests.get()을 기다려서, GitHub 응답이
         느리거나 네트워크가 막혀 있으면 캐시가 갱신되는 그 1회의 대시보드
         폴링이 최대 6초(timeout)까지 지연되는 문제가 있었다."""
-        cached = ss.load_update_check()
+        cached = dict(ss.load_update_check())
         checked_at = cached.get("checked_at")
-        is_stale = not checked_at or (time.time() - checked_at) >= UPDATE_CHECK_INTERVAL_SECONDS
+        local_version = self._read_version()
+        # 캐시는 "확인 당시의 로컬 버전" 기준으로 계산돼 있다. 그 사이 플러그인을
+        # 업데이트하면(예: 1.18.5 -> 1.19.0) 최대 1시간 동안 예전 판정(원격 1.18.6이
+        # 더 높음)이 그대로 보여 "현재 v1.19.0인데 업데이트 가능(v1.18.6)"이 떴다.
+        # 그래서 반환할 때마다 현재 로컬 버전으로 다시 비교하고, 로컬 버전이
+        # 바뀌었으면 원격도 다시 확인한다.
+        is_stale = (not checked_at or
+                    (time.time() - checked_at) >= UPDATE_CHECK_INTERVAL_SECONDS or
+                    cached.get("local_version") != local_version)
         if is_stale:
             self._maybe_start_background_update_check()
+        latest = cached.get("latest_version")
+        cached["local_version"] = local_version
+        cached["update_available"] = bool(
+            latest and self._version_tuple(latest) > self._version_tuple(local_version))
         return cached
 
     def _maybe_start_background_update_check(self):
