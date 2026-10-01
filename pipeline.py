@@ -58,6 +58,13 @@ def in_new_episode_scope(cfg, t, platform="naver", now=None):
     return bool(wds & target_weekdays(now))
 
 
+def naver_try_owned_paid(cfg):
+    """유료(charge) 회차라도 로그인 쿠키가 있으면 한 번 열어 보고, 쿠키(결제수단)로
+    이미 대여/소장한 회차면 받는다. 결제는 일어나지 않는다(볼 수 있는 회차만 받음)."""
+    return (_cfg_bool(cfg, "NAVER_TRY_OWNED_PAID", True)
+            and bool((cfg.get("NAVER_COOKIE_JSON") or "").strip()))
+
+
 def build_session_from_cfg(cfg):
     return naver_api.build_session(
         cookie_storage_state_json=cfg.get("NAVER_COOKIE_JSON"),
@@ -461,7 +468,7 @@ def run_download_cycle(cfg, log=print):
                 log("titleId=%s: 취소 요청 확인됨 - 남은 회차는 다음 실행 때 이어받습니다" % tid)
                 cancelled = True
                 break
-            if ep.get("charge"):
+            if ep.get("charge") and not naver_try_owned_paid(cfg):
                 # 목록 API가 이미 유료(charge=true)라고 알려주는 회차를 만나면,
                 # 그 뒤 회차들도 순서대로 계속 유료일 가능성이 매우 높다("매일
                 # 하나씩 풀기" 방식은 오래된 순서대로 풀리므로). 남은 회차를
@@ -503,6 +510,12 @@ def run_download_cycle(cfg, log=print):
                 })
                 break
 
+            if ep.get("charge") and not ok:
+                # 대여/소장하지 않은 유료 회차 - 이후 회차도 유료일 가능성이 높아 중단
+                log("titleId=%s %s화: 유료 회차(대여/소장 안 됨) - 이 작품은 여기까지" % (tid, ep["no"]))
+                break
+            if ok and ep.get("charge") and not skipped:
+                log("titleId=%s %s화: 유료 회차지만 대여/소장 중이라 받음" % (tid, ep["no"]))
             if ok:
                 if skipped:
                     consecutive_fail = 0

@@ -95,6 +95,9 @@ DEFAULTS = {
     "KAKAO_USE_WAITFREE": False,
     "KAKAO_AUTO_SUBSCRIBE_WAITFREE": True,
     "NEW_EP_SCOPE": "today",
+    "NAVER_TRY_OWNED_PAID": True,
+    "KAKAO_USE_OWNED_TICKETS": False,
+    "KAKAO_USE_PAID_TICKETS": False,
     "COMPARE_FOLDER": "",
     "ADD_COVER_AS_FIRST_PAGE": True,
     "LOW_PRIORITY_MODE": True,
@@ -118,7 +121,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         {"key": "NAVER_COOKIE_JSON", "label": "네이버 쿠키(JSON, storage_state 형식)",
          "type": "password",
          "required": False},
-        {"key": "DOWNLOAD_ROOT", "label": "다운로드 저장 경로(비우면 플러그인 기본 경로)",
+        {"key": "DOWNLOAD_ROOT", "label": "네이버 웹툰 저장 경로(비우면 플러그인 기본 경로)",
          "type": "text"},
         {"key": "TEMP_DOWNLOAD_ROOT",
          "label": "임시 작업 경로(압축 전 낱장 이미지를 내려받는 곳 - 비우면 플러그인 데이터 폴더 "
@@ -173,24 +176,33 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         {"key": "KAVITA_YAML_EMBED_COVER",
          "label": "kavita.yaml 첫 회차 cover에 시리즈 썸네일(base64) 포함(끄면 모든 회차가 FIRST)",
          "type": "checkbox", "default": True},
-        {"key": "KAKAO_ENABLE", "label": "[카카오페이지] 카카오페이지 웹툰 다운로드 사용",
+        {"key": "KAKAO_ENABLE", "label": "카카오페이지 웹툰 사용(목록 수집/다운로드)",
          "type": "checkbox", "default": False},
         {"key": "KAKAO_COOKIE",
-         "label": "[카카오페이지] 로그인 쿠키(page.kakao.com 요청의 Cookie 헤더 문자열 또는 "
+         "label": "로그인 쿠키(page.kakao.com 요청의 Cookie 헤더 문자열 또는 "
                   "Cookie-Editor JSON). 비우면 무료 회차만 시도",
          "type": "password", "required": False},
         {"key": "KAKAO_DOWNLOAD_ROOT",
-         "label": "[카카오페이지] 저장 경로(비우면 플러그인 데이터 폴더/kakao_downloads)",
+         "label": "카카오 웹툰 저장 경로(비우면 플러그인 데이터 폴더/kakao_downloads)",
          "type": "text"},
         {"key": "KAKAO_AUTO",
-         "label": "[카카오페이지] 스케줄러 자동 실행에 포함(네이버 다운로드가 끝난 뒤 이어서 확인)",
+         "label": "스케줄러 자동 실행에 포함(네이버 다운로드가 끝난 뒤 이어서 확인)",
          "type": "checkbox", "default": True},
         {"key": "KAKAO_AUTO_SUBSCRIBE_WAITFREE",
-         "label": "[카카오페이지] 기다무 작품 자동 구독(연재 중인 기다무 작품을 전부 구독 -> 자동 다운로드 대상. "
+         "label": "기다무 작품 자동 구독(연재 중인 기다무 작품을 전부 구독 -> 자동 다운로드 대상. "
                   "구독해제/제외한 작품은 건드리지 않음)",
          "type": "checkbox", "default": True},
+        {"key": "NAVER_TRY_OWNED_PAID",
+         "label": "유료 회차도 대여/소장 중이면 받기(네이버 로그인 쿠키 필요, 결제는 하지 않음)",
+         "type": "checkbox", "default": True},
+        {"key": "KAKAO_USE_OWNED_TICKETS",
+         "label": "보유 대여권 자동 사용(이벤트/선물/쿠폰 등 무료로 받은 대여권, 계정의 대여권이 실제로 소모됨)",
+         "type": "checkbox", "default": False},
+        {"key": "KAKAO_USE_PAID_TICKETS",
+         "label": "구매한(돈으로 산) 대여권도 사용 - 보유 대여권 자동 사용이 켜져 있을 때만 적용",
+         "type": "checkbox", "default": False},
         {"key": "KAKAO_USE_WAITFREE",
-         "label": "[카카오페이지] 기다무 대여권 자동 사용(작품당 실행 1회에 1장, 계정의 대여권이 "
+         "label": "기다무 대여권 자동 사용(작품당 실행 1회에 1장, 계정의 대여권이 "
                   "실제로 소모됨)",
          "type": "checkbox", "default": False},
         {"key": "LOW_PRIORITY_MODE",
@@ -724,7 +736,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         from . import kakao_pipeline
         cfg = self._get_cfg(db_type)
         if not cfg.get("KAKAO_ENABLE"):
-            return False, "환경설정에서 '[카카오페이지] 카카오페이지 웹툰 다운로드 사용'을 먼저 켜주세요."
+            return False, "[설정] 탭 > 카카오페이지에서 '카카오페이지 웹툰 사용'을 먼저 켜고 저장해주세요."
         sid = str(payload.get("seriesId") or "").strip()
 
         if action == "kakao_verify_cookie":
@@ -1093,7 +1105,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 if ss.load_title_job_state().get("cancel_requested"):
                     ss.append_log("다운로드 취소됨")
                     break
-                if ep.get("charge"):
+                if ep.get("charge") and not pipeline.naver_try_owned_paid(cfg):
                     ss.append_log("%s %s화: 유료(charge=true) 회차, 목록 API 기준 - 이후 회차도 유료로 보고 중단" % (title_name, ep["no"]))
                     ss.append_history({"type": "skipped_paid", "source": "auto",
                                         "title_id": title_id,
@@ -1124,6 +1136,11 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                     ss.append_log("인증 만료: %s" % e)
                     discord_notify.notify_cookie_expired(cfg)
                     break
+                if ep.get("charge") and not ok:
+                    ss.append_log("%s %s화: 유료 회차(대여/소장 안 됨) - 여기까지" % (title_name, ep["no"]))
+                    break
+                if ok and ep.get("charge") and not skipped:
+                    ss.append_log("%s %s화: 유료 회차지만 대여/소장 중이라 받음" % (title_name, ep["no"]))
                 if ok:
                     if skipped:
                         consecutive_fail = 0
@@ -1225,37 +1242,40 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
     # ------------------------------------------------------------------
     # 카테고리탭 설정 편집 (코어 플러그인 설정 화면 대신)
     # ------------------------------------------------------------------
+    # (섹션, 그룹 제목, 키들) - 섹션은 설정 화면의 [공통][네이버][카카오페이지] 탭
     _SETTINGS_GROUPS = [
+        ("common", "자동 실행", ("ENABLE_SCHEDULER", "INTERVAL_MINUTES", "FINISHED_SCAN_HOUR",
+                                "NEW_EP_SCOPE", "AUTO_SUBSCRIBE_NEW_TITLES")),
+        ("common", "공통 경로", ("TEMP_DOWNLOAD_ROOT", "COMPARE_FOLDER")),
+        ("common", "생성 파일", ("ADD_COVER_AS_FIRST_PAGE", "GENERATE_COMICINFO_XML", "GENERATE_SERIES_JSON",
+                                "GENERATE_KAVITA_YAML", "KAVITA_YAML_EMBED_COVER", "ZIP_STORED")),
+        ("common", "다운로드 속도 / 서버 부하", ("MAX_NEW_EPISODES_PER_TITLE", "BATCH_REST_MINUTES",
+                                            "MAX_CONCURRENT_DOWNLOADS", "DELAY_SECONDS",
+                                            "REQUEST_TIMEOUT_SECONDS", "LOW_PRIORITY_MODE",
+                                            "DOWNLOAD_NICE_LEVEL", "FOLDER_ZERO_FILL", "IMAGE_ZERO_FILL")),
+        ("common", "디스코드 알림", ("DISCORD_WEBHOOK_URL", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID")),
         ("naver", "네이버 계정", ("NAVER_ID", "NAVER_PW", "NAVER_COOKIE_JSON")),
-        ("paths", "저장 경로", ("DOWNLOAD_ROOT", "TEMP_DOWNLOAD_ROOT", "COMPARE_FOLDER")),
-        ("auto", "자동 실행 / 자동 구독", ("ENABLE_SCHEDULER", "INTERVAL_MINUTES", "FINISHED_SCAN_HOUR",
-                                       "NEW_EP_SCOPE",
-                                       "AUTO_SUBSCRIBE_NEW_TITLES", "AUTO_SUBSCRIBE_DAILY_PLUS")),
-        ("kakao", "카카오페이지", ("KAKAO_ENABLE", "KAKAO_COOKIE", "KAKAO_DOWNLOAD_ROOT", "KAKAO_AUTO",
-                               "KAKAO_AUTO_SUBSCRIBE_WAITFREE", "KAKAO_USE_WAITFREE")),
-        ("files", "생성 파일", ("ADD_COVER_AS_FIRST_PAGE", "GENERATE_COMICINFO_XML", "GENERATE_SERIES_JSON",
-                             "GENERATE_KAVITA_YAML", "KAVITA_YAML_EMBED_COVER", "ZIP_STORED")),
-        ("perf", "다운로드 속도 / 서버 부하", ("MAX_NEW_EPISODES_PER_TITLE", "BATCH_REST_MINUTES",
-                                         "MAX_CONCURRENT_DOWNLOADS", "DELAY_SECONDS",
-                                         "REQUEST_TIMEOUT_SECONDS", "LOW_PRIORITY_MODE",
-                                         "DOWNLOAD_NICE_LEVEL", "FOLDER_ZERO_FILL", "IMAGE_ZERO_FILL")),
-        ("discord", "디스코드 알림", ("DISCORD_WEBHOOK_URL", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID")),
+        ("naver", "네이버 다운로드", ("DOWNLOAD_ROOT", "AUTO_SUBSCRIBE_DAILY_PLUS", "NAVER_TRY_OWNED_PAID")),
+        ("kakao", "카카오페이지 사용 / 계정", ("KAKAO_ENABLE", "KAKAO_COOKIE")),
+        ("kakao", "카카오페이지 다운로드", ("KAKAO_DOWNLOAD_ROOT", "KAKAO_AUTO", "KAKAO_AUTO_SUBSCRIBE_WAITFREE")),
+        ("kakao", "카카오페이지 이용권", ("KAKAO_USE_WAITFREE", "KAKAO_USE_OWNED_TICKETS", "KAKAO_USE_PAID_TICKETS")),
     ]
+    _SETTINGS_SECTIONS = [("common", "공통"), ("naver", "네이버"), ("kakao", "카카오페이지")]
     # 설정 탭의 다른 UI(중복 확인 라이브러리 드롭다운)가 따로 관리하는 키
     _SETTINGS_HIDDEN = ("COMPARE_LIBRARY_ID", "COMPARE_LIBRARY_NAME")
 
     def _settings_fields(self):
         by_key = {f["key"]: f for f in self.settings_schema}
         groups, seen = [], set()
-        for gid, glabel, keys in self._SETTINGS_GROUPS:
+        for section, glabel, keys in self._SETTINGS_GROUPS:
             fields = [dict(by_key[k]) for k in keys if k in by_key]
             seen.update(f["key"] for f in fields)
             if fields:
-                groups.append({"id": gid, "label": glabel, "fields": fields})
+                groups.append({"section": section, "label": glabel, "fields": fields})
         rest = [dict(f) for f in self.settings_schema
                 if f["key"] not in seen and f["key"] not in self._SETTINGS_HIDDEN]
         if rest:
-            groups.append({"id": "etc", "label": "기타", "fields": rest})
+            groups.append({"section": "common", "label": "기타", "fields": rest})
         return groups
 
     def _act_get_settings(self, db_type):
@@ -1273,7 +1293,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                     values[k] = ""
                 else:
                     values[k] = v
-        return True, json.dumps({"groups": groups, "values": values, "secret_set": secret_set},
+        return True, json.dumps({"sections": [{"id": a, "label": b} for a, b in self._SETTINGS_SECTIONS],
+                                 "groups": groups, "values": values, "secret_set": secret_set},
                                 ensure_ascii=False)
 
     def _act_save_settings(self, db_type, payload):

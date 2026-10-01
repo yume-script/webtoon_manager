@@ -527,6 +527,90 @@ def fetch_episode_images(session, series_id, product_id):
     return urls
 
 
+# ---------------------------------------------------------------------------
+# 보유 대여권
+# ---------------------------------------------------------------------------
+TICKET_MY_API = BFF + "/api/gateway/api/v1/ticket/my"
+TICKET_READY_API = BFF + "/api/gateway/api/v1/ticket/ready_to_use"
+# 카카오페이지 웹 코드의 이용권 종류(대여권 RT**). 무료로 받은 대여권만 기본 사용.
+FREE_RENT_TICKETS = ("RT00", "RT03", "RT04", "RT06", "RT07", "RT09", "RT10")
+#   RT00 신규 고객 선물 / RT03 이벤트 / RT04 쿠폰 / RT06 오늘의 선물 / RT07 선물 /
+#   RT09 캠페인 / RT10 기다무+
+PAID_RENT_TICKETS = ("RT01", "RT02", "RT11", "RT12", "RT13")
+#   RT01 낱개 대여 / RT02 패키지 / RT11 캐시 낱개 / RT12 캐시 할인 / RT13 세트
+TICKET_NAMES = {
+    "RT00": "신규 선물 대여권", "RT01": "대여권(구매)", "RT02": "패키지 대여권(구매)",
+    "RT03": "이벤트 대여권", "RT04": "쿠폰 대여권", "RT05": "기다무 대여권",
+    "RT06": "오늘의 선물 대여권", "RT07": "선물 대여권", "RT09": "캠페인 대여권",
+    "RT10": "기다무+ 대여권", "RT11": "캐시 대여권", "RT12": "캐시 할인 대여권", "RT13": "세트 대여권",
+}
+_TICKET_TYPE_RE = re.compile(r"^(RT|TT)\d\d$")
+_COUNT_KEYS = ("count", "ticket_count", "remain_count", "remain", "quantity", "own_count",
+               "available_count", "total_count", "cnt")
+
+
+def parse_ticket_counts(obj):
+    """이용권 응답(형식 미공개)을 훑어 {이용권종류: 개수}로 모은다. 종류 코드(RT04 등)가
+    들어 있는 dict를 찾고, 같은 dict의 개수 필드를 읽는다(없으면 1장으로 본다)."""
+    counts = {}
+
+    def walk(o):
+        if isinstance(o, dict):
+            ttype = None
+            for v in o.values():
+                if isinstance(v, str) and _TICKET_TYPE_RE.match(v):
+                    ttype = v
+                    break
+            if ttype:
+                n = None
+                for k in _COUNT_KEYS:
+                    if isinstance(o.get(k), (int, float)) and not isinstance(o.get(k), bool):
+                        n = int(o[k])
+                        break
+                counts[ttype] = counts.get(ttype, 0) + (1 if n is None else n)
+            for v in o.values():
+                if isinstance(v, (dict, list)):
+                    walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+    walk(obj)
+    return {k: v for k, v in counts.items() if v > 0}
+
+
+def _get_json(session, url, params):
+    r = session.get(url, params=params, timeout=session.request_timeout)
+    _check_auth(r, "이용권 조회")
+    return json.loads(r.content.decode("utf-8"))
+
+
+def fetch_my_tickets(session, series_id):
+    """작품별 보유 이용권 {종류: 개수} 와 원본 응답(로그 확인용)."""
+    body = _get_json(session, TICKET_MY_API, {"series_id": series_id, "include_single": "true",
+                                              "include_waitfree": "true"})
+    return parse_ticket_counts(body.get("result") if isinstance(body, dict) else body), body
+
+
+def ready_ticket_types(session, product_id):
+    """이 회차에 바로 쓸 수 있는 이용권 종류들(응답에 나온 순서)."""
+    body = _get_json(session, TICKET_READY_API, {"product_id": product_id})
+    return list(parse_ticket_counts(body.get("result") if isinstance(body, dict) else body).keys()), body
+
+
+def use_ticket(session, product_id, ticket_type):
+    """이용권 사용. 성공 True."""
+    r = session.post(TICKET_USE_API, data={"product_id": product_id, "ticket_type": ticket_type},
+                     timeout=session.request_timeout)
+    _check_auth(r, "이용권 사용")
+    if r.status_code >= 300:
+        return False
+    try:
+        body = json.loads(r.content.decode("utf-8"))
+        return body.get("result_code") in (None, 0, "0")
+    except ValueError:
+        return True
+
+
 def use_waitfree_ticket(session, product_id):
     """기다무 대여권 사용. 성공 True, 대여 불가(대기 시간 미충족 등) False."""
     r = session.post(TICKET_USE_API, data={"product_id": product_id,

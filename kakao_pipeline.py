@@ -12,6 +12,7 @@
 KAKAO_USE_WAITFREE를 켜면 볼 수 없는 회차 중 기다무 가능한 가장 앞 회차에
 대여권을 1장 사용해 받는다(작품당 실행 1회에 1장까지). 유료 구매는 하지 않는다.
 """
+import json
 import os
 import time
 
@@ -342,6 +343,9 @@ def _needs_check(cfg, t, now=None):
         return True
     if not t.get("last_slide_added_dt"):
         return True
+    if (cfg.get("KAKAO_USE_OWNED_TICKETS") and t.get("has_locked")
+            and now - float(t.get("last_checked_at") or 0) >= 24 * 3600):
+        return True   # 보유 대여권이 새로 생겼을 수 있으니 하루 1번은 확인
     if cfg.get("KAKAO_USE_WAITFREE") and t.get("waitfree") and t.get("has_locked"):
         period = max(60, int(t.get("waitfree_period_min") or 1440)) * 60
         if now - float(t.get("last_ticket_at") or 0) >= period:
@@ -583,8 +587,43 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
         if wait_ep:
             targets.append(wait_ep)
             targets.sort(key=lambda e: e.get("order", e["no"]))
-    res["locked"] = len(locked_eps) - (1 if wait_ep else 0)
+    # 보유 대여권(이벤트/선물/쿠폰 등) 자동 사용 - 기본은 무료로 받은 대여권만,
+    # "구매한 대여권도 사용"을 켜면 돈으로 산 대여권까지. 작품마다 보유 개수를 조회해
+    # 그 수만큼 앞 회차부터 사용한다(보유 0장이면 유료 회차 요청 자체를 안 함).
+    owned = {}
+    ticket_eps = []
+    allowed_types = list(kakao_api.FREE_RENT_TICKETS)
+    if cfg.get("KAKAO_USE_PAID_TICKETS"):
+        allowed_types += list(kakao_api.PAID_RENT_TICKETS)
+    rest_locked = [ep for ep in locked_eps if ep is not wait_ep]
+    if cfg.get("KAKAO_USE_OWNED_TICKETS") and has_cookie and rest_locked:
+        try:
+            counts, raw = kakao_api.fetch_my_tickets(session, sid)
+            owned = {k: v for k, v in counts.items() if k in allowed_types}
+            if owned:
+                log("%s: 보유 대여권 %s" % (title, ", ".join(
+                    "%s %d장" % (kakao_api.TICKET_NAMES.get(k, k), v) for k, v in owned.items())))
+            elif counts:
+                log("%s: 보유 이용권 %s - 사용 허용 대상 아님(설정 확인)" % (title, counts))
+            elif raw and (raw.get("result_code") not in (0, "0", None)):
+                log("%s: 대여권 조회 응답 - %s" % (title, json.dumps(raw, ensure_ascii=False)[:300]))
+        except kakao_api.KakaoAuthExpired:
+            raise
+        except Exception as e:  # noqa: BLE001
+            log("%s: 보유 대여권 조회 실패(무시) - %s" % (title, e))
+        n_tickets = sum(owned.values())
+        cap_t = _num(cfg, "MAX_NEW_EPISODES_PER_TITLE", 10) if not full else 0
+        if cap_t:
+            n_tickets = min(n_tickets, cap_t)
+        for ep in rest_locked[:n_tickets]:
+            ep["use_owned"] = True
+            ticket_eps.append(ep)
+        if ticket_eps:
+            targets.extend(ticket_eps)
+            targets.sort(key=lambda e: e.get("order", e["no"]))
+    res["locked"] = len(locked_eps) - (1 if wait_ep else 0) - len(ticket_eps)
     res["paid_total"] = len(locked_eps)
+    res["tickets_used"] = 0
 
     def _update_yaml():
         # 회차 zip이 하나라도 있으면 kavita.yaml 생성/갱신(내용이 같으면 파일은 그대로)
@@ -607,7 +646,8 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
         return res
     log("%s: 받을 회차 %d개 (보유 %d / 유료라 건너뜀 %d / 전체 %d)%s" % (
         title, len(targets), len(have), res["locked"], len(episodes),
-        " + 기다무 대여권 1회 시도(%d화)" % wait_ep["no"] if wait_ep else ""))
+        (" + 기다무 대여권 1회 시도(%d화)" % wait_ep["no"] if wait_ep else "") +
+        (" + 보유 대여권 %d장 사용 예정" % len(ticket_eps) if ticket_eps else "")))
 
     if cfg.get("GENERATE_SERIES_JSON", True):
         downloader.write_series_json(root, title, sid, _series_json_meta(t, sid), log=log)
@@ -649,14 +689,35 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
             try:
                 ok, skipped, cnt, err = _try_download()
             except kakao_api.KakaoNotPurchased:
-                if not (ticket_available and ep["waitfree_ok"]):
+                if ep is wait_ep and ticket_available:
+                    log("%s %d화: 기다무 대여권 사용 시도" % (title, no))
+                    if not kakao_api.use_waitfree_ticket(session, pid):
+                        ticket_available = False  # 대기 시간 미충족 등 - 이번 실행엔 더 시도 안 함
+                        raise
+                    ticket_available = False       # 작품당 실행 1회에 1장
+                    res["waitfree_used"] += 1
+                elif ep.get("use_owned") and any(v > 0 for v in owned.values()):
+                    try:
+                        ready, _raw = kakao_api.ready_ticket_types(session, pid)
+                    except kakao_api.KakaoAuthExpired:
+                        raise
+                    except Exception:  # noqa: BLE001
+                        ready = []
+                    choice = next((tt for tt in allowed_types if owned.get(tt, 0) > 0
+                                   and (not ready or tt in ready)), None)
+                    if not choice:
+                        owned.clear()   # 이 회차에 쓸 수 있는 보유 대여권 없음 - 이후도 시도 안 함
+                        raise
+                    log("%s %d화: 보유 %s 사용" % (title, no, kakao_api.TICKET_NAMES.get(choice, choice)))
+                    if not kakao_api.use_ticket(session, pid, choice):
+                        log("%s %d화: %s 사용 실패 - 이 종류는 이번 실행에서 더 쓰지 않음" % (
+                            title, no, kakao_api.TICKET_NAMES.get(choice, choice)))
+                        owned.pop(choice, None)
+                        raise
+                    owned[choice] -= 1
+                    res["tickets_used"] += 1
+                else:
                     raise
-                log("%s %d화: 기다무 대여권 사용 시도" % (title, no))
-                if not kakao_api.use_waitfree_ticket(session, pid):
-                    ticket_available = False  # 대기 시간 미충족 등 - 이번 실행엔 더 시도 안 함
-                    raise
-                ticket_available = False       # 작품당 실행 1회에 1장
-                res["waitfree_used"] += 1
                 ok, skipped, cnt, err = _try_download()
         except kakao_api.KakaoAuthExpired as e:
             log("%s: %s" % (title, e))
@@ -730,6 +791,8 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
     summary = "신규 %d화" % res["downloaded"]
     if res.get("adult_blocked"):
         summary = res.get("adult_reason") or "성인 인증 필요"
+    if res.get("tickets_used"):
+        summary += " / 보유 대여권 %d장 사용" % res["tickets_used"]
     if res["locked"]:
         summary += " / 유료라 건너뜀 %d화" % res["locked"]
     if res["failures"]:

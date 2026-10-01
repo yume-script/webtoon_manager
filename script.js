@@ -429,7 +429,7 @@
     if (!status) return;
     var cfg = state.config_public || {};
     if (!cfg.KAKAO_ENABLE) {
-      status.innerHTML = '⚠️ [설정] 탭의 카카오페이지 항목에서 <b>"[카카오페이지] 카카오페이지 웹툰 다운로드 사용"</b>을 켜야 목록 수집/다운로드가 동작합니다.';
+      status.innerHTML = '⚠️ [설정] 탭의 카카오페이지 항목에서 <b>"카카오페이지 웹툰 사용"</b>을 켜야 목록 수집/다운로드가 동작합니다.';
       return;
     }
     var kcount = (state.titles || []).filter(function (t) { return t.platform === 'kakao'; }).length;
@@ -529,14 +529,26 @@
     }
     settingsMeta = data;
     settingsLoaded = true;
-    box.innerHTML = data.groups.map(function (g) {
-      return '<div style="margin:14px 0 6px;font-weight:700;font-size:13px;border-bottom:1px dashed var(--app-border, rgba(127,127,127,.25));padding-bottom:4px">' +
-        escapeHtml(g.label) + '</div>' +
-        '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px 16px">' +
-        g.fields.map(function (f) { return settingFieldHtml(f, data.values[f.key], (data.secret_set || {})[f.key]); }).join('') +
-        '</div>';
+    var sections = data.sections || [{ id: 'common', label: '설정' }];
+    // [공통][네이버][카카오페이지] 섹션 탭 - 입력값은 탭을 바꿔도 DOM에 남아 있어서
+    // "설정 저장" 한 번으로 세 섹션이 함께 저장된다.
+    var tabs = '<div class="wtm-daytabs" style="margin-bottom:6px">' + sections.map(function (sec) {
+      return '<button class="wtm-daytab' + (sec.id === settingsSection ? ' active' : '') +
+        '" data-settings-section="' + escapeHtml(sec.id) + '">' + escapeHtml(sec.label) + '</button>';
+    }).join('') + '</div>';
+    box.innerHTML = tabs + sections.map(function (sec) {
+      var groups = data.groups.filter(function (g) { return (g.section || 'common') === sec.id; });
+      return '<div data-settings-pane="' + escapeHtml(sec.id) + '"' + (sec.id === settingsSection ? '' : ' style="display:none"') + '>' +
+        groups.map(function (g) {
+          return '<div style="margin:14px 0 6px;font-weight:700;font-size:13px;border-bottom:1px dashed var(--app-border, rgba(127,127,127,.25));padding-bottom:4px">' +
+            escapeHtml(g.label) + '</div>' +
+            '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px 16px">' +
+            g.fields.map(function (f) { return settingFieldHtml(f, data.values[f.key], (data.secret_set || {})[f.key]); }).join('') +
+            '</div>';
+        }).join('') + '</div>';
     }).join('');
   }
+  var settingsSection = 'common';
 
   function settingFieldHtml(f, value, secretSet) {
     var key = escapeHtml(f.key);
@@ -618,6 +630,16 @@
   container.addEventListener('click', async function (ev) {
     var tabBtn = ev.target.closest('.wtm-tab');
     if (tabBtn) { setTab(tabBtn.getAttribute('data-tab')); return; }
+
+    var secBtn = ev.target.closest('[data-settings-section]');
+    if (secBtn) {
+      settingsSection = secBtn.getAttribute('data-settings-section');
+      els('[data-settings-section]').forEach(function (b) { b.classList.toggle('active', b === secBtn); });
+      els('[data-settings-pane]').forEach(function (p) {
+        p.style.display = p.getAttribute('data-settings-pane') === settingsSection ? '' : 'none';
+      });
+      return;
+    }
 
     var verifyBtn = ev.target.closest('[data-el="kakao-verify"]');
     if (verifyBtn) {
