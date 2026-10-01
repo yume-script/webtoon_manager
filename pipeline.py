@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import hashlib
 import os
 import time
 
@@ -22,6 +23,39 @@ def _cfg_bool(cfg, key, default=False):
     if isinstance(v, bool):
         return v
     return str(v).strip().lower() in ("1", "true", "on", "y", "yes")
+
+
+_KST_OFFSET = 9 * 3600
+_WD_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+def target_weekdays(now=None):
+    """새 회차를 확인할 요일 키 집합(한국 시간 기준).
+    - 오늘 요일
+    - 어제 요일: 자정 직후 사이클이나, 지난 사이클 이후 늦게 올라온 회차 보완
+    - 22시 이후에는 내일 요일도: 네이버/카카오 모두 다음날 연재분이 전날 밤 22~23시에 공개됨
+    컨테이너 시간대(UTC 등)와 무관하게 KST로 계산한다."""
+    t = time.gmtime((now or time.time()) + _KST_OFFSET)
+    wd = t.tm_wday  # 0=월
+    days = {_WD_KEYS[wd], _WD_KEYS[(wd - 1) % 7]}
+    if t.tm_hour >= 22:
+        days.add(_WD_KEYS[(wd + 1) % 7])
+    return days
+
+
+def in_new_episode_scope(cfg, t, platform="naver", now=None):
+    """설정 NEW_EP_SCOPE가 'today'(기본)면 오늘(전후) 요일 연재작 + 매일+ + 기다무 +
+    아직 한 번도 받지 않은 작품만 새 회차를 확인한다. 'all'이면 구독작 전부."""
+    if str(cfg.get("NEW_EP_SCOPE") or "today") == "all":
+        return True
+    if t.get("last_downloaded_no") is None:
+        return True        # 새로 구독한 작품은 요일과 상관없이 바로 첫 다운로드
+    wds = set(t.get("weekdays") or [])
+    if "dailyPlus" in wds:
+        return True
+    if platform == "kakao" and t.get("waitfree") and t.get("status") != "완결":
+        return True
+    return bool(wds & target_weekdays(now))
 
 
 def build_session_from_cfg(cfg):
@@ -354,6 +388,12 @@ def run_download_cycle(cfg, log=print):
     titles = ss.load_titles()
     subscribed = {tid: t for tid, t in titles.items()
                   if t.get("subscribed") and not t.get("excluded") and not t.get("unsubscribed")}
+    all_sub = len(subscribed)
+    subscribed = {tid: t for tid, t in subscribed.items() if in_new_episode_scope(cfg, t, "naver")}
+    log("새 회차 확인 대상: 구독 %d개 중 %d개 (%s)" % (
+        all_sub, len(subscribed),
+        "전체" if str(cfg.get("NEW_EP_SCOPE") or "today") == "all" else
+        "요일 %s + 매일+ + 첫 다운로드" % ",".join(sorted(target_weekdays()))))
 
     download_root = cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR
     temp_root = cfg.get("TEMP_DOWNLOAD_ROOT") or ss.TMP_DOWNLOAD_DEFAULT_DIR
@@ -380,7 +420,13 @@ def run_download_cycle(cfg, log=print):
     def _cancelled():
         return bool(ss.load_job_state().get("cancel_requested"))
 
+    naver_cookie = (cfg.get("NAVER_COOKIE_JSON") or "").strip()
+    cookie_hash = hashlib.sha1(naver_cookie.encode("utf-8")).hexdigest() if naver_cookie else ""
     for i, (tid, t) in enumerate(subscribed.items()):
+        # 성인 작품: 쿠키가 없거나, 지금 쿠키로 성인 인증 실패를 이미 확인했으면
+        # 회차를 끝까지 두들기지 않고 작품 자체를 건너뛴다
+        if t.get("is_adult") and (not naver_cookie or t.get("adult_block_hash") == cookie_hash):
+            continue
         if _cancelled():
             log("취소 요청 확인됨 - 남은 %d개 작품은 건너뛰고 다운로드를 중단합니다" %
                 (len(subscribed) - i))
@@ -435,6 +481,13 @@ def run_download_cycle(cfg, log=print):
                     max_concurrent=max_concurrent, delay_seconds=delay_seconds,
                     timeout=timeout, log=log)
             except naver_api.NaverAuthExpired as e:
+                if t.get("is_adult"):
+                    # 성인 작품 하나가 인증에 막힌 것 - 다른 작품까지 멈추지 않고
+                    # 이 작품만 중단하고, 같은 쿠키로는 다시 시도하지 않게 표시
+                    log("%s: 성인 인증 필요/실패 - 이 작품은 건너뜀(쿠키를 바꾸면 다시 시도) - %s" %
+                        (t.get("title", tid), e))
+                    ss.upsert_title({tid: {"adult_block_hash": cookie_hash}})
+                    break
                 log("인증 만료: %s" % e)
                 cookie_expired = True
                 break

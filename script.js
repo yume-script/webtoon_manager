@@ -547,7 +547,12 @@
         '<span>' + label + '</span></label>';
     }
     var input;
-    if (f.type === 'password') {
+    if (f.type === 'select') {
+      input = '<select class="wtm-input" data-setting="' + key + '">' + (f.options || []).map(function (o) {
+        return '<option value="' + escapeHtml(o[0]) + '"' + (String(value) === String(o[0]) ? ' selected' : '') + '>' +
+          escapeHtml(o[1]) + '</option>';
+      }).join('') + '</select>';
+    } else if (f.type === 'password') {
       input = '<div style="display:flex;gap:6px;align-items:center">' +
         '<input type="password" class="wtm-input" autocomplete="new-password" data-setting="' + key + '" placeholder="' +
         (secretSet ? '저장됨 - 바꾸려면 새 값 입력' : '(비어 있음)') + '">' +

@@ -54,6 +54,10 @@ class KakaoNotPurchased(Exception):
     """구매/대여하지 않은 회차(api_content_not_purchased_item 등)"""
 
 
+class KakaoAdultRequired(Exception):
+    """성인 인증이 필요한 작품(api_content_adult_auth_required) - 쿠키 없음/미인증 계정"""
+
+
 class KakaoSkip(Exception):
     """받을 수 없는 특수 회차(동영상 트레일러 등 - 서버가 오류 코드로 응답). 건너뛴다."""
 
@@ -448,6 +452,10 @@ def fetch_episode_images(session, series_id, product_id):
         text = "%s (%s)" % (body.get("message") or "", key)
         if "purchase" in key:
             raise KakaoNotPurchased(text)
+        if "adult" in key or "age" in key or "verif" in key or "login" in key:
+            # 성인 인증 필요 - 이 작품의 모든 회차가 같은 이유로 막히므로 호출 측이
+            # 작품 단위로 중단한다(회차마다 끝까지 확인하지 않게)
+            raise KakaoAdultRequired(text)
         raise KakaoSkip(text)
     vd = body.get("viewer_data") or body.get("viewerData") or {}
     if isinstance(vd, dict) and (vd.get("contents_list") or

@@ -94,6 +94,7 @@ DEFAULTS = {
     "KAKAO_AUTO": True,
     "KAKAO_USE_WAITFREE": False,
     "KAKAO_AUTO_SUBSCRIBE_WAITFREE": True,
+    "NEW_EP_SCOPE": "today",
     "COMPARE_FOLDER": "",
     "ADD_COVER_AS_FIRST_PAGE": True,
     "LOW_PRIORITY_MODE": True,
@@ -130,6 +131,11 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
          "default": 240},
         {"key": "FINISHED_SCAN_HOUR", "label": "완결 전체 목록 수집 시각(0~23시, 하루 1번)", "type": "number",
          "default": 4},
+        {"key": "NEW_EP_SCOPE",
+         "label": "자동 실행의 새 회차 확인 범위",
+         "type": "select", "default": "today",
+         "options": [["today", "오늘 요일(어제·22시 이후 내일 포함) + 매일+ + 기다무 + 아직 안 받은 작품"],
+                     ["all", "구독작 전부(매 실행마다)"]]},
         {"key": "AUTO_SUBSCRIBE_NEW_TITLES",
          "label": "신간 자동 구독(요일별 목록에 처음 나타나는 작품을 관심 작가와 무관하게 전부 구독)",
          "type": "checkbox", "default": False},
@@ -1183,6 +1189,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         ("naver", "네이버 계정", ("NAVER_ID", "NAVER_PW", "NAVER_COOKIE_JSON")),
         ("paths", "저장 경로", ("DOWNLOAD_ROOT", "TEMP_DOWNLOAD_ROOT", "COMPARE_FOLDER")),
         ("auto", "자동 실행 / 자동 구독", ("ENABLE_SCHEDULER", "INTERVAL_MINUTES", "FINISHED_SCAN_HOUR",
+                                       "NEW_EP_SCOPE",
                                        "AUTO_SUBSCRIBE_NEW_TITLES", "AUTO_SUBSCRIBE_DAILY_PLUS")),
         ("kakao", "카카오페이지", ("KAKAO_ENABLE", "KAKAO_COOKIE", "KAKAO_DOWNLOAD_ROOT", "KAKAO_AUTO",
                                "KAKAO_AUTO_SUBSCRIBE_WAITFREE", "KAKAO_USE_WAITFREE")),
@@ -1261,10 +1268,18 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                     patch[k] = ""
                 elif str(v or "").strip():
                     patch[k] = str(v)      # 빈 칸이면 기존 값 유지
+            elif t == "select":
+                opts = [o[0] for o in (next((f for f in self.settings_schema if f["key"] == k), {})
+                                       .get("options") or [])]
+                v = str(v or "").strip()
+                if opts and v not in opts:
+                    errors.append(k)
+                else:
+                    patch[k] = v
             else:
                 patch[k] = str(v if v is not None else "").strip()
         if errors:
-            return False, "숫자가 아닌 값이 있습니다: %s" % ", ".join(errors)
+            return False, "잘못된 값이 있습니다: %s" % ", ".join(errors)
         if not self._save_cfg_patch(db_type, patch):
             return False, "설정 저장 실패"
         return True, "설정을 저장했습니다(%d개 항목)" % len(patch)

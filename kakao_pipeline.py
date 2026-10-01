@@ -141,6 +141,52 @@ def _renumber_existing_files(root, title, sid, episodes, folder_zero_fill=4, log
     return len(moves)
 
 
+def adult_block_reason(cfg, t):
+    """이 작품을 성인 인증 문제로 건너뛰어야 하면 사유 문자열, 아니면 None."""
+    if not t.get("adult"):
+        return None
+    cookie = (cfg.get("KAKAO_COOKIE") or "").strip()
+    if not cookie:
+        return "성인 작품 - 성인 인증된 카카오 계정의 로그인 쿠키가 없어 받을 수 없음"
+    if t.get("adult_block_hash") and t.get("adult_block_hash") == kakao_api._cookie_hash(cookie):
+        return "성인 인증 실패(현재 쿠키) - 쿠키를 바꾸면 다시 시도"
+    return None
+
+
+SPECIALS_FILE = "특별회차_목록.txt"
+
+
+def _ep_label(no):
+    if no >= kakao_api.SPECIAL_EP_BASE:
+        return "특별회차(사이트 %d번째 회차, 파일 %d화)" % (no - kakao_api.SPECIAL_EP_BASE, no)
+    return "%d화" % no
+
+
+def _record_special(series_dir, title, no, subtitle):
+    """9000번대로 저장한 특별 회차가 무엇인지 시리즈 폴더의 안내 파일에 남긴다."""
+    path = os.path.join(series_dir, SPECIALS_FILE)
+    try:
+        lines = []
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                lines = [l.rstrip("\n") for l in f if l.strip()]
+        header = [
+            "# %s - 9000번대 회차 안내" % title,
+            "# 카카오페이지 회차 제목에 'N화' 번호가 없는 회차(프롤로그/외전/후기/특별편 등)와",
+            "# 앞 회차와 번호가 겹치는 회차(시즌2에서 1화부터 다시 시작 등)는 본편과 섞이지 않게",
+            "# '9000 + 사이트 순번'으로 저장합니다. 아래는 파일 번호 = 실제 회차 제목입니다.",
+        ]
+        body = [l for l in lines if not l.startswith("#")]
+        entry = "%04d화 = %s" % (no, subtitle or "(제목 없음)")
+        if not any(l.startswith("%04d화 " % no) for l in body):
+            body.append(entry)
+        body.sort()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(header + body) + "\n")
+    except OSError:
+        pass
+
+
 def _is_novel(t):
     return "소설" in str((t or {}).get("category") or "")
 
@@ -260,10 +306,22 @@ def _apply_waitfree_autosubscribe(cfg, patch, log=print):
         return 0
     current = ss.load_kakao_titles()
     promote = {}
+    # 예전 버전이 쿠키 없이 자동 구독해 둔 성인 기다무 작품은 받을 수 없으므로
+    # 자동 구독 이전 상태로 되돌린다(사용자가 직접 구독한 작품은 건드리지 않음)
+    demote = {sid: {"subscribed": False, "auto_subscribed": None}
+              for sid, t in current.items()
+              if t.get("auto_subscribed") == "waitfree" and t.get("subscribed")
+              and adult_block_reason(cfg, t)}
+    if demote:
+        ss.upsert_kakao_title(demote)
+        log("카카오 성인 작품 %d개는 성인 인증 쿠키가 없어 기다무 자동 구독에서 뺐습니다" % len(demote))
+        current = ss.load_kakao_titles()
     for sid in patch:
         t = current.get(sid) or {}
         if not t.get("waitfree") or t.get("status") == "완결" or _is_novel(t):
             continue
+        if adult_block_reason(cfg, t):
+            continue   # 성인 인증 쿠키가 없으면 받을 수 없으니 자동 구독하지 않음
         if t.get("subscribed") or t.get("excluded") or t.get("unsubscribed"):
             continue
         promote[sid] = {"subscribed": True, "auto_subscribed": "waitfree"}
@@ -452,6 +510,15 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
     temp_root = kakao_temp_root(cfg)
     fz = _num(cfg, "FOLDER_ZERO_FILL", 4)
 
+    blocked = adult_block_reason(cfg, t)
+    if blocked:
+        # 성인 작품인데 쿠키가 없거나, 지금 쿠키로 이미 성인 인증 실패를 확인한 작품 -
+        # 회차 목록/이미지 요청 자체를 하지 않는다
+        log("%s: %s - 건너뜀" % (title, blocked))
+        ss.upsert_kakao_title({sid: {"last_result": blocked, "last_result_at": time.time()}})
+        res["adult_blocked"] = True
+        return res
+
     try:
         episodes = kakao_api.fetch_episode_list(session, sid, log=log)
     except kakao_api.KakaoAuthExpired as e:
@@ -494,15 +561,30 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
     checked_no = int(t.get("checked_no") or 0)
     use_waitfree = bool(cfg.get("KAKAO_USE_WAITFREE", False))
 
-    targets = []
+    # 회차 목록 API가 회차마다 무료(is_free)/대여·소장(purchase_info) 여부를 알려주므로
+    # 볼 수 있는 회차만 요청한다. 유료 구간을 회차마다 끝까지 두들기던 문제 수정.
+    # - 무료 또는 이미 대여/소장한 회차: 받음
+    # - 그 외(유료): 요청하지 않음. 단, 기다무 대여권 사용이 켜져 있으면 가장 앞
+    #   유료 회차 1개만 대여권으로 시도
+    # - 예전에 "받을 수 없는 회차"(동영상 트레일러 등)로 확인된 회차는 다시 시도 안 함
+    skip_pids = set(t.get("skip_pids") or [])
+    has_cookie = bool((cfg.get("KAKAO_COOKIE") or "").strip())
+    targets, locked_eps = [], []
     for ep in episodes:
-        if ep["no"] in have or not ep.get("product_id"):
+        if ep["no"] in have or not ep.get("product_id") or ep["product_id"] in skip_pids:
             continue
-        # checked_no는 사이트 순번(order) 기준 - 특수 회차(9000번대 파일 번호) 때문에
-        # 뒤 회차가 "이미 확인함"으로 오판되지 않게 파일 번호와 분리한다
-        if full or ep["rented"] or ep["free"] or ep.get("order", ep["no"]) > checked_no or \
-                (use_waitfree and ep["waitfree_ok"]):
+        if ep["free"] or ep["rented"]:
             targets.append(ep)
+        else:
+            locked_eps.append(ep)
+    wait_ep = None
+    if use_waitfree and has_cookie:
+        wait_ep = next((ep for ep in locked_eps if ep["waitfree_ok"]), None)
+        if wait_ep:
+            targets.append(wait_ep)
+            targets.sort(key=lambda e: e.get("order", e["no"]))
+    res["locked"] = len(locked_eps) - (1 if wait_ep else 0)
+    res["paid_total"] = len(locked_eps)
 
     def _update_yaml():
         # 회차 zip이 하나라도 있으면 kavita.yaml 생성/갱신(내용이 같으면 파일은 그대로)
@@ -513,13 +595,19 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
                 log=log, platform=PLATFORM)
 
     if not targets:
-        ss.upsert_kakao_title({sid: {"last_result": "받을 새 회차 없음(보유 %d화)" % len(have),
-                                     "last_result_at": time.time(), "has_locked": False,
+        msg = "받을 회차 없음(보유 %d화" % len(have)
+        if locked_eps:
+            msg += ", 유료 %d화는 건너뜀" % len(locked_eps)
+        msg += ")"
+        ss.upsert_kakao_title({sid: {"last_result": msg,
+                                     "last_result_at": time.time(), "has_locked": bool(locked_eps),
                                      "checked_slide_dt": t.get("last_slide_added_dt") or ""}})
         # 예전에 받아둔 회차만 있고 kavita.yaml이 없던 작품도 여기서 만들어진다
         _update_yaml()
         return res
-    log("%s: 시도할 회차 %d개 (보유 %d / 전체 %d)" % (title, len(targets), len(have), len(episodes)))
+    log("%s: 받을 회차 %d개 (보유 %d / 유료라 건너뜀 %d / 전체 %d)%s" % (
+        title, len(targets), len(have), res["locked"], len(episodes),
+        " + 기다무 대여권 1회 시도(%d화)" % wait_ep["no"] if wait_ep else ""))
 
     if cfg.get("GENERATE_SERIES_JSON", True):
         downloader.write_series_json(root, title, sid, _series_json_meta(t, sid), log=log)
@@ -574,9 +662,21 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
             log("%s: %s" % (title, e))
             res["auth_expired"] = True
             break
+        except kakao_api.KakaoAdultRequired as e:
+            reason = ("성인 인증 필요 - 성인 인증된 카카오 계정의 로그인 쿠키가 있어야 받을 수 있음"
+                      if not has_cookie else
+                      "성인 인증 실패 - 현재 쿠키의 계정이 성인 인증되지 않았거나 쿠키 만료")
+            log("%s: %s (%s) - 이 작품은 중단" % (title, reason, e))
+            ss.upsert_kakao_title({sid: {"adult_block_hash": kakao_api._cookie_hash(cfg.get("KAKAO_COOKIE"))}})
+            res["adult_blocked"] = True
+            res["adult_reason"] = reason
+            break
         except kakao_api.KakaoSkip as e:
-            log("%s %d화(%s): 받을 수 없는 회차라 건너뜀 - %s" % (title, no, ep.get("subtitle", ""), e))
+            log("%s %s(%s): 받을 수 없는 회차(동영상 트레일러 등)라 건너뜀, 다음부터 시도 안 함 - %s" % (
+                title, _ep_label(no), ep.get("subtitle", ""), e))
             res["skipped"] = res.get("skipped", 0) + 1
+            skip_pids.add(ep["product_id"])
+            ss.upsert_kakao_title({sid: {"skip_pids": sorted(skip_pids)}})
             max_checked = max(max_checked, ep.get("order", no))
             continue
         except kakao_api.KakaoUnsupported as e:
@@ -612,7 +712,12 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
                                     "error": "압축 실패: %s" % c_msg})
             continue
         res["downloaded"] += 1
-        log("%s %d화 완료 (%d장)" % (title, no, cnt))
+        if no >= kakao_api.SPECIAL_EP_BASE:
+            log("%s %s 완료 (%d장) - 회차 제목 '%s'에 'N화' 번호가 없어 특별 회차 번호 %d로 저장" % (
+                title, _ep_label(no), cnt, ep.get("subtitle", ""), no))
+            _record_special(series_dir, title, no, ep.get("subtitle", ""))
+        else:
+            log("%s %d화 완료 (%d장)" % (title, no, cnt))
         # 회차가 추가될 때마다 바로 갱신 - 긴 다운로드가 중간에 끊겨도(재시작 등)
         # 이미 받은 회차는 kavita.yaml에 반영돼 있도록
         _update_yaml()
@@ -623,8 +728,10 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
             last_ok = no
 
     summary = "신규 %d화" % res["downloaded"]
+    if res.get("adult_blocked"):
+        summary = res.get("adult_reason") or "성인 인증 필요"
     if res["locked"]:
-        summary += " / 볼 수 없는 회차 %d" % res["locked"]
+        summary += " / 유료라 건너뜀 %d화" % res["locked"]
     if res["failures"]:
         summary += " / 실패 %d" % len(res["failures"])
     if res["auth_expired"]:
@@ -668,8 +775,11 @@ def run_kakao_cycle(cfg, log=print, manage_job=False):
 
     now = time.time()
     all_count = len(titles)
-    titles = {k: v for k, v in titles.items() if _needs_check(cfg, v, now)}
-    log("카카오페이지: 구독 %d개 중 이번에 확인할 작품 %d개(새 회차/기다무 충전된 작품만)" %
+    from . import pipeline as _pl
+    titles = {k: v for k, v in titles.items()
+              if _pl.in_new_episode_scope(cfg, v, "kakao", now) and _needs_check(cfg, v, now)
+              and not adult_block_reason(cfg, v)}
+    log("카카오페이지: 구독 %d개 중 이번에 확인할 작품 %d개(오늘 요일·기다무 중 새 회차/대여권 충전된 작품만)" %
         (all_count, len(titles)))
     items = sorted(titles.items(), key=lambda kv: str(kv[1].get("title") or ""))
     try:
