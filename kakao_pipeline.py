@@ -92,6 +92,55 @@ def _info_patch(info):
     return patch
 
 
+# 파일 번호 규칙 버전. "subtitle" = 회차 제목의 "N화" 번호(1.18.5~).
+# 그 전 버전은 사이트 순번(order_value)을 썼기 때문에, 트레일러가 1번인 작품은
+# 실제 1화가 0002화로 저장됐다. 버전이 다르면 기존 파일 이름을 새 번호로 바꾼다.
+EP_NUMBERING = "subtitle"
+
+
+def _renumber_existing_files(root, title, sid, episodes, folder_zero_fill=4, log=print):
+    """예전(사이트 순번) 번호로 저장된 회차 파일을 회차 제목 번호로 이름 변경.
+    번호끼리 겹칠 수 있으므로(2->1, 3->2 ...) 임시 이름을 거쳐 2단계로 바꾼다."""
+    series_dir = downloader.title_dir(root, title, sid)
+    if not os.path.isdir(series_dir):
+        return 0
+    zf = int(folder_zero_fill or 4)
+    prefix = downloader.safe_name(title) + " "
+    mapping = {ep["order"]: ep["no"] for ep in episodes if ep.get("order") is not None}
+    moves = []
+    for f in os.listdir(series_dir):
+        if not f.startswith(prefix) or not f.lower().endswith(".zip"):
+            continue
+        rest = f[len(prefix):]
+        m = kavita_yaml._EP_NO_RE.match(rest)
+        if not m:
+            continue
+        old_no = int(m.group(1))
+        new_no = mapping.get(old_no)
+        if new_no is None or new_no == old_no:
+            continue
+        new_name = prefix + str(new_no).zfill(zf) + rest[m.end(1):]
+        moves.append((f, new_name))
+    if not moves:
+        return 0
+    try:
+        for f, _new in moves:
+            os.replace(os.path.join(series_dir, f), os.path.join(series_dir, f + ".renum"))
+        for f, new in moves:
+            dst = os.path.join(series_dir, new)
+            src = os.path.join(series_dir, f + ".renum")
+            if os.path.exists(dst):
+                log("%s: 번호 변경 대상이 이미 있어 예전 파일 유지 - %s" % (title, f))
+                os.replace(src, os.path.join(series_dir, f))
+                continue
+            os.replace(src, dst)
+        log("%s: 회차 파일 %d개를 회차 제목 번호로 이름 변경 (예: %s -> %s)" %
+            (title, len(moves), moves[0][0], moves[0][1]))
+    except OSError as e:
+        log("%s: 회차 번호 이름 변경 중 오류(일부만 적용됐을 수 있음) - %s" % (title, e))
+    return len(moves)
+
+
 def _is_novel(t):
     return "소설" in str((t or {}).get("category") or "")
 
@@ -423,6 +472,16 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
         ss.upsert_kakao_title({sid: {"last_result": "회차 목록이 비어 있음", "last_result_at": time.time()}})
         return res
 
+    if t.get("ep_numbering") != EP_NUMBERING:
+        _renumber_existing_files(kakao_root(cfg), title, sid, episodes,
+                                 _num(cfg, "FOLDER_ZERO_FILL", 4), log=log)
+        done = _existing_nos(downloader.title_dir(kakao_root(cfg), title, sid))
+        real = [n for n in done if n < kakao_api.SPECIAL_EP_BASE]
+        renum = {"ep_numbering": EP_NUMBERING, "checked_no": 0,
+                 "last_downloaded_no": max(real) if real else None}
+        ss.upsert_kakao_title({sid: renum})
+        t.update(renum)
+
     rd = kavita_yaml.release_date_from_episodes(episodes)
     patch = {"episode_count": len(episodes), "last_checked_at": time.time()}
     if rd and (not t.get("release_date") or rd < t["release_date"]):
@@ -439,7 +498,9 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
     for ep in episodes:
         if ep["no"] in have or not ep.get("product_id"):
             continue
-        if full or ep["rented"] or ep["free"] or ep["no"] > checked_no or \
+        # checked_no는 사이트 순번(order) 기준 - 특수 회차(9000번대 파일 번호) 때문에
+        # 뒤 회차가 "이미 확인함"으로 오판되지 않게 파일 번호와 분리한다
+        if full or ep["rented"] or ep["free"] or ep.get("order", ep["no"]) > checked_no or \
                 (use_waitfree and ep["waitfree_ok"]):
             targets.append(ep)
 
@@ -516,7 +577,7 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
         except kakao_api.KakaoSkip as e:
             log("%s %d화(%s): 받을 수 없는 회차라 건너뜀 - %s" % (title, no, ep.get("subtitle", ""), e))
             res["skipped"] = res.get("skipped", 0) + 1
-            max_checked = max(max_checked, no)
+            max_checked = max(max_checked, ep.get("order", no))
             continue
         except kakao_api.KakaoUnsupported as e:
             log("%s: %s - 이 작품은 중단" % (title, e))
@@ -525,7 +586,7 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
         except kakao_api.KakaoNotPurchased:
             res["locked"] += 1
             locked_run += 1
-            max_checked = max(max_checked, no)
+            max_checked = max(max_checked, ep.get("order", no))
             if locked_run >= (MAX_CONSECUTIVE_LOCKED if not full else 20):
                 log("%s: 볼 수 없는 회차가 연속 %d개 - 이번 실행은 여기까지" % (title, locked_run))
                 break
@@ -536,7 +597,7 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
             continue
 
         locked_run = 0
-        max_checked = max(max_checked, no)
+        max_checked = max(max_checked, ep.get("order", no))
         if not ok:
             res["failures"].append({"title": title, "title_id": sid, "episode_no": no, "error": err})
             log("%s %d화 실패: %s" % (title, no, err))
@@ -558,7 +619,7 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
         ss.append_history({"type": "download", "source": "kakao", "platform": "kakao",
                            "title_id": sid, "title": "[카카오] %s" % title, "episode_no": no,
                            "subtitle": ep.get("subtitle"), "image_count": cnt})
-        if last_ok is None or no > last_ok:
+        if no < kakao_api.SPECIAL_EP_BASE and (last_ok is None or no > last_ok):
             last_ok = no
 
     summary = "신규 %d화" % res["downloaded"]

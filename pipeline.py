@@ -260,7 +260,7 @@ def update_kavita_yaml(cfg, session, download_root, title_id, log=print, force_i
         force_info=force_info, log=log)
 
 
-def run_kavita_yaml_all(cfg, log=print):
+def run_kavita_yaml_all(cfg, log=print, force_info=True, manage_job=True):
     """다운로드 경로 바로 아래의 시리즈 폴더를 전부 훑어 kavita.yaml을 일괄
     생성/갱신한다(카테고리탭 '설정' 탭의 버튼용).
 
@@ -275,8 +275,9 @@ def run_kavita_yaml_all(cfg, log=print):
     except OSError as e:
         msg = "kavita.yaml 일괄 생성 실패: 다운로드 경로를 읽을 수 없음 (%s)" % e
         log(msg)
-        ss.save_job_state({"running": False, "stage": "error", "finished_at": time.time(),
-                            "last_error": str(e), "message": msg})
+        if manage_job:
+            ss.save_job_state({"running": False, "stage": "error", "finished_at": time.time(),
+                                "last_error": str(e), "message": msg})
         return {}
 
     naver_ids = set(ss.load_titles().keys())
@@ -322,7 +323,7 @@ def run_kavita_yaml_all(cfg, log=print):
         r = kavita_yaml.write_kavita_yaml(
             download_root, tid, session=session,
             embed_cover=bool(cfg.get("KAVITA_YAML_EMBED_COVER", True)),
-            force_info=True, log=log, series_dir=full, folder_title=folder_title,
+            force_info=force_info, log=log, series_dir=full, folder_title=folder_title,
             platform=platform)
         counts[r] = counts.get(r, 0) + 1
         time.sleep(0.2)
@@ -330,8 +331,10 @@ def run_kavita_yaml_all(cfg, log=print):
            " / 형식불일치 폴더 %d" % (counts["written"], counts["unchanged"], counts["skipped"],
                                    counts["error"], len(unmatched)))
     log(msg)
-    ss.save_job_state({"running": False, "stage": "done", "finished_at": time.time(),
-                        "progress": len(targets), "message": msg})
+    ss.save_job_state({"last_kavita_all_at": time.time()})
+    if manage_job:
+        ss.save_job_state({"running": False, "stage": "done", "finished_at": time.time(),
+                            "progress": len(targets), "message": msg})
     return counts
 
 
@@ -577,6 +580,17 @@ def run_full_cycle(cfg, log=print):
                 kakao_result = kakao_pipeline.run_kakao_cycle(cfg, log=log)
             except Exception as e:  # noqa: BLE001
                 log("카카오페이지 사이클 오류(네이버 결과에는 영향 없음): %s" % e)
+        # 하루 한 번, 다운로드 경로 전체를 훑어 kavita.yaml이 없거나 낡은 폴더를 채운다
+        # (구독하지 않은 작품 폴더, 예전에 받아둔 폴더, 수동으로 넣은 폴더 등).
+        if (_cfg_bool(cfg, "GENERATE_KAVITA_YAML", True)
+                and not dl_result.get("cancelled")
+                and not ss.load_job_state().get("cancel_requested")
+                and time.time() - float(ss.load_job_state().get("last_kavita_all_at") or 0) > 24 * 3600):
+            try:
+                ss.save_job_state({"message": "kavita.yaml 전체 점검 중"})
+                run_kavita_yaml_all(cfg, log=log, force_info=False, manage_job=False)
+            except Exception as e:  # noqa: BLE001
+                log("kavita.yaml 전체 점검 실패(무시): %s" % e)
         cancelled = dl_result.get("cancelled") or (kakao_result or {}).get("cancelled")
         ss.save_job_state({"running": False,
                             "stage": "cancelled" if cancelled else "done",

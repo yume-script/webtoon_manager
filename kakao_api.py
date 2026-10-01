@@ -364,6 +364,7 @@ def _episode_from_item(entry):
             break
     return {
         "no": no,
+        "order": no,   # 사이트상 순번(트레일러/프롤로그 포함). 파일 번호는 assign_episode_numbers()가 정함
         "product_id": item.get("product_id"),
         "subtitle": item.get("title") or "",
         "rented": rented,
@@ -395,8 +396,36 @@ def fetch_episode_list(session, series_id, max_pages=400, log=None):
         if not items or cursor >= total:
             break
         time.sleep(0.3)
-    out.sort(key=lambda e: e["no"])
+    out.sort(key=lambda e: e["order"])
+    assign_episode_numbers(out)
     return out
+
+
+# 회차 제목 끝의 "N화" (예: "나 혼자만 레벨업 12화", "12화", "12 화")
+_EP_TITLE_NO_RE = re.compile(r"(\d+)\s*화(?!.*\d+\s*화)")
+# 제목에 "N화"가 없는 특수 회차(트레일러/프롤로그/외전/후기 등)의 파일 번호 시작값.
+# 본편 번호와 절대 겹치지 않고 목록 맨 뒤로 정렬되게 큰 값을 쓴다.
+SPECIAL_EP_BASE = 9000
+
+
+def episode_no_from_subtitle(subtitle):
+    m = _EP_TITLE_NO_RE.search(str(subtitle or ""))
+    return int(m.group(1)) if m else None
+
+
+def assign_episode_numbers(episodes):
+    """회차 제목의 "N화" 번호를 파일 번호(no)로 쓴다.
+    - 제목에 번호가 없는 회차(트레일러/프롤로그/외전 등): 9000 + 사이트 순번
+    - 같은 번호가 이미 나온 경우(시즌2에서 1화부터 다시 시작 등): 9000 + 사이트 순번
+    순번(order)은 그대로 보존해서 다른 계산(기다무 등)에 쓸 수 있게 둔다."""
+    used = set()
+    for ep in episodes:
+        n = episode_no_from_subtitle(ep.get("subtitle"))
+        if n is None or n in used or n >= SPECIAL_EP_BASE:
+            n = SPECIAL_EP_BASE + int(ep.get("order") or 0)
+        used.add(n)
+        ep["no"] = n
+    return episodes
 
 
 # ---------------------------------------------------------------------------

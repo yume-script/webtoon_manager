@@ -198,6 +198,7 @@ DEFAULT_JOB_STATE = {
     "finished_at": None,
     "last_scan_at": None,
     "last_finished_scan_at": None,
+    "last_kavita_all_at": None,
     "last_error": None,
 }
 

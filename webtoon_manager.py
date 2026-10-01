@@ -969,6 +969,10 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 return
 
             if not new_eps:
+                # 새 회차가 없어도 kavita.yaml이 없거나 낡았으면 맞춰 둔다
+                pipeline.update_kavita_yaml(
+                    cfg, session, cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR,
+                    title_id, log=ss.append_log)
                 ss.save_title_job_state({"running": False, "finished_at": time.time(),
                                           "message": "%s: 새 회차 없음" % title_name})
                 return
