@@ -804,7 +804,11 @@ def run_kakao_cycle(cfg, log=print, manage_job=False):
     finally:
         kakao_api.save_session_cookies(session)
 
-    if total["auth_expired"]:
+    # 쿠키 만료 알림은 만료가 처음 감지됐을 때 1번만 보내고, 정상으로 돌아오면
+    # 다음 만료 때 다시 1번 보낸다(매 사이클마다 반복 알림 방지)
+    already = bool(ss.load_job_state().get("kakao_cookie_expired_notified"))
+    ss.save_job_state({"kakao_cookie_expired_notified": bool(total["auth_expired"])})
+    if total["auth_expired"] and not already:
         discord_notify.notify(cfg, "🍪 카카오페이지 쿠키 만료",
                               "카카오페이지 로그인 쿠키가 만료된 것으로 보입니다. "
                               "플러그인 설정에서 쿠키를 새로 넣어주세요.",

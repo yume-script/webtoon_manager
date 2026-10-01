@@ -564,6 +564,13 @@
         (f.type === 'number' ? ' step="any"' : '') + (isLong ? '' : '') +
         ' value="' + escapeHtml(value == null ? '' : String(value)) + '">';
     }
+    if (f.key === 'KAKAO_COOKIE') {
+      input += '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">' +
+        '<button class="wtm-btn wtm-btn-secondary wtm-btn-small" data-el="kakao-verify">쿠키 검증(로그인·성인 인증 확인)</button>' +
+        '<span class="wtm-hint" data-el="kakao-verify-msg" style="margin:0"></span></div>' +
+        '<span class="wtm-hint" style="margin:0">성인 작품은 <b>성인 인증된 카카오 계정</b>으로 page.kakao.com에 로그인한 뒤 ' +
+        'Cookie-Editor로 내보낸 JSON 전체를 붙여넣어야 받을 수 있습니다(필수: _kau, _kpwtkn, _T_ANO, _karmt, _kahai, _kawlt, _kpdid).</span>';
+    }
     return '<div style="display:flex;flex-direction:column;gap:4px;font-size:12px">' +
       '<span style="color:var(--app-text-secondary, inherit)">' + label + '</span>' + input + '</div>';
   }
@@ -611,6 +618,19 @@
   container.addEventListener('click', async function (ev) {
     var tabBtn = ev.target.closest('.wtm-tab');
     if (tabBtn) { setTab(tabBtn.getAttribute('data-tab')); return; }
+
+    var verifyBtn = ev.target.closest('[data-el="kakao-verify"]');
+    if (verifyBtn) {
+      var vmsg = el('[data-el="kakao-verify-msg"]');
+      var cin = el('[data-setting="KAKAO_COOKIE"]');
+      verifyBtn.disabled = true;
+      if (vmsg) vmsg.textContent = '확인 중...';
+      var rv = await callAction('kakao_verify_cookie', { cookie: cin ? cin.value : '' });
+      verifyBtn.disabled = false;
+      if (vmsg) vmsg.textContent = (rv.message || '').split(' / ').join('\n');
+      if (vmsg) vmsg.style.whiteSpace = 'pre-line';
+      return;
+    }
 
     var saveBtn = ev.target.closest('[data-el="settings-save"]');
     if (saveBtn) { saveSettingsForm(); return; }

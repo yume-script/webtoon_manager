@@ -137,12 +137,68 @@ def build_session(cookie_raw, timeout=15):
         # refresh_token으로 연장된 최신 쿠키가 있으면 그걸 우선 사용
         cookies = [(c["name"], c["value"], c.get("domain") or ".kakao.com")
                    for c in saved["cookies"] if c.get("name")]
-    for name, value, dom in cookies:
-        s.cookies.set(name, value, domain=dom if dom.startswith(".") else "." + dom.lstrip("."),
-                      path="/")
+    for name, value, _dom in cookies:
+        # 브라우저에서 export한 쿠키는 domain이 "page.kakao.com"(호스트 전용)인 것도
+        # 섞여 있다. 그대로 넣으면 실제 API 서버(bff-page.kakao.com)로는 전송되지
+        # 않아 로그인/성인 인증이 안 된 것처럼 동작하므로 전부 .kakao.com으로 맞춘다.
+        s.cookies.set(name, value, domain=".kakao.com", path="/")
     s.kakao_cookie_source_hash = _cookie_hash(cookie_raw)
     s.kakao_has_cookie = bool(cookies)
     return s
+
+
+REQUIRED_COOKIES = ("_kau", "_kpwtkn", "_T_ANO", "_karmt", "_kahai", "_kawlt", "_kpdid")
+PROFILE_API = BFF + "/api/gateway/api/v1/user/get_profile"
+# 쿠키 검증 때 성인 인증 여부를 실제로 확인할 기본 성인 작품(무료 프롤로그가 있는 작품)
+ADULT_PROBE_SERIES = "66346705"
+
+
+def missing_required_cookies(cookie_raw):
+    names = set(n for n, _v, _d in _parse_cookie_input(cookie_raw))
+    return [c for c in REQUIRED_COOKIES if c not in names]
+
+
+def verify_cookie(session, adult_series_ids=None):
+    """로그인 상태와 성인 인증 여부를 확인한다.
+    성인 인증은 전용 API 응답 형식이 공개돼 있지 않아, 실제 성인 작품의 무료 회차
+    이미지 목록을 요청해 보는 방식으로 판정한다(가장 확실한 방법).
+    반환: {"logged_in": bool, "adult": True/False/None, "nickname": str, "detail": str}"""
+    out = {"logged_in": False, "adult": None, "nickname": "", "detail": ""}
+    try:
+        r = session.post(PROFILE_API, timeout=session.request_timeout)
+        body = json.loads(r.content.decode("utf-8"))
+        out["logged_in"] = body.get("result_code") in (0, "0")
+        res = body.get("result") or {}
+        if isinstance(res, dict):
+            for k in ("nickname", "nick_name", "name", "user_name"):
+                if res.get(k):
+                    out["nickname"] = str(res[k])
+                    break
+        if not out["logged_in"]:
+            out["detail"] = "%s (%s)" % (body.get("message") or "", body.get("message_key") or "")
+    except Exception as e:  # noqa: BLE001
+        out["detail"] = "로그인 확인 실패: %s" % e
+
+    for sid in list(adult_series_ids or []) + [ADULT_PROBE_SERIES]:
+        try:
+            r = session.get(PRODUCT_LIST_API, params={
+                "series_id": sid, "cursor_index": 0, "cursor_direction": "NEXT",
+                "window_size": 5, "sort_type": "asc"}, timeout=session.request_timeout)
+            items = (json.loads(r.content.decode("utf-8")).get("result") or {}).get("list") or []
+            free = next((it.get("item") for it in items
+                         if (it.get("item") or {}).get("is_free")), None)
+            if not free:
+                continue
+            fetch_episode_images(session, sid, free["product_id"])
+            out["adult"] = True
+            break
+        except KakaoAdultRequired as e:
+            out["adult"] = False
+            out["detail"] = (out["detail"] + " / " if out["detail"] else "") + str(e)
+            break
+        except Exception:  # noqa: BLE001
+            continue
+    return out
 
 
 def save_session_cookies(session):

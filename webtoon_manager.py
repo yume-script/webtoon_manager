@@ -482,6 +482,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 return self._act_get_settings(db_type)
             if action == "save_settings":
                 return self._act_save_settings(db_type, payload)
+            if action == "kakao_verify_cookie":
+                return self._act_kakao_verify_cookie(self._get_cfg(db_type), payload)
             if action.startswith("kakao_"):
                 return self._dispatch_kakao(db_type, action, payload)
             if payload.get("platform") == "kakao" and action in (
@@ -663,6 +665,42 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         if sid and not self._start_kakao_worker(cfg, sid):
             ss.kakao_queue_push(sid)
 
+    def _act_kakao_verify_cookie(self, cfg, payload):
+        """[설정] 탭 '카카오 쿠키 검증' - 입력칸에 새로 붙여넣은 값이 있으면 그걸,
+        없으면 저장된 쿠키를 검증한다."""
+        from . import kakao_api
+        raw = (payload.get("cookie") or "").strip() or (cfg.get("KAKAO_COOKIE") or "").strip()
+        if not raw:
+            return False, "카카오 쿠키가 비어 있습니다. Cookie-Editor로 page.kakao.com 쿠키를 JSON으로 내보내 붙여넣으세요."
+        if not kakao_api._parse_cookie_input(raw):
+            return False, "쿠키 형식을 읽지 못했습니다(Cookie-Editor JSON 또는 'a=b; c=d' 형식)"
+        missing = kakao_api.missing_required_cookies(raw)
+        session = kakao_api.build_session(raw, timeout=int(cfg.get("REQUEST_TIMEOUT_SECONDS", 15) or 15))
+        adult_ids = [sid for sid, t in ss.load_kakao_titles().items() if t.get("adult")][:2]
+        res = kakao_api.verify_cookie(session, adult_series_ids=adult_ids)
+        lines = []
+        lines.append("로그인: %s" % ("✅ 됨" + (" (%s)" % res["nickname"] if res["nickname"] else "")
+                                    if res["logged_in"] else "❌ 안 됨 - 쿠키 만료 또는 로그인 쿠키 아님"))
+        if res["adult"] is True:
+            lines.append("성인 인증: ✅ 됨 - 성인 작품 다운로드 가능")
+            # 예전 쿠키로 막혔던 성인 작품들을 다시 시도하도록 표시 해제
+            blocked = {sid: {"adult_block_hash": None} for sid, t in ss.load_kakao_titles().items()
+                       if t.get("adult_block_hash")}
+            if blocked:
+                ss.upsert_kakao_title(blocked)
+                lines.append("성인 인증 실패로 건너뛰던 작품 %d개를 다시 시도하도록 풀었습니다" % len(blocked))
+        elif res["adult"] is False:
+            lines.append("성인 인증: ❌ 안 됨 - 이 카카오 계정이 성인 인증되지 않았거나 로그인 쿠키가 아님"
+                         "(카카오페이지에서 성인 인증 후 쿠키를 다시 내보내세요)")
+        else:
+            lines.append("성인 인증: 확인 못 함")
+        if missing:
+            lines.append("⚠️ 필수 쿠키 누락: %s - page.kakao.com에 로그인한 상태에서 전체 쿠키를 다시 내보내세요"
+                         % ", ".join(missing))
+        if res.get("detail") and not res["logged_in"]:
+            lines.append("상세: %s" % res["detail"])
+        return bool(res["logged_in"]), " / ".join(lines)
+
     def _kakao_card_action(self, db_type, action, payload):
         """통합 목록 카드에서 카카오 작품에 대해 누른 버튼(네이버와 같은 액션 이름)."""
         sid = str(payload.get("titleId") or "").strip()
@@ -689,6 +727,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             return False, "환경설정에서 '[카카오페이지] 카카오페이지 웹툰 다운로드 사용'을 먼저 켜주세요."
         sid = str(payload.get("seriesId") or "").strip()
 
+        if action == "kakao_verify_cookie":
+            return self._act_kakao_verify_cookie(cfg, payload)
         if action == "kakao_add":
             ok, msg, _sid = kakao_pipeline.add_series(cfg, payload.get("value"), log=ss.append_log)
             return ok, msg
