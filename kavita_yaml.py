@@ -27,6 +27,7 @@ kavita.yaml 생성기
 - 부가 기능이라 어떤 오류가 나도 예외를 올리지 않고 로그만 남긴다.
 """
 import base64
+import hashlib
 import json
 import os
 import re
@@ -383,6 +384,62 @@ def _fetch_release_date(session, title_id, log=None):
         return ""
 
 
+# ---------------------------------------------------------------------------
+# "이미 최신인지" 빠른 확인
+# ---------------------------------------------------------------------------
+# 폴더별로 마지막으로 반영한 최종 회차 파일명/회차 수/작품정보 서명을 기억해 두고,
+# 셋 다 같으면 상세정보 조회·표지 다운로드·yaml 생성을 전부 건너뛴다.
+KAVITA_STATE_PATH = os.path.join(ss.DATA_DIR, "kavita_state.json")
+_SIG_FIELDS = ("title", "status", "rest", "info_finished", "info_rest", "author", "info_writers",
+               "info_painters", "tags", "info_tags", "synopsis", "release_date", "thumbnail",
+               "adult", "is_adult", "info_adult", "info_age_type")
+
+
+def _meta_sig(t, platform, embed_cover):
+    data = {k: t.get(k) for k in _SIG_FIELDS}
+    data["_platform"] = platform
+    data["_cover"] = bool(embed_cover)
+    raw = json.dumps(data, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _state_key(series_dir):
+    return os.path.abspath(series_dir)
+
+
+def _load_state():
+    return ss.read_json(KAVITA_STATE_PATH, {})
+
+
+def _save_state(series_dir, archives, sig):
+    st = _load_state()
+    st[_state_key(series_dir)] = {"latest": archives[-1][0], "count": len(archives), "sig": sig,
+                                  "at": time.time()}
+    ss.write_json(KAVITA_STATE_PATH, st)
+
+
+def _already_current(path, series_dir, archives, sig):
+    """kavita.yaml에 최종 회차가 이미 반영돼 있고 작품 정보도 그대로면 True."""
+    if not os.path.exists(path):
+        return False
+    latest, count = archives[-1][0], len(archives)
+    rec = _load_state().get(_state_key(series_dir))
+    if rec:
+        return rec.get("latest") == latest and rec.get("count") == count and rec.get("sig") == sig
+    # 이 기능 이전에 만들어진 yaml: 파일 안에 최종 회차 항목이 있고 회차 수가 같으면
+    # 최신으로 보고 기록만 남긴다(작품 정보 변경은 다음부터 서명으로 감지).
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return False
+    if ("    %s:\n" % json.dumps(latest, ensure_ascii=False)) in text and \
+            text.count("\n        page: ") == count:
+        _save_state(series_dir, archives, sig)
+        return True
+    return False
+
+
 def write_kavita_yaml(download_root, title_id, session=None, embed_cover=True,
                       refresh_info=True, force_info=False, log=None,
                       series_dir=None, folder_title=None, platform="naver"):
@@ -391,6 +448,8 @@ def write_kavita_yaml(download_root, title_id, session=None, embed_cover=True,
     series_dir를 주면(폴더 전체 스캔 시) 그 폴더를 그대로 쓴다. 제목이 나중에
     바뀌어 titles.json의 제목과 폴더명이 달라진 작품도 놓치지 않기 위함이다.
     titles.json에 없는 작품이면 폴더명 제목 + 네이버 상세정보(별도 캐시)로 만든다.
+    최종 회차가 이미 반영돼 있고 작품 정보가 같으면 아무 것도 하지 않고 "unchanged"
+    (force_info=True면 무조건 다시 만듦 - [설정]의 "전체 작품 kavita.yaml 생성/갱신" 버튼).
     반환: "written" | "unchanged" | "skipped" | "error"
     """
     tid = str(title_id)
@@ -418,6 +477,11 @@ def write_kavita_yaml(download_root, title_id, session=None, embed_cover=True,
                 log("%s: 회차 압축파일(zip/cbz)이 없어 건너뜀" % os.path.basename(series_dir))
             return "skipped"  # 받은 회차가 없는 작품은 만들지 않음
 
+        path = os.path.join(series_dir, YAML_NAME)
+        if not force_info and _already_current(path, series_dir, archives,
+                                               _meta_sig(t, platform, embed_cover)):
+            return "unchanged"
+
         if refresh_info:
             try:
                 t = refresh_title_info(session, tid, t, force=force_info, log=log)
@@ -437,7 +501,6 @@ def write_kavita_yaml(download_root, title_id, session=None, embed_cover=True,
                         _save_info_cache(tid, {"release_date": rd})
 
         cover = _cover_b64(session, t.get("thumbnail"), log=log) if embed_cover else None
-        path = os.path.join(series_dir, YAML_NAME)
 
         # 썸네일을 이번에 못 받았으면(네트워크 오류 등) 기존 파일의 표지 값을
         # 그대로 유지해서, 표지 하나 때문에 파일이 계속 바뀌지 않게 한다.
@@ -450,6 +513,7 @@ def write_kavita_yaml(download_root, title_id, session=None, embed_cover=True,
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     if f.read() == text:
+                        _save_state(series_dir, archives, _meta_sig(t, platform, embed_cover))
                         return "unchanged"
             except OSError:
                 pass
@@ -458,6 +522,7 @@ def write_kavita_yaml(download_root, title_id, session=None, embed_cover=True,
         with open(tmp_path, "w", encoding="utf-8", newline="\n") as f:
             f.write(text)
         os.replace(tmp_path, path)
+        _save_state(series_dir, archives, _meta_sig(t, platform, embed_cover))
         if log:
             log("%s: kavita.yaml 갱신 (%d개 회차)" % (title, len(archives)))
         return "written"
