@@ -172,3 +172,22 @@ select.wtm-input option { color: #111; background: #fff; }
 @media (prefers-reduced-motion: reduce) {
   .wtm-card, .wtm-btn, .wtm-daytab, .wtm-tab { transition: none; }
 }
+
+/* ---------- 도움말 (접고 펼치는 섹션) ---------- */
+.wtm-help { display: flex; flex-direction: column; gap: 10px; }
+.wtm-help details.wtm-box > summary.wtm-box-title { cursor: pointer; margin-bottom: 0; list-style: none;
+  display: flex; align-items: center; gap: 6px; }
+.wtm-help details.wtm-box > summary.wtm-box-title::-webkit-details-marker { display: none; }
+.wtm-help details.wtm-box > summary.wtm-box-title::after { content: "▸"; margin-left: auto;
+  color: var(--app-text-muted); transition: transform .15s ease; }
+.wtm-help details.wtm-box[open] > summary.wtm-box-title::after { transform: rotate(90deg); }
+.wtm-help details.wtm-box[open] > summary.wtm-box-title { margin-bottom: 10px; }
+.wtm-help-list { padding-left: 20px; margin: 4px 0 10px; }
+.wtm-help-list li { margin: 3px 0; }
+.wtm-help-list ul { padding-left: 18px; margin: 3px 0; }
+.wtm-help code { font-size: 11.5px; padding: 1px 5px; border-radius: 4px;
+  background: var(--app-bg-main, rgba(127,127,127,.1)); }
+.wtm-help-table { border-collapse: collapse; font-size: 12px; min-width: 420px; }
+.wtm-help-table th, .wtm-help-table td { border: 1px solid var(--app-border, rgba(127,127,127,.2));
+  padding: 5px 9px; text-align: left; }
+.wtm-help-table th { background: var(--app-bg-main, rgba(127,127,127,.08)); }
