@@ -46,6 +46,7 @@ PLUGIN_ID = "webtoon_manager"
 _COMPARE_BRACKET_RE = re.compile(r'[\(\[（【].*?[\)\]）】]')
 # 비교 폴더 스캔 결과 캐시: {폴더경로: (timestamp, 시리즈명집합)}
 _COMPARE_FOLDER_CACHE = {}
+_TITLE_ITEMS_CACHE = {}
 # 파일명 끝의 "0012화#110", "05권", "12화" 같은 권/화 꼬리표를 떼기 위한 패턴
 _EPISODE_SUFFIX_RE = re.compile(r'\s*\d+\s*(화|권|話|卷)(\s*#\s*\d+)?\s*$')
 _COMPARE_WS_RE = re.compile(r'\s+')
@@ -372,29 +373,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         except Exception:  # noqa: BLE001
             pass
 
-        titles = ss.load_titles()
         compare_set, compare_status = self._build_compare_set(db_type, cfg)
-        items_list = []
-        for tid, t in titles.items():
-            item = dict(t)
-            item["titleId"] = tid
-            item["platform"] = "naver"
-            if compare_set is None:
-                item["in_library"] = None
-            else:
-                item["in_library"] = _normalize_series_name(item.get("title", "")) in compare_set
-            items_list.append(item)
-        # 카카오페이지 작품도 같은 목록에 합친다(platform으로 구분)
-        if cfg.get("KAKAO_ENABLE"):
-            for item in self._kakao_items(cfg):
-                item["titleId"] = item["seriesId"]
-                item["platform"] = "kakao"
-                if compare_set is None:
-                    item["in_library"] = None
-                else:
-                    item["in_library"] = _normalize_series_name(item.get("title", "")) in compare_set
-                items_list.append(item)
-        items_list.sort(key=lambda x: x.get("last_seen_at", 0), reverse=True)
+        items_list = self._build_title_items(cfg, compare_set)
 
         bundle = {
             "titles": items_list,
@@ -403,6 +383,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             "job": ss.load_job_state(),
             "title_job": ss.load_title_job_state(),
             "kakao_queue": ss.kakao_queue_list(),
+            "titles_rev": ss.titles_rev(),
             "log_tail": ss.tail_log(60),
             "plugin_version": self._read_version(),
             "update_status": update_status,
@@ -473,6 +454,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 return self._act_run_bg(db_type, pipeline.run_full_cycle, "전체 실행(요일별+다운로드)")
             if action == "kavita_yaml_all":
                 return self._act_run_bg(db_type, pipeline.run_kavita_yaml_all, "kavita.yaml 일괄 생성")
+            if action == "poll_status":
+                return self._poll_status(db_type)
             if action.startswith("kakao_"):
                 return self._dispatch_kakao(db_type, action, payload)
             if payload.get("platform") == "kakao" and action in (
@@ -541,6 +524,65 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             out.append(item)
         out.sort(key=lambda x: x.get("added_at") or 0, reverse=True)
         return out
+
+    # 화면에 필요한 필드만 보낸다. 카카오 작품이 수천 개라 줄거리/표지 원본 URL/
+    # 내부 상태값까지 다 보내면 폴링 한 번에 수 MB가 오가며 서버·브라우저 CPU를 잡아먹었다.
+    _UI_FIELDS = ("title", "author", "thumbnail", "weekdays", "status", "subscribed",
+                  "unsubscribed", "excluded", "new", "rest", "up_flag", "rating", "waitfree",
+                  "category", "last_result", "adult", "is_adult", "last_downloaded_no",
+                  "episode_count", "last_seen_at")
+
+    def _build_title_items(self, cfg, compare_set):
+        """목록 데이터. titles.json/kakao_titles.json이 바뀌지 않았으면 이전 결과를
+        그대로 재사용한다(파일 수정 시각 + 비교 폴더 결과로 캐시 키)."""
+        key = (ss.titles_rev(), bool(cfg.get("KAKAO_ENABLE")),
+               id(compare_set) if compare_set is not None else None)
+        cached = _TITLE_ITEMS_CACHE.get("v")
+        if cached and cached[0] == key:
+            return cached[1]
+
+        def _slim(t, tid, platform):
+            item = {k: t[k] for k in self._UI_FIELDS if k in t}
+            item["titleId"] = tid
+            item["platform"] = platform
+            item["in_library"] = (None if compare_set is None else
+                                  _normalize_series_name(t.get("title", "")) in compare_set)
+            return item
+
+        items_list = [_slim(t, tid, "naver") for tid, t in ss.load_titles().items()]
+        if cfg.get("KAKAO_ENABLE"):
+            try:
+                from . import kakao_pipeline
+                kakao_pipeline.repair_old_records_async(cfg)
+            except Exception:  # noqa: BLE001
+                pass
+            items_list.extend(_slim(t, sid, "kakao") for sid, t in ss.load_kakao_titles().items())
+        items_list.sort(key=lambda x: x.get("last_seen_at", 0) or 0, reverse=True)
+        _TITLE_ITEMS_CACHE["v"] = (key, items_list)
+        return items_list
+
+    def _poll_status(self, db_type):
+        """화면의 주기적 폴링용 가벼운 상태(작업 진행/로그/이력/목록 변경 표식).
+        작품 목록 자체는 titles_rev가 바뀌었을 때만 화면이 따로 다시 받는다."""
+        cfg = self._get_cfg(db_type)
+        try:
+            scheduler.ensure_started(lambda: self._get_cfg(db_type),
+                                      pipeline.run_full_cycle,
+                                      pipeline.run_finished_scan_job)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self._maybe_drain_kakao_queue(cfg)
+        except Exception:  # noqa: BLE001
+            pass
+        return True, json.dumps({
+            "job": ss.load_job_state(),
+            "title_job": ss.load_title_job_state(),
+            "kakao_queue": ss.kakao_queue_list(),
+            "titles_rev": ss.titles_rev(),
+            "log_tail": ss.tail_log(60),
+            "history": ss.load_history(limit=200),
+        }, ensure_ascii=False)
 
     def _start_kakao_worker(self, cfg, sid):
         """title_job 락을 잡을 수 있으면 sid부터 받기 시작하고, 끝나면 대기열을

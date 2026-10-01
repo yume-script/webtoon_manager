@@ -81,9 +81,33 @@ def read_json(path, default):
             return default
 
 
+# 작품 목록처럼 큰 파일은 들여쓰기 없이 저장한다. 카카오 작품이 수천 개라
+# indent=2로 쓰면 파일이 크고 쓰기마다 CPU를 많이 먹는다(읽기는 둘 다 json.load로 동일).
+_COMPACT_PATHS = set()
+
+
 def write_json(path, data):
     with _lock:
-        _atomic_write(path, json.dumps(data, ensure_ascii=False, indent=2))
+        if path in _COMPACT_PATHS:
+            text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+        else:
+            text = json.dumps(data, ensure_ascii=False, indent=2)
+        _atomic_write(path, text)
+
+
+def titles_rev():
+    """작품 목록 파일들의 변경 표식(수정 시각+크기). 화면은 이 값이 바뀌었을 때만
+    전체 목록을 다시 받는다."""
+    parts = []
+    for p in (TITLES_PATH, KAKAO_TITLES_PATH, AUTHORS_TAGS_PATH):
+        try:
+            st = os.stat(p)
+            parts.append("%d:%d" % (st.st_mtime_ns, st.st_size))
+        except OSError:
+            parts.append("0")
+        except NameError:
+            parts.append("0")
+    return "|".join(parts)
 
 
 # ---- titles.json : { titleId(str): {...} } -----------------------------
@@ -114,6 +138,7 @@ def upsert_title(patch_by_id):
 # 로직이 titles.json 전체를 네이버 작품으로 가정하기 때문).
 KAKAO_TITLES_PATH = os.path.join(DATA_DIR, "kakao_titles.json")
 KAKAO_DOWNLOAD_DEFAULT_DIR = os.path.join(DATA_DIR, "kakao_downloads")
+_COMPACT_PATHS.update({TITLES_PATH, KAKAO_TITLES_PATH})
 
 
 def load_kakao_titles():

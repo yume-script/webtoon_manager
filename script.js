@@ -226,14 +226,24 @@
     return '표시할 작품이 없습니다. "지금 스캔"을 먼저 실행해보세요.';
   }
 
+  // 카드는 한 번에 GRID_PAGE개씩만 그린다(수천 장을 한꺼번에 DOM에 넣으면
+  // 브라우저 CPU/메모리를 크게 잡아먹음). 필터가 바뀌면 처음부터 다시.
+  var GRID_PAGE = 120;
+  var gridLimit = GRID_PAGE;
+  var gridFilterKey = '';
+
   function renderGrid() {
     var grid = el('[data-el="title-grid"]');
     if (!grid) return;
-    var list = filteredTitles();
-    if (!list.length) {
+    var fkey = [currentTab, dayFilter, platformFilter, searchQuery].join('|');
+    if (fkey !== gridFilterKey) { gridFilterKey = fkey; gridLimit = GRID_PAGE; }
+    var fullList = filteredTitles();
+    if (!fullList.length) {
       grid.innerHTML = '<div class="wtm-hint">' + emptyMessage() + '</div>';
       return;
     }
+    var list = fullList.slice(0, gridLimit);
+    var more = fullList.length - list.length;
     grid.innerHTML = list.map(function (t) {
       return '<div class="wtm-card">' +
         (t.thumbnail ? '<img class="wtm-card-thumb" src="' + escapeHtml(t.thumbnail) + '" loading="lazy"' + (t.platform === 'kakao' ? ' referrerpolicy="no-referrer"' : '') + '>' :
@@ -245,7 +255,10 @@
         '<div class="wtm-badges">' + badgeHtml(t) + '</div>' +
         '<div class="wtm-card-actions">' + cardActionsHtml(t) + '</div>' +
         '</div></div>';
-    }).join('');
+    }).join('') + (more > 0
+      ? '<div style="grid-column:1/-1;text-align:center;padding:8px"><button class="wtm-btn wtm-btn-secondary" data-el="grid-more">더 보기 (' +
+        list.length + ' / ' + fullList.length + ')</button></div>'
+      : '');
   }
 
   function escapeHtml(s) {
@@ -465,11 +478,32 @@
     }
   }
 
+  // 주기적 폴링은 작업 상태/로그/이력만 받는 가벼운 요청(poll_status)으로 한다.
+  // 작품 목록(수천 개)은 서버의 titles_rev가 바뀌었을 때만 전체를 다시 받는다.
+  async function pollLight() {
+    var r = await callAction('poll_status', {});
+    var data = r.success ? parseMaybeJson(r.message) : null;
+    if (!data || typeof data !== 'object') { await refresh(); return; }
+    state.job = data.job || state.job;
+    state.title_job = data.title_job || state.title_job;
+    state.kakao_queue = data.kakao_queue || [];
+    state.log_tail = data.log_tail || state.log_tail;
+    state.history = data.history || state.history;
+    if (data.titles_rev && data.titles_rev !== state.titles_rev) {
+      await refresh();
+      return;
+    }
+    renderStatusBar();
+    renderHistory();
+    var logBox = el('[data-el="log-tail"]');
+    if (logBox) logBox.textContent = (state.log_tail || []).join('\n');
+  }
+
   function schedulePoll() {
     if (pollTimer) clearTimeout(pollTimer);
     var interval = (Date.now() < pollFastUntil) ? 2500 : 10000;
     pollTimer = setTimeout(function () {
-      if (!document.hidden) refresh().then(schedulePoll);
+      if (!document.hidden) pollLight().catch(function () {}).then(schedulePoll);
       else schedulePoll();
     }, interval);
   }
@@ -500,6 +534,13 @@
   container.addEventListener('click', async function (ev) {
     var tabBtn = ev.target.closest('.wtm-tab');
     if (tabBtn) { setTab(tabBtn.getAttribute('data-tab')); return; }
+
+    var moreBtn = ev.target.closest('[data-el="grid-more"]');
+    if (moreBtn) {
+      gridLimit += GRID_PAGE;
+      renderGrid();
+      return;
+    }
 
     var platBtn = ev.target.closest('[data-platform-filter]');
     if (platBtn) {
