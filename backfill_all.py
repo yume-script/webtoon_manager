@@ -125,6 +125,9 @@ def backfill_title(session, cfg, tid, t, args, stats):
     try:
         episodes = naver_api.fetch_episode_list(session, tid, max_pages=200)
     except naver_api.NaverAuthExpired as e:
+        if t.get("is_adult"):
+            log("  [성인 인증 필요/실패] 이 작품만 건너뜀 - %s" % e)
+            return "ok"
         log("  [인증 만료] %s" % e)
         return "auth_expired"
     except Exception as e:  # noqa: BLE001
@@ -193,6 +196,9 @@ def backfill_title(session, cfg, tid, t, args, stats):
                 timeout=int(cfg.get("REQUEST_TIMEOUT_SECONDS", 10)),
                 log=log)
         except naver_api.NaverAuthExpired as e:
+            if t.get("is_adult"):
+                log("  [성인 인증 필요/실패] 이 작품은 여기서 중단(다른 작품은 계속) - %s" % e)
+                break
             log("  [인증 만료] %s" % e)
             return "auth_expired"
         except naver_api.NaverPaidEpisode:

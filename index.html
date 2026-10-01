@@ -236,7 +236,12 @@
         <li>크롬에서 <b>comic.naver.com</b>에 접속해 로그인합니다. 성인 작품을 받으려면 <b>성인 인증까지 완료</b>해 둡니다.</li>
         <li>comic.naver.com 페이지를 연 상태에서 Cookie-Editor 아이콘 → <b>Export</b> → <b>Export as JSON</b>(클립보드에 복사됨).</li>
         <li><b>[설정] &gt; [네이버] &gt; 네이버 쿠키(JSON)</b> 칸에 붙여넣고 <b>설정 저장</b>.
-          Cookie-Editor 배열 형식(<code>[...]</code>)과 Playwright storage_state 형식(<code>{"cookies":[...]}</code>) 모두 지원합니다.</li>
+          Cookie-Editor 배열 형식(<code>[...]</code>), Playwright storage_state 형식(<code>{"cookies":[...]}</code>),
+          개발자도구의 <code>Cookie</code> 헤더 문자열(<code>NID_AUT=..; NID_SES=..</code>) 모두 지원합니다.</li>
+        <li>저장 전에 칸 아래 <b>"쿠키 검증"</b>을 누르면 로그인 쿠키(NID_AUT, NID_SES) 유무와,
+          목록의 성인 작품 무료 회차를 실제로 열어 <b>성인 인증 여부</b>를 확인합니다.
+          성인 인증이 확인되면 이전에 성인 인증 실패로 건너뛰던 작품들도 다시 시도됩니다.
+          (네이버 성인 인증은 1년마다 갱신이 필요할 수 있습니다)</li>
       </ol>
       <p class="wtm-hint">
         비밀번호/쿠키 칸은 보안상 비어 보이며 <b>비워 두고 저장하면 기존 값이 유지</b>됩니다(지우려면 "지우기" 체크).

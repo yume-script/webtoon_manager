@@ -81,10 +81,13 @@ def build_session(cookie_storage_state_json=None, naver_id=None, naver_pw=None,
     if cookie_storage_state_json:
         data = cookie_storage_state_json
         if isinstance(data, str):
+            raw = data.strip()
             try:
-                data = json.loads(data)
+                data = json.loads(raw)
             except json.JSONDecodeError:
-                data = None
+                # 브라우저 개발자도구의 Cookie 헤더 문자열("NID_AUT=..; NID_SES=..")도 허용
+                data = [{"name": p.split("=", 1)[0].strip(), "value": p.split("=", 1)[1].strip()}
+                        for p in raw.replace("\n", ";").split(";") if "=" in p]
         if isinstance(data, list):
             cookie_list = data
         elif isinstance(data, dict):
@@ -96,10 +99,44 @@ def build_session(cookie_storage_state_json=None, naver_id=None, naver_pw=None,
                 continue
             name = c.get("name")
             value = c.get("value")
-            domain = (c.get("domain") or ".naver.com").lstrip(".")
             if name and value is not None:
-                sess.cookies.set(name, value, domain="." + domain)
+                # comic.naver.com 같은 호스트 전용 쿠키도 섞여 있어 전부 .naver.com으로
+                # 맞춘다(로그인 쿠키 NID_AUT/NID_SES는 원래 .naver.com).
+                sess.cookies.set(name, value, domain=".naver.com", path="/")
     return sess
+
+
+NAVER_LOGIN_COOKIES = ("NID_AUT", "NID_SES")
+
+
+def cookie_names(cookie_raw):
+    s = build_session(cookie_raw)
+    return set(c.name for c in s.cookies)
+
+
+def verify_cookie(session, adult_title_ids):
+    """로그인 쿠키 존재 + (성인 작품 목록이 있으면) 실제 성인 회차 열람 가능 여부.
+    반환: {"login_cookies": bool, "adult": True/False/None, "detail": str}"""
+    names = set(c.name for c in session.cookies)
+    out = {"login_cookies": all(n in names for n in NAVER_LOGIN_COOKIES),
+           "adult": None, "detail": ""}
+    for tid in adult_title_ids:
+        try:
+            eps = fetch_episode_list(session, tid, max_pages=1)
+            free = [e for e in eps if not e.get("charge")]
+            if not free:
+                continue
+            fetch_episode_images(session, tid, free[-1]["no"])
+            out["adult"] = True
+            break
+        except NaverAuthExpired as e:
+            out["adult"] = False
+            out["detail"] = str(e)
+            break
+        except Exception as e:  # noqa: BLE001
+            out["detail"] = str(e)
+            continue
+    return out
 
 
 def _get(session, url, params=None, referer=None):

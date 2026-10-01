@@ -576,10 +576,17 @@
         (f.type === 'number' ? ' step="any"' : '') + (isLong ? '' : '') +
         ' value="' + escapeHtml(value == null ? '' : String(value)) + '">';
     }
+    if (f.key === 'NAVER_COOKIE_JSON') {
+      input += '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">' +
+        '<button class="wtm-btn wtm-btn-secondary wtm-btn-small" data-cookie-verify="naver">쿠키 검증(로그인·성인 인증 확인)</button>' +
+        '<span class="wtm-hint" data-verify-msg="naver" style="margin:0;white-space:pre-line"></span></div>' +
+        '<span class="wtm-hint" style="margin:0">성인 작품은 <b>성인 인증된 네이버 계정</b>으로 comic.naver.com에 로그인한 뒤 ' +
+        'Cookie-Editor로 내보낸 JSON 전체를 붙여넣어야 받을 수 있습니다(로그인 쿠키 NID_AUT, NID_SES 필요).</span>';
+    }
     if (f.key === 'KAKAO_COOKIE') {
       input += '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">' +
-        '<button class="wtm-btn wtm-btn-secondary wtm-btn-small" data-el="kakao-verify">쿠키 검증(로그인·성인 인증 확인)</button>' +
-        '<span class="wtm-hint" data-el="kakao-verify-msg" style="margin:0"></span></div>' +
+        '<button class="wtm-btn wtm-btn-secondary wtm-btn-small" data-cookie-verify="kakao">쿠키 검증(로그인·성인 인증 확인)</button>' +
+        '<span class="wtm-hint" data-verify-msg="kakao" style="margin:0;white-space:pre-line"></span></div>' +
         '<span class="wtm-hint" style="margin:0">성인 작품은 <b>성인 인증된 카카오 계정</b>으로 page.kakao.com에 로그인한 뒤 ' +
         'Cookie-Editor로 내보낸 JSON 전체를 붙여넣어야 받을 수 있습니다(필수: _kau, _kpwtkn, _T_ANO, _karmt, _kahai, _kawlt, _kpdid).</span>';
     }
@@ -641,16 +648,16 @@
       return;
     }
 
-    var verifyBtn = ev.target.closest('[data-el="kakao-verify"]');
+    var verifyBtn = ev.target.closest('[data-cookie-verify]');
     if (verifyBtn) {
-      var vmsg = el('[data-el="kakao-verify-msg"]');
-      var cin = el('[data-setting="KAKAO_COOKIE"]');
+      var plat = verifyBtn.getAttribute('data-cookie-verify');
+      var vmsg = el('[data-verify-msg="' + plat + '"]');
+      var cin = el('[data-setting="' + (plat === 'naver' ? 'NAVER_COOKIE_JSON' : 'KAKAO_COOKIE') + '"]');
       verifyBtn.disabled = true;
       if (vmsg) vmsg.textContent = '확인 중...';
-      var rv = await callAction('kakao_verify_cookie', { cookie: cin ? cin.value : '' });
+      var rv = await callAction(plat + '_verify_cookie', { cookie: cin ? cin.value : '' });
       verifyBtn.disabled = false;
       if (vmsg) vmsg.textContent = (rv.message || '').split(' / ').join('\n');
-      if (vmsg) vmsg.style.whiteSpace = 'pre-line';
       return;
     }
 

@@ -494,6 +494,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 return self._act_get_settings(db_type)
             if action == "save_settings":
                 return self._act_save_settings(db_type, payload)
+            if action == "naver_verify_cookie":
+                return self._act_naver_verify_cookie(self._get_cfg(db_type), payload)
             if action == "kakao_verify_cookie":
                 return self._act_kakao_verify_cookie(self._get_cfg(db_type), payload)
             if action.startswith("kakao_"):
@@ -676,6 +678,31 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         sid = ss.kakao_queue_pop()
         if sid and not self._start_kakao_worker(cfg, sid):
             ss.kakao_queue_push(sid)
+
+    def _act_naver_verify_cookie(self, cfg, payload):
+        raw = (payload.get("cookie") or "").strip() or (cfg.get("NAVER_COOKIE_JSON") or "").strip()
+        if not raw:
+            return False, "네이버 쿠키가 비어 있습니다. Cookie-Editor로 comic.naver.com 쿠키를 JSON으로 내보내 붙여넣으세요."
+        session = naver_api.build_session(raw, timeout=int(cfg.get("REQUEST_TIMEOUT_SECONDS", 10) or 10))
+        if not list(session.cookies):
+            return False, "쿠키 형식을 읽지 못했습니다(Cookie-Editor JSON 또는 'a=b; c=d' 형식)"
+        adult_ids = [tid for tid, t in ss.load_titles().items() if t.get("is_adult")][:3]
+        res = naver_api.verify_cookie(session, adult_ids)
+        lines = ["로그인 쿠키(NID_AUT, NID_SES): %s" % ("✅ 있음" if res["login_cookies"] else
+                                                       "❌ 없음 - comic.naver.com에 로그인한 상태에서 다시 내보내세요")]
+        if res["adult"] is True:
+            lines.append("성인 인증: ✅ 됨 - 성인 작품 다운로드 가능")
+            blocked = {tid: {"adult_block_hash": None} for tid, t in ss.load_titles().items()
+                       if t.get("adult_block_hash")}
+            if blocked:
+                ss.upsert_title(blocked)
+                lines.append("성인 인증 실패로 건너뛰던 작품 %d개를 다시 시도하도록 풀었습니다" % len(blocked))
+        elif res["adult"] is False:
+            lines.append("성인 인증: ❌ 안 됨 - 로그인 쿠키가 만료됐거나 이 네이버 계정의 성인 인증(1년마다 갱신)이 필요합니다")
+        else:
+            lines.append("성인 인증: 확인 못 함" + (" - 목록에 성인 작품이 없어 시험할 작품이 없음(지금 스캔 후 다시 시도)"
+                                                    if not adult_ids else " (%s)" % res["detail"][:150]))
+        return bool(res["login_cookies"]), " / ".join(lines)
 
     def _act_kakao_verify_cookie(self, cfg, payload):
         """[설정] 탭 '카카오 쿠키 검증' - 입력칸에 새로 붙여넣은 값이 있으면 그걸,
