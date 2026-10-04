@@ -191,18 +191,21 @@
       return '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-card-action="subscribe" data-title-id="' + sid + '"' + pAttr + '>구독</button>' +
         '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-card-action="exclude" data-title-id="' + sid + '"' + pAttr + '>제외</button>' + open;
     }
+    // 네이버 작품 페이지로 이동(카카오 카드의 [열기]와 동일)
+    var nOpen = '<a class="wtm-btn wtm-btn-small wtm-btn-ghost" href="https://comic.naver.com/webtoon/list?titleId=' +
+      encodeURIComponent(t.titleId) + '" target="_blank" rel="noopener">열기</a>';
     if (st === 'subscribed') {
       return '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-card-action="download_title" data-title-id="' + t.titleId + '" title="last_downloaded_no 이후의 새 회차를 지금 바로 찾아서 받습니다">새회차 다운로드</button>' +
         '<button class="wtm-btn wtm-btn-small" data-goto-manual="' + t.titleId + '">선택 회차 다운로드</button>' +
         '<button class="wtm-btn wtm-btn-small" data-card-action="resync_title" data-title-id="' + t.titleId + '" title="파일을 직접 지운 회차가 있으면 눌러주세요 - 다음 다운로드 때 전체 회차를 다시 확인합니다">다시 확인</button>' +
         '<button class="wtm-btn wtm-btn-small" data-card-action="unsubscribe" data-title-id="' + t.titleId + '">구독해제</button>' +
-        '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-card-action="exclude" data-title-id="' + t.titleId + '">제외</button>';
+        '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-card-action="exclude" data-title-id="' + t.titleId + '">제외</button>' + nOpen;
     }
     if (st === 'unsubscribed' || st === 'excluded') {
-      return '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-card-action="restore" data-title-id="' + t.titleId + '">다시 구독</button>';
+      return '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-card-action="restore" data-title-id="' + t.titleId + '">다시 구독</button>' + nOpen;
     }
     return '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-card-action="subscribe" data-title-id="' + t.titleId + '">구독</button>' +
-      '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-card-action="exclude" data-title-id="' + t.titleId + '">제외</button>';
+      '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-card-action="exclude" data-title-id="' + t.titleId + '">제외</button>' + nOpen;
   }
 
   function compareStatusText() {
