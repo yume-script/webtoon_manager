@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import hashlib
 import os
+import re
 import time
 
 from . import naver_api, downloader, discord_notify, kavita_yaml, state_store as ss
@@ -74,6 +75,45 @@ def build_session_from_cfg(cfg):
     )
 
 
+_BL_RE = re.compile(r"(^|[^A-Z])BL([^A-Z]|$)")
+
+
+def is_bl(t):
+    """장르/태그에 BL이 있는 작품인지(네이버 태그·상세정보 태그, 카카오 장르 sub_category)."""
+    vals = [t.get("genre") or ""] + list(t.get("tags") or []) + list(t.get("info_tags") or [])
+    return any(_BL_RE.search(str(v).upper()) for v in vals if v)
+
+
+def bl_blocked(cfg, t):
+    """설정 "BL 장르 다운로드 허용"이 꺼져 있으면(기본) BL 작품은 받지 않는다."""
+    return is_bl(t) and not _cfg_bool(cfg, "ALLOW_BL", False)
+
+
+BL_BLOCK_MSG = "BL 장르 - [설정] > [공통] 'BL 장르 웹툰 다운로드 허용'이 꺼져 있어 받지 않음"
+
+
+def apply_bl_policy(cfg, patch, old_titles, log=print, label=""):
+    """BL을 허용하지 않으면, 자동 구독 규칙(신간/작가/매일+/기다무)으로 구독된 BL 작품은
+    구독하지 않은 상태로 되돌린다. 사용자가 직접 구독한 작품은 건드리지 않는다(다운로드만 막힘)."""
+    if _cfg_bool(cfg, "ALLOW_BL", False):
+        return 0
+    n = 0
+    for tid, item in patch.items():
+        old = old_titles.get(tid) or {}
+        merged = dict(old)
+        merged.update(item)
+        if not merged.get("subscribed") or not is_bl(merged):
+            continue
+        is_new = not ("subscribed" in old or "excluded" in old)
+        if is_new or merged.get("auto_subscribed"):
+            item["subscribed"] = False
+            item["auto_subscribed"] = None
+            n += 1
+    if n:
+        log("%sBL 장르 작품 %d개는 자동 구독하지 않음(설정에서 허용 안 함)" % (label, n))
+    return n
+
+
 def _autosubscribe_patch(item, old, author_names, auto_new=False):
     """신규 발견 항목이면 작가 자동구독 여부(+ '신간 자동 구독' 설정)를
     판단하고, 기존에 사용자가 직접 구독/제외/구독해제한 적 있는 항목이면
@@ -115,6 +155,7 @@ def _apply_daily_plus_autosubscribe(patch, enabled, log=print):
         if item.get("subscribed") or item.get("excluded") or item.get("unsubscribed"):
             continue
         item["subscribed"] = True
+        item["auto_subscribed"] = "dailyPlus"
         promoted += 1
     if promoted:
         log("매일+ 자동 구독: %d개 작품을 새로 구독 처리함" % promoted)
@@ -171,6 +212,7 @@ def run_scan_weekday(cfg, log=print):
     patch = {tid: _autosubscribe_patch(item, old_titles.get(tid, {}), author_names, auto_new=auto_new)
              for tid, item in merged.items()}
     patch = _apply_daily_plus_autosubscribe(patch, bool(cfg.get("AUTO_SUBSCRIBE_DAILY_PLUS")), log=log)
+    apply_bl_policy(cfg, patch, old_titles, log=log, label="네이버: ")
 
     ss.upsert_title(patch)
     kakao_count = 0
@@ -397,6 +439,10 @@ def run_download_cycle(cfg, log=print):
                   if t.get("subscribed") and not t.get("excluded") and not t.get("unsubscribed")}
     all_sub = len(subscribed)
     subscribed = {tid: t for tid, t in subscribed.items() if in_new_episode_scope(cfg, t, "naver")}
+    bl_skip = [tid for tid, t in subscribed.items() if bl_blocked(cfg, t)]
+    if bl_skip:
+        log("BL 장르 %d개 작품은 설정에 따라 다운로드하지 않음" % len(bl_skip))
+        subscribed = {tid: t for tid, t in subscribed.items() if tid not in bl_skip}
     log("새 회차 확인 대상: 구독 %d개 중 %d개 (%s)" % (
         all_sub, len(subscribed),
         "전체" if str(cfg.get("NEW_EP_SCOPE") or "today") == "all" else

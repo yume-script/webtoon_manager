@@ -95,6 +95,9 @@ def load_cfg(db_type, args):
     return cfg
 
 
+_CFG_FOR_FILTER = {}
+
+
 def pick_titles(args):
     """대상 작품 목록을 titles.json에서 고른다."""
     titles = ss.load_titles()
@@ -106,6 +109,8 @@ def pick_titles(args):
                 out.append((str(tid), t))
             continue
         if t.get("excluded"):
+            continue
+        if pipeline.bl_blocked(_CFG_FOR_FILTER, t):
             continue
         if not args.include_unsubscribed:
             if not t.get("subscribed") or t.get("unsubscribed"):
@@ -276,6 +281,8 @@ def main():
     log("다운로드 저장 경로: %s" % cfg["DOWNLOAD_ROOT"])
     log("임시 작업 경로:     %s" % cfg["TEMP_DOWNLOAD_ROOT"])
 
+    global _CFG_FOR_FILTER
+    _CFG_FOR_FILTER = cfg
     targets = pick_titles(args)
     if args.max_titles:
         targets = targets[:args.max_titles]

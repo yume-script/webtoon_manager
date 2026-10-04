@@ -157,6 +157,7 @@
       out += '<span class="wtm-badge" style="background:color-mix(in srgb, #03c75a 22%, transparent);color:color-mix(in srgb, #03a14a 90%, var(--app-text-primary))">네이버</span>';
     }
     if (t.waitfree && t.status !== '완결') out += '<span class="wtm-badge up">기다무</span>';
+    if (t.bl) out += '<span class="wtm-badge rest" title="' + ((state.config_public || {}).ALLOW_BL ? 'BL 장르' : 'BL 장르 - [설정] > [공통]에서 허용해야 다운로드됨') + '">BL' + ((state.config_public || {}).ALLOW_BL ? '' : ' (받지 않음)') + '</span>';
     if ((t.category || '').indexOf('소설') >= 0) out += '<span class="wtm-badge rest">웹소설(미지원)</span>';
     if (t.new) out += '<span class="wtm-badge new">신작</span>';
     if (t.status === '완결') out += '<span class="wtm-badge finished">완결</span>';

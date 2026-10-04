@@ -295,6 +295,7 @@ def _merge_scan_result(cfg, merged, log=print, finished_scan=False):
         if not o and not p.get("subscribed"):
             p.setdefault("last_downloaded_no", None)
         patch[sid] = p
+    pipeline.apply_bl_policy(cfg, patch, old, log=log, label="카카오: ")
     ss.upsert_kakao_title(patch)
     return patch
 
@@ -309,13 +310,14 @@ def _apply_waitfree_autosubscribe(cfg, patch, log=print):
     promote = {}
     # 예전 버전이 쿠키 없이 자동 구독해 둔 성인 기다무 작품은 받을 수 없으므로
     # 자동 구독 이전 상태로 되돌린다(사용자가 직접 구독한 작품은 건드리지 않음)
+    from . import pipeline as _pl
     demote = {sid: {"subscribed": False, "auto_subscribed": None}
               for sid, t in current.items()
-              if t.get("auto_subscribed") == "waitfree" and t.get("subscribed")
-              and adult_block_reason(cfg, t)}
+              if t.get("auto_subscribed") and t.get("subscribed")
+              and (adult_block_reason(cfg, t) or _pl.bl_blocked(cfg, t))}
     if demote:
         ss.upsert_kakao_title(demote)
-        log("카카오 성인 작품 %d개는 성인 인증 쿠키가 없어 기다무 자동 구독에서 뺐습니다" % len(demote))
+        log("카카오 자동 구독 작품 중 %d개(성인 인증 쿠키 없음 / BL 장르 비허용)를 자동 구독에서 뺐습니다" % len(demote))
         current = ss.load_kakao_titles()
     for sid in patch:
         t = current.get(sid) or {}
@@ -323,6 +325,8 @@ def _apply_waitfree_autosubscribe(cfg, patch, log=print):
             continue
         if adult_block_reason(cfg, t):
             continue   # 성인 인증 쿠키가 없으면 받을 수 없으니 자동 구독하지 않음
+        if _pl.bl_blocked(cfg, t):
+            continue   # BL 장르 다운로드를 허용하지 않으면 자동 구독하지 않음
         if t.get("subscribed") or t.get("excluded") or t.get("unsubscribed"):
             continue
         promote[sid] = {"subscribed": True, "auto_subscribed": "waitfree"}
@@ -514,7 +518,8 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
     temp_root = kakao_temp_root(cfg)
     fz = _num(cfg, "FOLDER_ZERO_FILL", 4)
 
-    blocked = adult_block_reason(cfg, t)
+    from . import pipeline as _pl
+    blocked = adult_block_reason(cfg, t) or (_pl.BL_BLOCK_MSG if _pl.bl_blocked(cfg, t) else None)
     if blocked:
         # 성인 작품인데 쿠키가 없거나, 지금 쿠키로 이미 성인 인증 실패를 확인한 작품 -
         # 회차 목록/이미지 요청 자체를 하지 않는다
@@ -841,7 +846,7 @@ def run_kakao_cycle(cfg, log=print, manage_job=False):
     from . import pipeline as _pl
     titles = {k: v for k, v in titles.items()
               if _pl.in_new_episode_scope(cfg, v, "kakao", now) and _needs_check(cfg, v, now)
-              and not adult_block_reason(cfg, v)}
+              and not adult_block_reason(cfg, v) and not _pl.bl_blocked(cfg, v)}
     log("카카오페이지: 구독 %d개 중 이번에 확인할 작품 %d개(오늘 요일·기다무 중 새 회차/대여권 충전된 작품만)" %
         (all_count, len(titles)))
     items = sorted(titles.items(), key=lambda kv: str(kv[1].get("title") or ""))

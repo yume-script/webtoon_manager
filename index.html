@@ -5,6 +5,10 @@
       <div class="wtm-title">웹툰 다운로더 <span data-el="plugin-version" style="font-size:14px;opacity:.7;font-weight:600;margin-left:6px"></span><a class="wtm-update-badge" data-el="update-badge" href="#" target="_blank" rel="noopener" style="display:none"><i class="fa-solid fa-arrow-up"></i> 업데이트 가능</a></div>
       <div class="wtm-subtitle">네이버웹툰/카카오웹툰 무료 회차 자동 구독 &middot; 다운로드
       </div>
+      <div class="wtm-legal-line">
+        ⚠️ 본 프로그램의 사용으로 인해 발생하는 모든 저작권 분쟁 및 법적 문제에 대한 책임은 다운로드를 수행한
+        이용자에게 있습니다. 저작권자의 요청이 있을 경우 본 리포지토리(또는 서비스)는 예고 없이 폐쇄될 수 있습니다.
+      </div>
     </div>
     <div class="wtm-header-actions">
       <button class="wtm-btn wtm-btn-ghost" data-action="refresh"><i class="fa-solid fa-rotate"></i> 새로고침</button>
@@ -190,6 +194,31 @@
 
   <div class="wtm-panel wtm-help" data-panel-view="help" style="display:none">
 
+    <details class="wtm-box wtm-legal" open>
+      <summary class="wtm-box-title">⚖️ 저작권 및 이용 안내 (필수 고지)</summary>
+      <p class="wtm-hint"><b>[저작권 및 이용 안내 공지]</b><br>
+        본 프로그램(또는 서비스)은 개인의 연구 및 학습, 또는 저작권법 제30조(사적 이용을 위한 복제) 범위 내에서
+        개인이 소장하는 목적으로만 사용되어야 합니다.</p>
+      <ul class="wtm-hint wtm-help-list">
+        <li><b>무단 배포 금지</b>: 본 프로그램을 통해 다운로드한 모든 웹툰 콘텐츠의 저작권은 각 원저작자 및 공식 연재 플랫폼에 있습니다.
+          다운로드한 파일을 타인에게 공유, 판매, 수정, 또는 인터넷(SNS, P2P, 커뮤니티 등)에 무단 업로드하는 행위는
+          저작권법 위반으로 형사 처벌 및 손해배상 청구의 대상이 될 수 있습니다.</li>
+        <li><b>이용자 책임</b>: 사용자가 본 프로그램을 오남용하여 발생한 모든 법적 책임(저작권 침해 등)은 전적으로 이용자 본인에게 있으며,
+          개발자(또는 운영자)는 어떠한 책임도 지지 않습니다.</li>
+      </ul>
+      <p class="wtm-hint"><b>⚠️ 저작권 주의 안내 (다운로드 완료 시)</b><br>
+        웹툰 다운로드가 완료되었습니다.<br>
+        다운로드된 파일은 개인 소장용으로만 보관해 주세요. 해당 파일을 영리적·비영리적으로 공유 및 유포하는 행위는
+        저작권법에 의해 엄격히 금지되어 있으며, 법적 처벌을 받을 수 있습니다. 원작자의 권리를 지키기 위해 공식 플랫폼 이용을 권장합니다.</p>
+      <p class="wtm-hint"><b>Copyright &amp; Legal Disclaimer</b></p>
+      <ul class="wtm-hint wtm-help-list">
+        <li>본 프로그램은 웹 크롤링 기술 학습 및 개인 백업 목적으로 개발된 오픈소스 도구입니다.</li>
+        <li>개발자는 본 프로그램을 상업적 목적으로 이용하지 않으며, 어떠한 웹툰 콘텐츠도 직접 보유하거나 서버에 저장하지 않습니다.</li>
+        <li><b>본 프로그램의 사용으로 인해 발생하는 모든 저작권 분쟁 및 법적 문제에 대한 책임은 다운로드를 수행한 이용자에게 있습니다.
+          저작권자의 요청이 있을 경우 본 리포지토리(또는 서비스)는 예고 없이 폐쇄될 수 있습니다.</b></li>
+      </ul>
+    </details>
+
     <details class="wtm-box" open>
       <summary class="wtm-box-title">📌 한눈에 보기</summary>
       <p class="wtm-hint">
@@ -275,6 +304,9 @@
         <li><b>신간 자동 구독</b>([공통]): 목록에 처음 나타나는 작품을 모두 자동 구독. 설치 직후 첫 스캔에는 적용하지 않습니다(전 작품 일괄 구독 방지).</li>
         <li><b>매일+ 자동 구독</b>([네이버]): 매일+ 탭 작품을 전부 구독합니다(첫 스캔 유예 없음).</li>
         <li>자동 구독 규칙은 <b>사용자가 한 번도 구독/구독해제/제외를 고르지 않은 작품</b>에만 적용됩니다. 직접 고른 선택이 항상 우선입니다.</li>
+        <li><b>BL 장르</b>: [설정] &gt; [공통] "BL 장르 웹툰 다운로드 허용"이 꺼져 있으면(기본) 네이버·카카오 모두 BL 작품은
+          자동 구독하지 않고 다운로드도 하지 않습니다(직접 구독해 둔 BL 작품도 다운로드만 막힘). 카드에 <b>BL (받지 않음)</b> 배지가 붙습니다.
+          판정 기준은 네이버 태그 / 카카오 장르에 "BL"이 있는지입니다.</li>
       </ul>
     </details>
 
