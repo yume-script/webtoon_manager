@@ -784,9 +784,10 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
             _record_special(series_dir, title, no, ep.get("subtitle", ""))
         else:
             log("%s %d화 완료 (%d장)" % (title, no, cnt))
-        # 회차가 추가될 때마다 바로 갱신 - 긴 다운로드가 중간에 끊겨도(재시작 등)
-        # 이미 받은 회차는 kavita.yaml에 반영돼 있도록
-        _update_yaml()
+        # 예전엔 회차 하나 받을 때마다 갱신(표지 다운로드 포함)해서 너무 잦았다.
+        # 이제는 작품 처리가 끝날 때 1번 + 긴 다운로드 대비 20화마다 1번만.
+        if res["downloaded"] % 20 == 0:
+            _update_yaml()
         ss.append_history({"type": "download", "source": "kakao", "platform": "kakao",
                            "title_id": sid, "title": "[카카오] %s" % title, "episode_no": no,
                            "subtitle": ep.get("subtitle"), "image_count": cnt})
