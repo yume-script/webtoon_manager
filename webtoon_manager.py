@@ -100,6 +100,9 @@ DEFAULTS = {
     "KAKAO_USE_OWNED_TICKETS": False,
     "KAKAO_USE_PAID_TICKETS": False,
     "ALLOW_BL": False,
+    "KAKAO_NOVEL_ENABLE": False,
+    "KAKAO_NOVEL_DOWNLOAD_ROOT": "",
+    "KAKAO_NOVEL_AUTO_SUBSCRIBE_WAITFREE": False,
     "ALLOW_GL": False,
     "COMPARE_FOLDER": "",
     "ADD_COVER_AS_FIRST_PAGE": True,
@@ -201,6 +204,14 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
          "label": "기다무 작품 자동 구독(연재 중인 기다무 작품을 전부 구독 -> 자동 다운로드 대상. "
                   "구독해제/제외한 작품은 건드리지 않음)",
          "type": "checkbox", "default": True},
+        {"key": "KAKAO_NOVEL_ENABLE",
+         "label": "카카오 웹소설 사용(목록 수집/다운로드, 회차별 EPUB으로 저장 - 삽화 포함)",
+         "type": "checkbox", "default": False},
+        {"key": "KAKAO_NOVEL_DOWNLOAD_ROOT",
+         "label": "카카오 웹소설 저장 경로(비우면 플러그인 데이터 폴더/kakao_novels)", "type": "text"},
+        {"key": "KAKAO_NOVEL_AUTO_SUBSCRIBE_WAITFREE",
+         "label": "기다무 웹소설 자동 구독(웹툰의 기다무 자동 구독과 별도 - 작품 수가 많아 기본 꺼짐)",
+         "type": "checkbox", "default": False},
         {"key": "NAVER_TRY_OWNED_PAID",
          "label": "유료 회차도 대여/소장 중이면 받기(네이버 로그인 쿠키 필요, 결제는 하지 않음)",
          "type": "checkbox", "default": True},
@@ -261,7 +272,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                   "requirements.txt",
                   "state_store.py", "naver_api.py",
                   "downloader.py", "discord_notify.py", "scheduler.py",
-                  "pipeline.py", "kavita_yaml.py", "kakao_api.py", "kakao_pipeline.py"],
+                  "pipeline.py", "kavita_yaml.py", "kakao_api.py", "kakao_pipeline.py", "novel_epub.py"],
         "version_file": "VERSION",
         "version_key": "plugin version",
         "show_sample_update_button": True,
@@ -467,6 +478,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 "KAKAO_USE_WAITFREE": bool(cfg.get("KAKAO_USE_WAITFREE")),
                 "ALLOW_BL": bool(cfg.get("ALLOW_BL")),
                 "ALLOW_GL": bool(cfg.get("ALLOW_GL")),
+                "KAKAO_NOVEL_ENABLE": bool(cfg.get("KAKAO_NOVEL_ENABLE")),
                 "KAKAO_AUTO_SUBSCRIBE_WAITFREE": bool(cfg.get("KAKAO_AUTO_SUBSCRIBE_WAITFREE", True)),
                 "KAKAO_DOWNLOAD_ROOT": cfg.get("KAKAO_DOWNLOAD_ROOT") or ss.KAKAO_DOWNLOAD_DEFAULT_DIR,
                 "has_kakao_cookie": bool((cfg.get("KAKAO_COOKIE") or "").strip()),
@@ -611,6 +623,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 item["bl"] = True
             if pipeline.is_gl(t):
                 item["gl"] = True
+            if platform == "kakao" and "소설" in str(t.get("category") or ""):
+                item["novel"] = True
             item["in_library"] = (None if compare_set is None else
                                   _normalize_series_name(t.get("title", "")) in compare_set)
             return item
@@ -1367,7 +1381,10 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         ("naver", "네이버 다운로드", ("DOWNLOAD_ROOT", "AUTO_SUBSCRIBE_DAILY_PLUS", "NAVER_TRY_OWNED_PAID")),
         ("kakao", "카카오페이지 사용 / 계정", ("KAKAO_ENABLE", "KAKAO_COOKIE")),
         ("kakao", "카카오페이지 다운로드", ("KAKAO_DOWNLOAD_ROOT", "KAKAO_AUTO", "KAKAO_AUTO_SUBSCRIBE_WAITFREE")),
-        ("kakao", "카카오페이지 이용권", ("KAKAO_USE_WAITFREE", "KAKAO_USE_OWNED_TICKETS", "KAKAO_USE_PAID_TICKETS")),
+        ("kakao", "카카오 웹소설", ("KAKAO_NOVEL_ENABLE", "KAKAO_NOVEL_DOWNLOAD_ROOT",
+                                   "KAKAO_NOVEL_AUTO_SUBSCRIBE_WAITFREE")),
+        ("kakao", "카카오페이지 이용권(웹툰·웹소설 공통)", ("KAKAO_USE_WAITFREE", "KAKAO_USE_OWNED_TICKETS",
+                                                       "KAKAO_USE_PAID_TICKETS")),
     ]
     _SETTINGS_SECTIONS = [("common", "공통"), ("naver", "네이버"), ("kakao", "카카오페이지")]
     # 설정 탭의 다른 UI(중복 확인 라이브러리 드롭다운)가 따로 관리하는 키

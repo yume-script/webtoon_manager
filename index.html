@@ -56,6 +56,7 @@
       <button class="wtm-daytab active" data-platform-filter="all">전체</button>
       <button class="wtm-daytab" data-platform-filter="naver">네이버</button>
       <button class="wtm-daytab" data-platform-filter="kakao">카카오</button>
+      <button class="wtm-daytab" data-platform-filter="novel">웹소설</button>
     </div>
     <div class="wtm-daytabs" data-el="day-tabs">
       <button class="wtm-daytab active" data-day="all">전체</button>
@@ -342,7 +343,10 @@
           [설정] &gt; 카카오페이지 상자의 <b>"카카오 요일별 목록 수집"</b>으로 따로 돌릴 수도 있습니다.</li>
         <li><b>완결</b>(약 3,800개): 네이버 완결 수집 시각에 함께 수집합니다.</li>
         <li><b>기다무</b>: 각 작품이 기다무 작품인지 목록에 표시됩니다(목록 필터 [기다무]).</li>
-        <li><b>웹소설</b>은 이미지가 아니라 받을 수 없어 등록되지 않습니다(이미 등록된 것은 "웹소설(미지원)" 배지).</li>
+        <li><b>웹소설</b>: [카카오페이지] "카카오 웹소설 사용"을 켜면 웹소설 요일연재/신작/완결 목록도 수집합니다(목록 필터 [웹소설]).
+          회차마다 <b>EPUB 한 개</b>(본문 + 삽화 + 표지)로 <b>웹소설 전용 저장 경로</b>에 <code>제목 0001화.epub</code> 형식으로 저장하고,
+          kavita.yaml도 만듭니다(code <code>KKN&lt;작품번호&gt;</code>, page 1 / wordcount = 단어 수).
+          무료·대여·소장 회차만 받는 규칙과 이용권 옵션은 웹툰과 같습니다. 기다무 웹소설 자동 구독은 별도 옵션(기본 꺼짐)입니다.</li>
         <li>목록에 없는 작품은 [설정] &gt; 카카오페이지 상자에서 <b>작품 URL(page.kakao.com/content/숫자)로 직접 추가</b>할 수 있습니다.</li>
       </ul>
     </details>
@@ -459,10 +463,10 @@
       <summary class="wtm-box-title">🗂️ 목록 화면과 카드 버튼</summary>
       <ul class="wtm-hint wtm-help-list">
         <li><b>탭</b>: 전체목록 / 구독중 / 구독해제 / 제외됨 / 중복(이미 라이브러리에 있는 작품).</li>
-        <li><b>플랫폼 필터</b>: [전체] [네이버] [카카오]. 카드의 초록 <b>네이버</b> / 노란 <b>카카오</b> 배지로도 구분됩니다.</li>
+        <li><b>플랫폼 필터</b>: [전체] [네이버] [카카오](웹툰) [웹소설](카카오 웹소설). 카드의 초록 <b>네이버</b> / 노란 <b>카카오</b> 배지로도 구분됩니다.</li>
         <li><b>요일 필터</b>: [신작] [월]~[일] [매일+](네이버) [기다무](카카오, 연재 중) [완결].</li>
         <li>카드는 120장씩 표시되고 맨 아래 <b>"더 보기"</b>로 이어서 봅니다.</li>
-        <li><b>배지</b>: 신작 / 완결 / 휴재 / <b>UP</b>(이번 실행 상한에 걸려 남은 회차가 있음) / 기다무 / 19 / 웹소설(미지원).</li>
+        <li><b>배지</b>: 신작 / 완결 / 휴재 / <b>UP</b>(이번 실행 상한에 걸려 남은 회차가 있음) / 기다무 / 19 / 웹소설 / BL·GL.</li>
         <li><b>구독 · 다시 구독</b>: 자동 다운로드 대상에 넣습니다.</li>
         <li><b>새회차 다운로드</b>: 그 작품의 받을 수 있는 회차를 지금 받습니다(카카오는 볼 수 있는 미보유 회차 전부). 다른 작품을 받는 중이면 <b>대기열</b>에 들어가 차례로 받습니다(상태 줄에 "대기 N개").
           끝나면 상태 줄에 2분간 ✅/❌ 결과가 남고, 카드에 "마지막 확인 결과"가 표시됩니다.</li>

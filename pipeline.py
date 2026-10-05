@@ -409,11 +409,17 @@ def run_kavita_yaml_all(cfg, log=print, force_info=True, manage_job=True):
     # 카카오페이지 저장 경로가 따로 있으면 그쪽 폴더도 함께 처리
     from . import kakao_pipeline
     k_root = kakao_pipeline.kakao_root(cfg)
-    if os.path.abspath(k_root) != os.path.abspath(download_root) and os.path.isdir(k_root):
+    n_root = kakao_pipeline.kakao_novel_root(cfg)
+    seen_roots = {os.path.abspath(download_root)}
+    for extra in (k_root, n_root):
+        if os.path.abspath(extra) in seen_roots or not os.path.isdir(extra):
+            continue
+        seen_roots.add(os.path.abspath(extra))
         try:
-            roots.append((k_root, sorted(os.listdir(k_root))))
+            roots.append((extra, sorted(os.listdir(extra))))
         except OSError:
             pass
+    kakao_all = ss.load_kakao_titles()
 
     targets, unmatched = [], []
     for root, root_names in roots:
@@ -426,8 +432,11 @@ def run_kavita_yaml_all(cfg, log=print, force_info=True, manage_job=True):
                 unmatched.append(name)
                 continue
             tid = m.group(2)
-            is_kakao = tid in kakao_ids and (root == k_root or tid not in naver_ids)
-            targets.append((full, m.group(1), tid, "kakao" if is_kakao else "naver"))
+            is_kakao = tid in kakao_ids and (root in (k_root, n_root) or tid not in naver_ids)
+            plat = "naver"
+            if is_kakao:
+                plat = "kakao_novel" if kakao_pipeline._is_novel(kakao_all.get(tid) or {}) else "kakao"
+            targets.append((full, m.group(1), tid, plat))
 
     ss.save_job_state({"stage": "kavita_yaml", "message": "kavita.yaml 일괄 생성 중",
                         "progress": 0, "total": len(targets)})

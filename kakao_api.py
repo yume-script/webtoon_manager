@@ -331,8 +331,8 @@ TAB_FINISHED = 12
 WEEKDAY_TABS = {1: "mon", 2: "tue", 3: "wed", 4: "thu", 5: "fri", 6: "sat", 7: "sun"}
 
 
-def fetch_landing_page(session, tab_uid=None, bm=None, page=0):
-    params = {"category_uid": WEBTOON_CATEGORY_UID, "page": page}
+def fetch_landing_page(session, tab_uid=None, bm=None, page=0, category_uid=None):
+    params = {"category_uid": category_uid or WEBTOON_CATEGORY_UID, "page": page}
     if tab_uid is not None:
         params["tab_uid"] = tab_uid
     if bm:
@@ -346,13 +346,13 @@ def fetch_landing_page(session, tab_uid=None, bm=None, page=0):
 
 
 def fetch_landing_all(session, tab_uid=None, bm=None, max_pages=200, should_cancel=None,
-                      delay=0.2):
+                      delay=0.2, category_uid=None):
     """해당 탭의 전체 작품 목록(페이지를 끝까지). 반환: [landing item dict]"""
     out, seen = [], set()
     for page in range(max_pages):
         if should_cancel and should_cancel():
             break
-        res = fetch_landing_page(session, tab_uid=tab_uid, bm=bm, page=page)
+        res = fetch_landing_page(session, tab_uid=tab_uid, bm=bm, page=page, category_uid=category_uid)
         items = res.get("list") or []
         for it in items:
             sid = it.get("series_id")
@@ -526,16 +526,16 @@ def legacy_numbers_v1(episodes):
 # ---------------------------------------------------------------------------
 # 이미지 / 기다무
 # ---------------------------------------------------------------------------
-def fetch_episode_images(session, series_id, product_id):
-    """회차 이미지 URL 목록(페이지 순). 볼 수 없는 회차면 KakaoNotPurchased."""
+def _fetch_viewer(session, series_id, product_id):
+    """뷰어 데이터. 볼 수 없으면 KakaoNotPurchased / KakaoAdultRequired / KakaoSkip."""
     r = session.get(VIEWER_DATA_API, params={"series_id": series_id, "product_id": product_id},
                     timeout=session.request_timeout)
-    _check_auth(r, "회차 이미지")
+    _check_auth(r, "회차 보기")
     if r.status_code >= 300:
         key, text = _api_error_text(r)
         if "not_purchased" in key or "purchase" in key or r.status_code == 402:
             raise KakaoNotPurchased(text)
-        raise RuntimeError("이미지 목록 조회 실패: %s" % text)
+        raise RuntimeError("회차 데이터 조회 실패: %s" % text)
     body = json.loads(r.content.decode("utf-8"))
     rc = body.get("result_code")
     if rc not in (None, 0, "0"):
@@ -549,8 +549,13 @@ def fetch_episode_images(session, series_id, product_id):
             raise KakaoAdultRequired(text)
         raise KakaoSkip(text)
     vd = body.get("viewer_data") or body.get("viewerData") or {}
-    if isinstance(vd, dict) and (vd.get("contents_list") or
-                                 str(vd.get("type") or "").lower().startswith("text")):
+    return vd if isinstance(vd, dict) else {}
+
+
+def fetch_episode_images(session, series_id, product_id):
+    """회차 이미지 URL 목록(페이지 순). 볼 수 없는 회차면 KakaoNotPurchased."""
+    vd = _fetch_viewer(session, series_id, product_id)
+    if vd.get("contents_list") or str(vd.get("type") or "").lower().startswith("text"):
         raise KakaoUnsupported("웹소설(텍스트) 회차라 이미지로 받을 수 없음")
     idd = vd.get("imageDownloadData") or vd.get("image_download_data") or {}
     files = idd.get("files") or []
@@ -560,6 +565,115 @@ def fetch_episode_images(session, series_id, product_id):
     if not urls:
         raise KakaoNotPurchased("이미지 목록이 비어 있음(구매/대여가 필요한 회차로 보임)")
     return urls
+
+
+# ---------------------------------------------------------------------------
+# 웹소설 회차 (텍스트 JSON + 삽화)
+# ---------------------------------------------------------------------------
+NOVEL_CATEGORY_UID = 11
+RESOURCE_URL = "https://page-images.kakaoentcdn.com/download/resource?kid=%s"
+_ALLOWED_TAGS = {"P", "SPAN", "B", "STRONG", "I", "EM", "U", "DEL", "S", "SUB", "SUP", "BR", "DIV",
+                 "H1", "H2", "H3", "H4", "H5", "H6", "BLOCKQUOTE", "HR", "RUBY", "RT", "RP",
+                 "UL", "OL", "LI", "TABLE", "TR", "TD", "TH", "TBODY", "THEAD", "SMALL", "BIG", "CENTER"}
+_VOID_TAGS = {"BR", "HR"}
+
+
+def _xml_escape(s):
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;"))
+
+
+def _get_json_url(session, url, timeout=20):
+    r = session.get(url.replace("http://", "https://"), timeout=timeout)
+    r.raise_for_status()
+    return json.loads(r.content.decode("utf-8"))
+
+
+def _paragraph_to_xhtml(p, images, image_fetch):
+    """카카오 웹소설 문단 트리 -> XHTML 조각."""
+    ptype = str(p.get("type") or "").upper()
+    if ptype == "TEXT":
+        return _xml_escape(p.get("text") or "")
+    children = "".join(_paragraph_to_xhtml(c, images, image_fetch)
+                       for c in (p.get("childParagraphList") or []))
+    attrs = p.get("attributes") or {}
+    attr_txt = ""
+    for k in ("class", "style"):
+        if attrs.get(k):
+            attr_txt += ' %s="%s"' % (k, _xml_escape(attrs[k]))
+    if ptype == "IMG" or p.get("image"):
+        img = p.get("image") or {}
+        key = img.get("imageSrcKey")
+        if not key:
+            return children
+        name = image_fetch(key, img.get("imageFilename") or "")
+        if not name:
+            return children
+        alt = _xml_escape(attrs.get("alt") or "")
+        cls = "img cover" if img.get("isCover") else "img"
+        return '<div class="%s"><img src="images/%s" alt="%s"/></div>%s' % (cls, name, alt, children)
+    if ptype in _VOID_TAGS:
+        return "<%s/>" % ptype.lower()
+    tag = ptype.lower() if ptype in _ALLOWED_TAGS else "span"
+    if ptype == "CENTER":
+        tag, attr_txt = "div", attr_txt + ' style="text-align:center"'
+    if (p.get("text") or "") and not children:
+        children = _xml_escape(p.get("text"))
+    return "<%s%s>%s</%s>" % (tag, attr_txt, children, tag)
+
+
+def fetch_novel_episode(session, series_id, product_id, log=None):
+    """웹소설 회차 본문/삽화를 받는다. 반환:
+    {"sections": [xhtml body 조각...], "images": {파일명: (bytes, media_type)}, "css": str,
+     "words": 단어 수}
+    볼 수 없는 회차면 KakaoNotPurchased 등(웹툰과 동일)."""
+    vd = _fetch_viewer(session, series_id, product_id)
+    contents = vd.get("contents_list") or []
+    base = vd.get("ats_server_url") or "https://dn-img-page.kakao.com/sdownload/resource?kid="
+    if not contents:
+        raise KakaoUnsupported("웹소설 본문이 없음(웹툰 회차이거나 구매가 필요한 회차)")
+    images, css_parts, sections, seen_css = {}, [], [], set()
+    img_counter = {"n": 0}
+
+    def image_fetch(key, filename):
+        for name, meta in images.items():
+            if meta[2] == key:
+                return name
+        try:
+            r = session.get(RESOURCE_URL % key, timeout=session.request_timeout)
+            r.raise_for_status()
+        except Exception:  # noqa: BLE001
+            return None
+        ct = (r.headers.get("Content-Type") or "image/jpeg").split(";")[0].strip()
+        ext = {"image/png": ".png", "image/gif": ".gif", "image/webp": ".webp"}.get(ct, ".jpg")
+        img_counter["n"] += 1
+        name = "img%03d%s" % (img_counter["n"], ext)
+        images[name] = (r.content, ct if ct.startswith("image/") else "image/jpeg", key)
+        return name
+
+    for c in contents:
+        url = base + (c.get("secure_url") or "")
+        data = _get_json_url(session, url)
+        ci = data.get("contentInfo") or {}
+        for st in ci.get("styleList") or []:
+            src = st.get("src")
+            if src and src not in seen_css:
+                seen_css.add(src)
+                try:
+                    r = session.get(RESOURCE_URL % src, timeout=session.request_timeout)
+                    if r.ok:
+                        css_parts.append(r.content.decode("utf-8", "replace"))
+                except Exception:  # noqa: BLE001
+                    pass
+        body = "".join(_paragraph_to_xhtml(p, images, image_fetch) for p in (ci.get("paragraphList") or []))
+        if body.strip():
+            sections.append(body)
+        time.sleep(0.1)
+    text_only = re.sub(r"<[^>]+>", " ", " ".join(sections))
+    words = len(text_only.split())
+    return {"sections": sections,
+            "images": {k: (v[0], v[1]) for k, v in images.items()},
+            "css": "\n".join(css_parts), "words": words}
 
 
 # ---------------------------------------------------------------------------

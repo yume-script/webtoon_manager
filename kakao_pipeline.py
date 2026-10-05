@@ -40,6 +40,25 @@ def kakao_root(cfg):
     return (cfg.get("KAKAO_DOWNLOAD_ROOT") or "").strip() or ss.KAKAO_DOWNLOAD_DEFAULT_DIR
 
 
+def kakao_novel_root(cfg):
+    return ((cfg.get("KAKAO_NOVEL_DOWNLOAD_ROOT") or "").strip()
+            or os.path.join(ss.DATA_DIR, "kakao_novels"))
+
+
+def novel_enabled(cfg):
+    v = cfg.get("KAKAO_NOVEL_ENABLE", False)
+    return v if isinstance(v, bool) else str(v).lower() in ("1", "true", "on", "yes")
+
+
+def series_root(cfg, t):
+    """웹툰은 카카오 웹툰 경로, 웹소설은 웹소설 전용 경로."""
+    return kakao_novel_root(cfg) if _is_novel(t) else kakao_root(cfg)
+
+
+def yaml_platform(t):
+    return "kakao_novel" if _is_novel(t) else PLATFORM
+
+
 def kakao_temp_root(cfg):
     base = (cfg.get("TEMP_DOWNLOAD_ROOT") or "").strip() or ss.TMP_DOWNLOAD_DEFAULT_DIR
     return os.path.join(base, "kakao")
@@ -199,6 +218,38 @@ def _record_special(series_dir, title, no, subtitle):
         pass
 
 
+def novel_file_name(title, no, folder_zero_fill=4):
+    return "%s %s화.epub" % (downloader.safe_name(title), str(no).zfill(int(folder_zero_fill or 4)))
+
+
+def _download_novel_episode(cfg, session, root, title, sid, ep, t, force=False, log=print):
+    """웹소설 회차 하나를 EPUB으로 저장. 반환은 download_episode와 같은 모양
+    (ok, skipped, 단어수, err). 볼 수 없는 회차 예외는 그대로 올린다."""
+    from . import novel_epub
+    no = ep["no"]
+    fz = _num(cfg, "FOLDER_ZERO_FILL", 4)
+    series_dir = downloader.title_dir(root, title, sid)
+    path = os.path.join(series_dir, novel_file_name(title, no, fz))
+    if os.path.exists(path) and not force:
+        return True, True, 0, None
+    data = kakao_api.fetch_novel_episode(session, sid, ep["product_id"], log=log)
+    cover = None
+    cover_src = t.get("cover_url") or t.get("thumbnail")
+    if not data["images"] and cover_src:
+        got = downloader.fetch_cover_bytes(session, cover_src, log=log)
+        if got:
+            mt = {".png": "image/png", ".gif": "image/gif", ".webp": "image/webp"}.get(got[1], "image/jpeg")
+            cover = (got[0], mt)
+    os.makedirs(series_dir, exist_ok=True)
+    ep_title = ep.get("subtitle") or ("%s %d화" % (title, no))
+    novel_epub.build_epub(
+        path, ep_title, title, t.get("author") or "", data["sections"], data["images"],
+        css=data["css"], cover=cover, identifier="kakaopage:%s:%s" % (sid, ep["product_id"]),
+        episode_no=no)
+    time.sleep(max(0.0, float(_num(cfg, "DELAY_SECONDS", 1.0))))
+    return True, False, data["words"], None
+
+
 def _is_novel(t):
     return "소설" in str((t or {}).get("category") or "")
 
@@ -238,7 +289,7 @@ def _refresh_info(cfg, session, sid, t, log=print):
         return t
     patch = _info_patch(info)
     if patch.get("title") and patch["title"] != t.get("title"):
-        _migrate_title_folder(kakao_root(cfg), t.get("title"), patch["title"], sid, log=log)
+        _migrate_title_folder(series_root(cfg, t), t.get("title"), patch["title"], sid, log=log)
     ss.upsert_kakao_title({sid: patch})
     t = dict(t)
     t.update(patch)
@@ -332,7 +383,9 @@ def _apply_waitfree_autosubscribe(cfg, patch, log=print):
         current = ss.load_kakao_titles()
     for sid in patch:
         t = current.get(sid) or {}
-        if not t.get("waitfree") or t.get("status") == "완결" or _is_novel(t):
+        if not t.get("waitfree") or t.get("status") == "완결":
+            continue
+        if _is_novel(t) and not (novel_enabled(cfg) and cfg.get("KAKAO_NOVEL_AUTO_SUBSCRIBE_WAITFREE")):
             continue
         if adult_block_reason(cfg, t):
             continue   # 성인 인증 쿠키가 없으면 받을 수 없으니 자동 구독하지 않음
@@ -386,18 +439,28 @@ def _fill_missing_thumbnails(session, log=print, limit=THUMB_FILL_PER_SCAN, shou
         log("카카오페이지: 표지 %d개 채움" % filled)
 
 
+def _scan_categories(cfg):
+    cats = [(kakao_api.WEBTOON_CATEGORY_UID, "웹툰")]
+    if novel_enabled(cfg):
+        cats.append((kakao_api.NOVEL_CATEGORY_UID, "웹소설"))
+    return cats
+
+
 def run_kakao_scan_weekday(cfg, log=print, should_cancel=None):
     """월~일(tab 1~7) + 신작(tab 11) 목록을 모아 반영한다."""
     session = build_session_from_cfg(cfg)
     merged = {}
-    for tab, day in sorted(kakao_api.WEEKDAY_TABS.items()):
+    cats = _scan_categories(cfg)
+    for cat_uid, cat_label in cats:
+      for tab, day in sorted(kakao_api.WEEKDAY_TABS.items()):
         if should_cancel and should_cancel():
             break
-        ss.save_job_state({"message": "카카오페이지 %s요일 목록 수집 중" % "월화수목금토일"[tab - 1]})
+        ss.save_job_state({"message": "카카오페이지 %s %s요일 목록 수집 중" % (cat_label, "월화수목금토일"[tab - 1])})
         try:
-            items = kakao_api.fetch_landing_all(session, tab_uid=tab, should_cancel=should_cancel)
+            items = kakao_api.fetch_landing_all(session, tab_uid=tab, should_cancel=should_cancel,
+                                                category_uid=cat_uid)
         except Exception as e:  # noqa: BLE001
-            log("카카오페이지 %s 목록 수집 실패: %s" % (day, e))
+            log("카카오페이지 %s %s 목록 수집 실패: %s" % (cat_label, day, e))
             continue
         for it in items:
             sid = str(it.get("series_id"))
@@ -409,11 +472,12 @@ def run_kakao_scan_weekday(cfg, log=print, should_cancel=None):
                 merged[sid] = rec
             if day not in rec["weekdays"]:
                 rec["weekdays"].append(day)
-    if not (should_cancel and should_cancel()):
-        ss.save_job_state({"message": "카카오페이지 신작 목록 수집 중"})
+    for cat_uid, cat_label in cats:
+      if not (should_cancel and should_cancel()):
+        ss.save_job_state({"message": "카카오페이지 %s 신작 목록 수집 중" % cat_label})
         try:
             for it in kakao_api.fetch_landing_all(session, tab_uid=kakao_api.TAB_NEW,
-                                                  should_cancel=should_cancel):
+                                                  should_cancel=should_cancel, category_uid=cat_uid):
                 sid = str(it.get("series_id"))
                 rec = merged.get(sid)
                 if rec is None:
@@ -437,13 +501,15 @@ def run_kakao_scan_weekday(cfg, log=print, should_cancel=None):
 def run_kakao_scan_finished(cfg, log=print, should_cancel=None, max_pages=200):
     """완결(tab 12) 전체 목록. 수천 개라 네이버 완결 스캔과 같은 시각에 따로 돈다."""
     session = build_session_from_cfg(cfg)
-    ss.save_job_state({"message": "카카오페이지 완결 목록 수집 중"})
-    try:
-        items = kakao_api.fetch_landing_all(session, tab_uid=kakao_api.TAB_FINISHED,
-                                            max_pages=max_pages, should_cancel=should_cancel)
-    except Exception as e:  # noqa: BLE001
-        log("카카오페이지 완결 목록 수집 실패: %s" % e)
-        return {"scanned": 0}
+    items = []
+    for cat_uid, cat_label in _scan_categories(cfg):
+        ss.save_job_state({"message": "카카오페이지 %s 완결 목록 수집 중" % cat_label})
+        try:
+            items += kakao_api.fetch_landing_all(session, tab_uid=kakao_api.TAB_FINISHED,
+                                                 max_pages=max_pages, should_cancel=should_cancel,
+                                                 category_uid=cat_uid)
+        except Exception as e:  # noqa: BLE001
+            log("카카오페이지 %s 완결 목록 수집 실패: %s" % (cat_label, e))
     merged = {}
     for it in items:
         rec = kakao_api.landing_item_to_title(it)
@@ -469,12 +535,12 @@ def add_series(cfg, text, log=print):
     info = kakao_api.fetch_series_info(session, sid)
     if not info.get("title") and not existing:
         return False, "작품 정보를 찾지 못했습니다(series_id=%s). 번호를 확인해주세요." % sid, None
-    if _is_novel(info):
-        return False, ("'%s'은(는) 카카오페이지 웹소설입니다. 이 플러그인은 이미지 웹툰만 받을 수 "
-                       "있어 등록하지 않았습니다." % info.get("title", sid)), None
+    if _is_novel(info) and not novel_enabled(cfg):
+        return False, ("'%s'은(는) 카카오페이지 웹소설입니다. [설정] > [카카오페이지]에서 "
+                       "'카카오 웹소설 사용'을 켜야 등록할 수 있습니다." % info.get("title", sid)), None
     patch = _info_patch(info)
     if existing and patch.get("title") and patch["title"] != existing.get("title"):
-        _migrate_title_folder(kakao_root(cfg), existing.get("title"), patch["title"], sid, log=log)
+        _migrate_title_folder(series_root(cfg, existing), existing.get("title"), patch["title"], sid, log=log)
     patch.setdefault("title", (existing or {}).get("title") or sid)
     patch.update({"subscribed": True, "unsubscribed": False, "excluded": False,
                   "last_seen_at": time.time()})
@@ -495,7 +561,8 @@ def _existing_nos(series_dir):
     try:
         for f in os.listdir(series_dir):
             m = kavita_yaml._EP_NO_RE.search(f)
-            if m and f.lower().endswith(".zip") and "#" in f:
+            low = f.lower()
+            if m and ((low.endswith(".zip") and "#" in f) or low.endswith(".epub")):
                 nos.add(int(m.group(1)))
     except OSError:
         pass
@@ -520,12 +587,13 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
         t = _refresh_info(cfg, session, sid, t, log=log)
 
     title = t.get("title") or sid
-    if _is_novel(t):
-        ss.upsert_kakao_title({sid: {"last_result": "웹소설이라 받을 수 없음(웹툰만 지원) - 삭제해주세요",
-                                     "last_result_at": time.time(), "subscribed": False}})
-        log("%s: 웹소설이라 건너뜀(이미지 웹툰만 지원)" % title)
+    is_novel = _is_novel(t)
+    if is_novel and not novel_enabled(cfg):
+        ss.upsert_kakao_title({sid: {"last_result": "웹소설 - [설정] > [카카오페이지] '카카오 웹소설 사용'이 꺼져 있어 받지 않음",
+                                     "last_result_at": time.time()}})
+        log("%s: 웹소설 사용이 꺼져 있어 건너뜀" % title)
         return res
-    root = kakao_root(cfg)
+    root = series_root(cfg, t)
     temp_root = kakao_temp_root(cfg)
     fz = _num(cfg, "FOLDER_ZERO_FILL", 4)
 
@@ -587,9 +655,9 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
 
     if t.get("ep_numbering") != EP_NUMBERING:
         old_map = kakao_api.legacy_numbers_v1(episodes) if t.get("ep_numbering") == "subtitle" else None
-        _renumber_existing_files(kakao_root(cfg), title, sid, episodes,
+        _renumber_existing_files(root, title, sid, episodes,
                                  _num(cfg, "FOLDER_ZERO_FILL", 4), log=log, old_map=old_map)
-        done = _existing_nos(downloader.title_dir(kakao_root(cfg), title, sid))
+        done = _existing_nos(downloader.title_dir(root, title, sid))
         real = [n for n in done if n < kakao_api.SPECIAL_EP_BASE]
         renum = {"ep_numbering": EP_NUMBERING, "checked_no": 0,
                  "last_downloaded_no": max(real) if real else None}
@@ -701,7 +769,7 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
             kavita_yaml.write_kavita_yaml(
                 root, sid, session=session,
                 embed_cover=bool(cfg.get("KAVITA_YAML_EMBED_COVER", True)),
-                log=log, platform=PLATFORM)
+                log=log, platform=yaml_platform(t))
 
     if not targets:
         msg = "받을 회차 없음(보유 %d화" % len(have)
@@ -747,6 +815,8 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
             return kakao_api.fetch_episode_images(session, sid, pid)
 
         def _try_download():
+            if is_novel:
+                return _download_novel_episode(cfg, session, root, title, sid, ep, t, force=force, log=log)
             return downloader.download_episode(
                 session, root, temp_root, title, sid, no,
                 image_zero_fill=_num(cfg, "IMAGE_ZERO_FILL", 4), folder_zero_fill=fz,
@@ -834,10 +904,13 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
             log("%s %d화 실패: %s" % (title, no, err))
             continue
 
-        c_ok, _c_path, c_msg = downloader.compress_episode(
-            root, temp_root, title, sid, no, folder_zero_fill=fz, log=log,
-            zip_stored=bool(cfg.get("ZIP_STORED", True)), session=session, cover_url=cover_url,
-            comicinfo_meta=_comicinfo_meta(t, ep, sid) if comicinfo_on else None)
+        if is_novel or skipped:
+            c_ok, c_msg = True, ""     # 웹소설은 EPUB을 바로 만들어 저장함(압축 단계 없음)
+        else:
+            c_ok, _c_path, c_msg = downloader.compress_episode(
+                root, temp_root, title, sid, no, folder_zero_fill=fz, log=log,
+                zip_stored=bool(cfg.get("ZIP_STORED", True)), session=session, cover_url=cover_url,
+                comicinfo_meta=_comicinfo_meta(t, ep, sid) if comicinfo_on else None)
         if not c_ok:
             res["failures"].append({"title": title, "title_id": sid, "episode_no": no,
                                     "error": "압축 실패: %s" % c_msg})
@@ -847,6 +920,8 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
             log("%s %s 완료 (%d장) - 회차 제목 '%s'에 'N화' 번호가 없어 특별 회차 번호 %d로 저장" % (
                 title, _ep_label(no), cnt, ep.get("subtitle", ""), no))
             _record_special(series_dir, title, no, ep.get("subtitle", ""))
+        elif is_novel:
+            log("%s %d화 EPUB 저장 (%d단어)" % (title, no, cnt))
         else:
             log("%s %d화 완료 (%d장)" % (title, no, cnt))
         # 예전엔 회차 하나 받을 때마다 갱신(표지 다운로드 포함)해서 너무 잦았다.
@@ -892,7 +967,7 @@ def run_kakao_cycle(cfg, log=print, manage_job=False):
         log("카카오페이지: 로그인 쿠키가 없어 무료 회차만 시도합니다.")
     titles = {k: v for k, v in ss.load_kakao_titles().items()
               if v.get("subscribed") and not v.get("excluded") and not v.get("unsubscribed")
-              and not _is_novel(v)}
+              and (not _is_novel(v) or novel_enabled(cfg))}
     if not titles:
         log("카카오페이지: 구독 중인 작품 없음")
         if manage_job:
@@ -998,7 +1073,7 @@ def lookup_episodes(cfg, sid):
         t = dict(t, **_info_patch(info)) if info else t
     title = t.get("title") or str(sid)
     eps = kakao_api.fetch_episode_list(session, sid, series_title=title)
-    have = _existing_nos(downloader.title_dir(kakao_root(cfg), title, sid))
+    have = _existing_nos(downloader.title_dir(series_root(cfg, t), title, sid))
     out = []
     for ep in eps:
         out.append({
@@ -1014,7 +1089,7 @@ def run_kakao_series_job(cfg, sid, log=print, only_nos=None, force=False):
     """작품 하나 '지금 다운로드'(title_job 상태 사용). 미보유 회차 전부 시도."""
     t = ss.load_kakao_titles().get(sid) or {}
     log("카카오 다운로드 시작: %s (series_id=%s) / 저장 경로 %s / 로그인 쿠키 %s" % (
-        t.get("title", sid), sid, kakao_root(cfg),
+        t.get("title", sid), sid, series_root(cfg, t),
         "있음" if (cfg.get("KAKAO_COOKIE") or "").strip() else "없음(무료 회차만)"))
     session = build_session_from_cfg(cfg)
     try:

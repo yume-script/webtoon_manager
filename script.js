@@ -106,7 +106,11 @@
     else if (currentTab === 'duplicate') list = list.filter(function (t) { return t.in_library === true; });
     // 'all' 은 필터 없이 전체
 
-    if (platformFilter !== 'all') {
+    if (platformFilter === 'novel') {
+      list = list.filter(function (t) { return !!t.novel; });
+    } else if (platformFilter === 'kakao') {
+      list = list.filter(function (t) { return t.platform === 'kakao' && !t.novel; });
+    } else if (platformFilter !== 'all') {
       list = list.filter(function (t) { return (t.platform || 'naver') === platformFilter; });
     }
 
@@ -159,7 +163,8 @@
     if (t.waitfree && t.status !== '완결') out += '<span class="wtm-badge up">기다무</span>';
     if (t.bl) out += '<span class="wtm-badge rest" title="' + ((state.config_public || {}).ALLOW_BL ? 'BL 장르' : 'BL 장르 - [설정] > [공통]에서 허용해야 다운로드됨') + '">BL' + ((state.config_public || {}).ALLOW_BL ? '' : ' (받지 않음)') + '</span>';
     if (t.gl) out += '<span class="wtm-badge rest" title="' + ((state.config_public || {}).ALLOW_GL ? 'GL 장르' : 'GL 장르 - [설정] > [공통]에서 허용해야 다운로드됨') + '">GL' + ((state.config_public || {}).ALLOW_GL ? '' : ' (받지 않음)') + '</span>';
-    if ((t.category || '').indexOf('소설') >= 0) out += '<span class="wtm-badge rest">웹소설(미지원)</span>';
+    if (t.novel) out += '<span class="wtm-badge" style="background:color-mix(in srgb, #8a63d2 22%, transparent);color:color-mix(in srgb, #8a63d2 90%, var(--app-text-primary))"' +
+      ((state.config_public || {}).KAKAO_NOVEL_ENABLE ? '>웹소설' : ' title="[설정] > [카카오페이지]에서 카카오 웹소설 사용을 켜야 받음">웹소설(사용 꺼짐)') + '</span>';
     if (t.new) out += '<span class="wtm-badge new">신작</span>';
     if (t.status === '완결') out += '<span class="wtm-badge finished">완결</span>';
     if (t.rest) out += '<span class="wtm-badge rest">휴재</span>';

@@ -45,6 +45,8 @@ PLATFORMS = {
               "link": "https://comic.naver.com/webtoon/list?titleId=%s"},
     "kakao": {"code": "KKP", "publisher": "카카오페이지",
               "link": "https://page.kakao.com/content/%s"},
+    "kakao_novel": {"code": "KKN", "publisher": "카카오페이지",
+                    "link": "https://page.kakao.com/content/%s"},
 }
 # 작품 상세정보(줄거리 등)는 자주 바뀌지 않으므로 하루 한 번만 다시 조회한다.
 INFO_REFRESH_SECONDS = 24 * 3600
@@ -65,7 +67,7 @@ _NAVER_GENRES = ("일상", "개그", "판타지", "액션", "드라마", "로맨
                  "스릴러", "무협", "사극", "시대극", "스포츠", "로맨스판타지", "호러", "공포",
                  "무협/사극", "순정/로맨스", "시대극/무협")
 
-_ARCHIVE_EXTS = (".zip", ".cbz")
+_ARCHIVE_EXTS = (".zip", ".cbz", ".epub")
 _EP_NO_RE = re.compile(r"(\d+)화")
 _LEADING_NO_RE = re.compile(r"^(\d+)")
 _COUNT_RE = re.compile(r"#(\d+)\.(zip|cbz)$", re.I)
@@ -160,6 +162,20 @@ def _zip_image_count(path):
         return 0
 
 
+def _epub_word_count(path):
+    """EPUB 본문 단어 수(Kavita의 wordcount용)."""
+    try:
+        with zipfile.ZipFile(path) as zf:
+            words = 0
+            for n in zf.namelist():
+                if n.lower().endswith((".xhtml", ".html")) and not n.endswith("nav.xhtml"):
+                    text = re.sub(r"<[^>]+>", " ", zf.read(n).decode("utf-8", "replace"))
+                    words += len(text.split())
+            return words
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def _list_archives(series_dir):
     """시리즈 폴더의 회차 압축파일 [(파일명, 회차번호, 장수)] 을 회차순으로.
 
@@ -178,8 +194,11 @@ def _list_archives(series_dir):
             continue
         m = _EP_NO_RE.search(fname) or _LEADING_NO_RE.match(fname)
         no = int(m.group(1)) if m else 10 ** 9  # 번호를 모르면 맨 뒤로
-        mc = _COUNT_RE.search(fname)
-        count = int(mc.group(1)) if mc else _zip_image_count(os.path.join(series_dir, fname))
+        if low.endswith(".epub"):
+            count = _epub_word_count(os.path.join(series_dir, fname))
+        else:
+            mc = _COUNT_RE.search(fname)
+            count = int(mc.group(1)) if mc else _zip_image_count(os.path.join(series_dir, fname))
         out.append((fname, no, count))
     out.sort(key=lambda x: (x[1], x[0]))
     return out
@@ -247,10 +266,11 @@ def build_data(t, title_id, archives, cover_b64=None, platform="naver"):
 
     files = {}
     for idx, (fname, _no, count) in enumerate(archives):
+        is_epub = fname.lower().endswith(".epub")
         files[fname] = {
             "cover": (cover_b64 if (idx == 0 and cover_b64) else "FIRST"),
-            "page": count,
-            "wordcount": 0,
+            "page": 1 if is_epub else count,
+            "wordcount": count if is_epub else 0,
         }
 
     meta = {
@@ -454,11 +474,11 @@ def write_kavita_yaml(download_root, title_id, session=None, embed_cover=True,
     반환: "written" | "unchanged" | "skipped" | "error"
     """
     tid = str(title_id)
-    if platform == "kakao":
+    if platform in ("kakao", "kakao_novel"):
         # 카카오 작품 정보는 kakao_pipeline이 회차 목록을 볼 때 이미 갱신한다
         refresh_info = False
     try:
-        if platform == "kakao":
+        if platform in ("kakao", "kakao_novel"):
             t = ss.load_kakao_titles().get(tid)
         else:
             t = ss.load_titles().get(tid)
