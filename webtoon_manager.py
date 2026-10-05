@@ -100,6 +100,7 @@ DEFAULTS = {
     "KAKAO_USE_OWNED_TICKETS": False,
     "KAKAO_USE_PAID_TICKETS": False,
     "ALLOW_BL": False,
+    "ALLOW_GL": False,
     "COMPARE_FOLDER": "",
     "ADD_COVER_AS_FIRST_PAGE": True,
     "LOW_PRIORITY_MODE": True,
@@ -138,6 +139,9 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
          "default": 4},
         {"key": "ALLOW_BL",
          "label": "BL 장르 웹툰 다운로드 허용(끄면 BL 작품은 받지 않고 자동 구독도 하지 않음 - 네이버/카카오 공통)",
+         "type": "checkbox", "default": False},
+        {"key": "ALLOW_GL",
+         "label": "GL 장르 웹툰 다운로드 허용(끄면 GL 작품은 받지 않고 자동 구독도 하지 않음 - 네이버/카카오 공통)",
          "type": "checkbox", "default": False},
         {"key": "NEW_EP_SCOPE",
          "label": "자동 실행의 새 회차 확인 범위",
@@ -462,6 +466,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 "KAKAO_AUTO": bool(cfg.get("KAKAO_AUTO", True)),
                 "KAKAO_USE_WAITFREE": bool(cfg.get("KAKAO_USE_WAITFREE")),
                 "ALLOW_BL": bool(cfg.get("ALLOW_BL")),
+                "ALLOW_GL": bool(cfg.get("ALLOW_GL")),
                 "KAKAO_AUTO_SUBSCRIBE_WAITFREE": bool(cfg.get("KAKAO_AUTO_SUBSCRIBE_WAITFREE", True)),
                 "KAKAO_DOWNLOAD_ROOT": cfg.get("KAKAO_DOWNLOAD_ROOT") or ss.KAKAO_DOWNLOAD_DEFAULT_DIR,
                 "has_kakao_cookie": bool((cfg.get("KAKAO_COOKIE") or "").strip()),
@@ -604,6 +609,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             item["platform"] = platform
             if pipeline.is_bl(t):
                 item["bl"] = True
+            if pipeline.is_gl(t):
+                item["gl"] = True
             item["in_library"] = (None if compare_set is None else
                                   _normalize_series_name(t.get("title", "")) in compare_set)
             return item
@@ -671,7 +678,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             ss.upsert_kakao_title({sid: {"subscribed": False}})
             t = ss.load_kakao_titles().get(sid) or {}
         if pipeline.bl_blocked(cfg, t):
-            return False, pipeline.BL_BLOCK_MSG
+            return False, pipeline.genre_block_msg(cfg, t)
         acquired = ss.try_acquire_title_job({
             "title_id": sid, "title": "[카카오] %s" % t.get("title", sid),
             "message": "카카오 선택 회차 다운로드 시작", "started_at": time.time(), "finished_at": None,
@@ -864,7 +871,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             if not t:
                 return False, "등록되지 않은 작품입니다"
             if pipeline.bl_blocked(cfg, t):
-                return False, pipeline.BL_BLOCK_MSG
+                return False, pipeline.genre_block_msg(cfg, t)
             if self._start_kakao_worker(cfg, sid):
                 return True, "카카오 %s 다운로드 시작됨(백그라운드)" % t.get("title", sid)
             # 다른 작품을 받는 중이면 거절하지 않고 대기열에 넣는다(끝나면 이어서 받음)
@@ -1026,7 +1033,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         # 소제목(subtitle)은 이 함수에 안 넘어오므로 <Title> 태그는 생략된다.
         _t_for_comicinfo = ss.load_titles().get(str(title_id)) or {"title": title}
         if pipeline.bl_blocked(self._get_cfg(db_type), _t_for_comicinfo):
-            return False, pipeline.BL_BLOCK_MSG
+            return False, pipeline.genre_block_msg(self._get_cfg(db_type), _t_for_comicinfo)
 
         # 스캔/전체실행(job_state)과는 독립된 락(title_job_state)을 쓴다 —
         # 큰 작업이 도는 중에도 개별 작품 다운로드는 막히지 않게 하기 위함.
@@ -1148,7 +1155,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         if not t_info:
             return False, "구독 목록에 없는 titleId입니다"
         if pipeline.bl_blocked(cfg, t_info):
-            return False, pipeline.BL_BLOCK_MSG
+            return False, pipeline.genre_block_msg(cfg, t_info)
 
         title_name = t_info.get("title", title_id)
         # try_acquire_title_job()으로 확인+저장을 원자적으로 처리해 TOCTOU
@@ -1346,7 +1353,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
     _SETTINGS_GROUPS = [
         ("common", "자동 실행", ("ENABLE_SCHEDULER", "INTERVAL_MINUTES", "FINISHED_SCAN_HOUR",
                                 "NEW_EP_SCOPE", "AUTO_SUBSCRIBE_NEW_TITLES")),
-        ("common", "다운로드 대상", ("ALLOW_BL",)),
+        ("common", "다운로드 대상", ("ALLOW_BL", "ALLOW_GL")),
         ("common", "공통 경로", ("TEMP_DOWNLOAD_ROOT", "COMPARE_FOLDER")),
         ("common", "생성 파일", ("ADD_COVER_AS_FIRST_PAGE", "GENERATE_COMICINFO_XML", "GENERATE_SERIES_JSON",
                                 "GENERATE_KAVITA_YAML", "KAVITA_YAML_EMBED_COVER", "ZIP_STORED")),

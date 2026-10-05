@@ -77,34 +77,72 @@ def build_session_from_cfg(cfg):
     )
 
 
-_BL_RE = re.compile(r"(^|[^A-Z])BL([^A-Z]|$)")
+def _genre_re(code):
+    return re.compile(r"(^|[^A-Z])%s([^A-Z]|$)" % code)
+
+
+_BL_RE = _genre_re("BL")
+_GL_RE = _genre_re("GL")
+
+
+def _genre_values(t):
+    return [t.get("genre") or ""] + list(t.get("tags") or []) + list(t.get("info_tags") or [])
+
+
+# 카카오는 GL 전용 장르가 없고(대부분 "로맨스") 작품 제목에 "[GL]" / "(GL)"을 붙여 구분한다.
+_TITLE_MARK_RE = {code: re.compile(r"[\[\(]\s*%s\s*[\]\)]" % code, re.I) for code in ("BL", "GL")}
+
+
+def _title_mark(t, code):
+    return bool(_TITLE_MARK_RE[code].search(str(t.get("title") or "")))
 
 
 def is_bl(t):
-    """장르/태그에 BL이 있는 작품인지(네이버 태그·상세정보 태그, 카카오 장르 sub_category)."""
-    vals = [t.get("genre") or ""] + list(t.get("tags") or []) + list(t.get("info_tags") or [])
-    return any(_BL_RE.search(str(v).upper()) for v in vals if v)
+    """BL 작품인지: 장르/태그에 BL(네이버 태그·상세정보 태그, 카카오 장르) 또는 제목에 [BL]/(BL)."""
+    return (any(_BL_RE.search(str(v).upper()) for v in _genre_values(t) if v)
+            or _title_mark(t, "BL"))
+
+
+def is_gl(t):
+    """GL 작품인지: 장르/태그에 GL·백합 또는 제목에 [GL]/(GL)(카카오는 이 표기로만 구분됨)."""
+    return (any(_GL_RE.search(str(v).upper()) or "백합" in str(v) for v in _genre_values(t) if v)
+            or _title_mark(t, "GL"))
+
+
+def blocked_genres(cfg, t):
+    """설정에서 허용하지 않은(기본 비허용) BL/GL 장르 중 이 작품에 해당하는 것들."""
+    out = []
+    if is_bl(t) and not _cfg_bool(cfg, "ALLOW_BL", False):
+        out.append("BL")
+    if is_gl(t) and not _cfg_bool(cfg, "ALLOW_GL", False):
+        out.append("GL")
+    return out
 
 
 def bl_blocked(cfg, t):
-    """설정 "BL 장르 다운로드 허용"이 꺼져 있으면(기본) BL 작품은 받지 않는다."""
-    return is_bl(t) and not _cfg_bool(cfg, "ALLOW_BL", False)
+    """BL/GL 장르를 허용하지 않으면(기본) 그 작품은 받지 않는다(이름은 호환용으로 유지)."""
+    return bool(blocked_genres(cfg, t))
 
 
-BL_BLOCK_MSG = "BL 장르 - [설정] > [공통] 'BL 장르 웹툰 다운로드 허용'이 꺼져 있어 받지 않음"
+def genre_block_msg(cfg, t):
+    g = "/".join(blocked_genres(cfg, t)) or "BL/GL"
+    return "%s 장르 - [설정] > [공통] '%s 장르 웹툰 다운로드 허용'이 꺼져 있어 받지 않음" % (g, g)
+
+
+BL_BLOCK_MSG = "BL/GL 장르 - [설정] > [공통]에서 허용하지 않아 받지 않음"
 
 
 def apply_bl_policy(cfg, patch, old_titles, log=print, label=""):
     """BL을 허용하지 않으면, 자동 구독 규칙(신간/작가/매일+/기다무)으로 구독된 BL 작품은
     구독하지 않은 상태로 되돌린다. 사용자가 직접 구독한 작품은 건드리지 않는다(다운로드만 막힘)."""
-    if _cfg_bool(cfg, "ALLOW_BL", False):
+    if _cfg_bool(cfg, "ALLOW_BL", False) and _cfg_bool(cfg, "ALLOW_GL", False):
         return 0
     n = 0
     for tid, item in patch.items():
         old = old_titles.get(tid) or {}
         merged = dict(old)
         merged.update(item)
-        if not merged.get("subscribed") or not is_bl(merged):
+        if not merged.get("subscribed") or not bl_blocked(cfg, merged):
             continue
         is_new = not ("subscribed" in old or "excluded" in old)
         if is_new or merged.get("auto_subscribed"):
@@ -112,7 +150,7 @@ def apply_bl_policy(cfg, patch, old_titles, log=print, label=""):
             item["auto_subscribed"] = None
             n += 1
     if n:
-        log("%sBL 장르 작품 %d개는 자동 구독하지 않음(설정에서 허용 안 함)" % (label, n))
+        log("%sBL/GL 장르 작품 %d개는 자동 구독하지 않음(설정에서 허용 안 함)" % (label, n))
     return n
 
 
@@ -447,7 +485,7 @@ def run_download_cycle(cfg, log=print):
     subscribed = {tid: t for tid, t in subscribed.items() if in_new_episode_scope(cfg, t, "naver")}
     bl_skip = [tid for tid, t in subscribed.items() if bl_blocked(cfg, t)]
     if bl_skip:
-        log("BL 장르 %d개 작품은 설정에 따라 다운로드하지 않음" % len(bl_skip))
+        log("BL/GL 장르 %d개 작품은 설정에 따라 다운로드하지 않음" % len(bl_skip))
         subscribed = {tid: t for tid, t in subscribed.items() if tid not in bl_skip}
     log("새 회차 확인 대상: 구독 %d개 중 %d개 (%s)" % (
         all_sub, len(subscribed),

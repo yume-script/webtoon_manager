@@ -328,7 +328,7 @@ def _apply_waitfree_autosubscribe(cfg, patch, log=print):
               and (adult_block_reason(cfg, t) or _pl.bl_blocked(cfg, t))}
     if demote:
         ss.upsert_kakao_title(demote)
-        log("카카오 자동 구독 작품 중 %d개(성인 인증 쿠키 없음 / BL 장르 비허용)를 자동 구독에서 뺐습니다" % len(demote))
+        log("카카오 자동 구독 작품 중 %d개(성인 인증 쿠키 없음 / BL·GL 장르 비허용)를 자동 구독에서 뺐습니다" % len(demote))
         current = ss.load_kakao_titles()
     for sid in patch:
         t = current.get(sid) or {}
@@ -530,7 +530,7 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
     fz = _num(cfg, "FOLDER_ZERO_FILL", 4)
 
     from . import pipeline as _pl
-    blocked = adult_block_reason(cfg, t) or (_pl.BL_BLOCK_MSG if _pl.bl_blocked(cfg, t) else None)
+    blocked = adult_block_reason(cfg, t) or (_pl.genre_block_msg(cfg, t) if _pl.bl_blocked(cfg, t) else None)
     if blocked:
         # 성인 작품인데 쿠키가 없거나, 지금 쿠키로 이미 성인 인증 실패를 확인한 작품 -
         # 회차 목록/이미지 요청 자체를 하지 않는다
