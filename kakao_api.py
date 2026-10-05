@@ -434,13 +434,20 @@ def _episode_from_item(entry):
     }
 
 
-def fetch_episode_list(session, series_id, max_pages=400, log=None):
-    """오래된 순(1화부터) 전체 회차 목록."""
+def fetch_episode_list(session, series_id, max_pages=400, log=None, series_title=None,
+                       newer_than_order=None, max_regular_no=None):
+    """오래된 순(1화부터) 회차 목록.
+
+    newer_than_order를 주면 최신 순(desc)으로 받다가 그 순번 이하가 나오는 페이지에서
+    멈추고, 그보다 새 회차만 돌려준다(새 회차 확인용 - 보통 요청 1번). 이때 번호는
+    max_regular_no(이전에 매긴 본편 최대 번호)를 기준으로 이어서 매긴다."""
+    incremental = newer_than_order is not None
     out, cursor = [], 0
     for _ in range(max_pages):
         r = session.get(PRODUCT_LIST_API, params={
             "series_id": series_id, "cursor_index": cursor, "cursor_direction": "NEXT",
-            "window_size": PAGE_SIZE, "sort_type": "asc"}, timeout=session.request_timeout)
+            "window_size": PAGE_SIZE, "sort_type": "desc" if incremental else "asc"},
+            timeout=session.request_timeout)
         _check_auth(r, "회차 목록")
         if r.status_code >= 300:
             raise RuntimeError("회차 목록 조회 실패: %s" % _api_error_text(r)[1])
@@ -448,44 +455,72 @@ def fetch_episode_list(session, series_id, max_pages=400, log=None):
         result = body.get("result") or {}
         items = result.get("list") or []
         total = int(result.get("total_count") or 0)
+        page_orders = []
         for it in items:
             ep = _episode_from_item(it)
             if ep:
-                out.append(ep)
+                page_orders.append(ep["order"])
+                if not incremental or ep["order"] > newer_than_order:
+                    out.append(ep)
         cursor += len(items)
         if not items or cursor >= total:
             break
+        if incremental and page_orders and min(page_orders) <= newer_than_order:
+            break
         time.sleep(0.3)
     out.sort(key=lambda e: e["order"])
-    assign_episode_numbers(out)
+    assign_episode_numbers(out, series_title=series_title,
+                           max_regular_no=max_regular_no if incremental else None)
     return out
 
 
-# 회차 제목 끝의 "N화" (예: "나 혼자만 레벨업 12화", "12화", "12 화")
-_EP_TITLE_NO_RE = re.compile(r"(\d+)\s*화(?!.*\d+\s*화)")
+# 회차 제목의 "N화". 예: "나 혼자만 레벨업 12화", "12화", "밥만 먹고 레벨업 208화 (외전 8화)" -> 208
+# (예전엔 마지막 "N화"를 써서 "(외전 8화)"의 8이 잡히는 문제가 있었음 - 첫 번째를 쓴다)
+_EP_TITLE_NO_RE = re.compile(r"(\d+)\s*화")
+# 예전(1.27.0 이하) 규칙: 마지막 "N화" - 기존 파일 이름을 새 번호로 옮길 때만 사용
+_EP_TITLE_NO_RE_V1 = re.compile(r"(\d+)\s*화(?!.*\d+\s*화)")
 # 제목에 "N화"가 없는 특수 회차(트레일러/프롤로그/외전/후기 등)의 파일 번호 시작값.
 # 본편 번호와 절대 겹치지 않고 목록 맨 뒤로 정렬되게 큰 값을 쓴다.
 SPECIAL_EP_BASE = 9000
 
 
-def episode_no_from_subtitle(subtitle):
-    m = _EP_TITLE_NO_RE.search(str(subtitle or ""))
+def episode_no_from_subtitle(subtitle, series_title=None):
+    text = str(subtitle or "").strip()
+    st = str(series_title or "").strip()
+    if st and text.startswith(st):
+        text = text[len(st):]      # 작품 제목에 숫자+화가 들어 있어도 오인하지 않게
+    m = _EP_TITLE_NO_RE.search(text)
     return int(m.group(1)) if m else None
 
 
-def assign_episode_numbers(episodes):
+def assign_episode_numbers(episodes, series_title=None, max_regular_no=None):
     """회차 제목의 "N화" 번호를 파일 번호(no)로 쓴다.
     - 제목에 번호가 없는 회차(트레일러/프롤로그/외전 등): 9000 + 사이트 순번
     - 같은 번호가 이미 나온 경우(시즌2에서 1화부터 다시 시작 등): 9000 + 사이트 순번
+    - 새 회차만 받은 경우(max_regular_no 지정): 그 번호 이하는 이미 쓰인 번호로 본다
     순번(order)은 그대로 보존해서 다른 계산(기다무 등)에 쓸 수 있게 둔다."""
     used = set()
+    floor = int(max_regular_no or 0)
     for ep in episodes:
-        n = episode_no_from_subtitle(ep.get("subtitle"))
-        if n is None or n in used or n >= SPECIAL_EP_BASE:
+        n = episode_no_from_subtitle(ep.get("subtitle"), series_title)
+        if n is None or n in used or n >= SPECIAL_EP_BASE or (max_regular_no is not None and n <= floor):
             n = SPECIAL_EP_BASE + int(ep.get("order") or 0)
         used.add(n)
         ep["no"] = n
     return episodes
+
+
+def legacy_numbers_v1(episodes):
+    """1.27.0 이하 번호 규칙(마지막 "N화")으로 매겼던 번호 {order: no}."""
+    used, out = set(), {}
+    for ep in episodes:
+        m = _EP_TITLE_NO_RE_V1.search(str(ep.get("subtitle") or ""))
+        n = int(m.group(1)) if m else None
+        if n is None or n in used or n >= SPECIAL_EP_BASE:
+            n = SPECIAL_EP_BASE + int(ep.get("order") or 0)
+        used.add(n)
+        out[ep.get("order")] = n
+    return out
 
 
 # ---------------------------------------------------------------------------

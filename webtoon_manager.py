@@ -545,8 +545,12 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             if action == "remove_tag":
                 return self._act_authors_tags("tags", payload.get("value"), add=False)
             if action == "manual_lookup":
+                if payload.get("platform") == "kakao":
+                    return self._act_kakao_manual_lookup(db_type, payload.get("titleId"))
                 return self._act_manual_lookup(db_type, payload.get("titleId"))
             if action == "manual_download":
+                if payload.get("platform") == "kakao":
+                    return self._act_kakao_manual_download(db_type, payload)
                 return self._act_manual_download(db_type, payload)
             if action == "download_title":
                 return self._act_download_title(db_type, payload.get("titleId"))
@@ -638,6 +642,56 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             "log_tail": ss.tail_log(60),
             "history": ss.load_history(limit=200),
         }, ensure_ascii=False)
+
+    def _act_kakao_manual_lookup(self, db_type, title_id):
+        from . import kakao_api, kakao_pipeline
+        sid = kakao_api.parse_series_id(title_id)
+        if not sid:
+            return False, "카카오페이지 작품 번호 또는 URL(page.kakao.com/content/숫자)을 입력하세요"
+        try:
+            return True, json.dumps(kakao_pipeline.lookup_episodes(self._get_cfg(db_type), sid),
+                                    ensure_ascii=False)
+        except Exception as e:  # noqa: BLE001
+            return False, str(e)
+
+    def _act_kakao_manual_download(self, db_type, payload):
+        from . import kakao_api, kakao_pipeline
+        cfg = self._get_cfg(db_type)
+        sid = kakao_api.parse_series_id(payload.get("titleId"))
+        nos = [int(n) for n in (payload.get("episodeNos") or [])]
+        force = bool(payload.get("force", True))
+        if not sid or not nos:
+            return False, "작품 번호/회차 선택 필요"
+        t = ss.load_kakao_titles().get(sid)
+        if not t:
+            # 목록에 없는 작품이면 먼저 등록(구독은 하지 않음)
+            ok, msg, _ = kakao_pipeline.add_series(cfg, sid, log=ss.append_log)
+            if not ok:
+                return False, msg
+            ss.upsert_kakao_title({sid: {"subscribed": False}})
+            t = ss.load_kakao_titles().get(sid) or {}
+        if pipeline.bl_blocked(cfg, t):
+            return False, pipeline.BL_BLOCK_MSG
+        acquired = ss.try_acquire_title_job({
+            "title_id": sid, "title": "[카카오] %s" % t.get("title", sid),
+            "message": "카카오 선택 회차 다운로드 시작", "started_at": time.time(), "finished_at": None,
+            "cancel_requested": False, "last_error": None, "progress": 0, "total": len(nos)})
+        if not acquired:
+            tj = ss.load_title_job_state()
+            return False, "이미 다른 작품을 다운로드 중입니다(%s). 끝난 뒤 다시 시도해주세요." % (tj.get("title") or "")
+
+        def _runner():
+            if cfg.get("LOW_PRIORITY_MODE", True):
+                downloader.lower_thread_priority(int(cfg.get("DOWNLOAD_NICE_LEVEL", 10)))
+            try:
+                kakao_pipeline.run_kakao_series_job(cfg, sid, log=ss.append_log, only_nos=nos, force=force)
+            except Exception as e:  # noqa: BLE001
+                ss.append_log("카카오 선택 회차 다운로드 실패: %s" % e)
+                ss.save_title_job_state({"running": False, "finished_at": time.time(),
+                                          "last_error": str(e), "message": "실패: %s" % e})
+
+        threading.Thread(target=_runner, name="webtoon_manager_kakao_manual", daemon=True).start()
+        return True, "카카오 %s: 선택한 %d개 회차 다운로드 시작(백그라운드)" % (t.get("title", sid), len(nos))
 
     def _start_kakao_worker(self, cfg, sid):
         """title_job 락을 잡을 수 있으면 sid부터 받기 시작하고, 끝나면 대기열을

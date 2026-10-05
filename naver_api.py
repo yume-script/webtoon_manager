@@ -299,8 +299,12 @@ def _merge_title(old, new):
     return merged
 
 
-def fetch_episode_list(session, title_id, max_pages=200):
-    """최신 -> 과거 순으로 반환되는 회차 목록. [{no, subtitle, thumbnail, charge}]"""
+def fetch_episode_list(session, title_id, max_pages=200, stop_at_no=None):
+    """최신 -> 과거 순으로 반환되는 회차 목록. [{no, subtitle, thumbnail, charge}]
+
+    stop_at_no: 이미 받은 마지막 회차 번호. 주면 그 번호 이하의 회차가 나온 페이지까지만
+    받고 멈춘다(목록이 최신 순이라 새 회차 확인은 대부분 1페이지로 끝남). 예전에는
+    새 회차만 보면 되는데도 매번 마지막 페이지까지(300화면 15번) 요청했다."""
     episodes = []
     seen_nos = set()
     page = 1
@@ -360,6 +364,10 @@ def fetch_episode_list(session, title_id, max_pages=200):
             new_count += 1
         if new_count == 0:
             break
+        if stop_at_no is not None:
+            page_nos = [it.get("no") for it in items if isinstance(it.get("no"), int)]
+            if page_nos and min(page_nos) <= stop_at_no:
+                break
         # articleList가 더 없으면 종료 (isLastPage 필드가 있으면 우선 사용)
         is_last = body.get("result", {}).get("isLastPage") if isinstance(body.get("result"), dict) else None
         if is_last is True or len(items) == 0:

@@ -424,8 +424,12 @@ def run_kavita_yaml_all(cfg, log=print, force_info=True, manage_job=True):
 
 
 def _episodes_to_download(session, cfg, title_id, known_last_no):
-    episodes = naver_api.fetch_episode_list(session, title_id)
-    _remember_release_date(title_id, episodes)
+    # 이미 받은 회차가 있으면 그 회차가 나오는 페이지에서 멈춘다(요청 수 대폭 감소).
+    # 처음 받는 작품/"다시 확인"(known_last_no 없음)은 전체 목록.
+    episodes = naver_api.fetch_episode_list(
+        session, title_id, stop_at_no=known_last_no if known_last_no else None)
+    if not known_last_no:
+        _remember_release_date(title_id, episodes)
     # 최신 -> 과거 순으로 오므로 known_last_no보다 큰(새 회차)만, 오래된 순으로 반환
     new_eps = [e for e in episodes if isinstance(e.get("no"), int) and e["no"] > (known_last_no or 0)]
     new_eps.sort(key=lambda e: e["no"])

@@ -180,8 +180,9 @@
       var open = '<a class="wtm-btn wtm-btn-small wtm-btn-ghost" href="https://page.kakao.com/content/' + sid + '" target="_blank" rel="noopener">열기</a>';
       var res = t.last_result ? '<div class="wtm-card-author" style="width:100%" title="마지막 확인 결과">' + escapeHtml(t.last_result) + '</div>' : '';
       if (st === 'subscribed') {
-        return res + '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-card-action="download_title" data-title-id="' + sid + '"' + pAttr + ' title="받지 않은 회차 중 볼 수 있는 회차를 지금 받습니다">다운로드</button>' +
-          '<button class="wtm-btn wtm-btn-small" data-card-action="resync_title" data-title-id="' + sid + '"' + pAttr + '>다시 확인</button>' +
+        return res + '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-card-action="download_title" data-title-id="' + sid + '"' + pAttr + ' title="받지 않은 회차 중 볼 수 있는 회차(무료/대여·소장)를 지금 받습니다">새회차 다운로드</button>' +
+          '<button class="wtm-btn wtm-btn-small" data-goto-manual="' + sid + '"' + pAttr + '>선택 회차 다운로드</button>' +
+          '<button class="wtm-btn wtm-btn-small" data-card-action="resync_title" data-title-id="' + sid + '"' + pAttr + ' title="파일을 직접 지운 회차가 있으면 눌러주세요 - 다음 다운로드 때 전체 회차를 다시 확인합니다">다시 확인</button>' +
           '<button class="wtm-btn wtm-btn-small" data-card-action="unsubscribe" data-title-id="' + sid + '"' + pAttr + '>구독해제</button>' +
           '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-card-action="exclude" data-title-id="' + sid + '"' + pAttr + '>제외</button>' + open;
       }
@@ -745,7 +746,10 @@
         if (!titleId) return;
         var resultBox = el('[data-el="manual-result"]');
         if (resultBox) resultBox.innerHTML = '<div class="wtm-hint">조회 중...</div>';
-        var r3 = await callAction('manual_lookup', { titleId: titleId });
+        var platSel = el('[data-el="manual-platform"]');
+        var manualPlatform = platSel ? platSel.value : 'naver';
+        if (/kakao\.com/.test(titleId)) { manualPlatform = 'kakao'; if (platSel) platSel.value = 'kakao'; }
+        var r3 = await callAction('manual_lookup', { titleId: titleId, platform: manualPlatform });
         var parsed = r3.success ? parseMaybeJson(r3.message) : null;
         if (!r3.success || !parsed) {
           if (resultBox) resultBox.innerHTML = '<div class="wtm-hint">조회 실패: ' + escapeHtml(r3.message || '') + '</div>';
@@ -772,7 +776,7 @@
             return;
           }
         }
-        var r4 = await callAction('manual_download', { titleId: lookupResult.titleId, title: lookupResult.title, episodeNos: checked, force: true });
+        var r4 = await callAction('manual_download', { titleId: lookupResult.titleId, title: lookupResult.title, episodeNos: checked, force: true, platform: lookupResult.platform || 'naver' });
         alert(r4.message || (r4.success ? '시작됨' : '실패'));
         await refresh();
         return;
@@ -792,7 +796,7 @@
         // "전체 다운로드"는 밀린 걸 채우는 용도라 이미 받은 건 그대로 둔다
         // (force: false) - 잘못된 파일 재다운로드는 위의 "선택 회차
         // 다운로드"로 콕 찍어서 하도록 분리했다.
-        var r4b = await callAction('manual_download', { titleId: lookupResult.titleId, title: lookupResult.title, episodeNos: freeEps, force: false });
+        var r4b = await callAction('manual_download', { titleId: lookupResult.titleId, title: lookupResult.title, episodeNos: freeEps, force: false, platform: lookupResult.platform || 'naver' });
         alert(r4b.message || (r4b.success ? '시작됨' : '실패'));
         await refresh();
         return;
@@ -802,7 +806,10 @@
     var gotoManual = ev.target.closest('[data-goto-manual]');
     if (gotoManual) {
       var tidForManual = gotoManual.getAttribute('data-goto-manual');
+      var platForManual = gotoManual.getAttribute('data-platform') || 'naver';
       setTab('manual');
+      var platSelForManual = el('[data-el="manual-platform"]');
+      if (platSelForManual) platSelForManual.value = platForManual;
       var idInputForManual = el('[data-el="manual-title-id"]');
       if (idInputForManual) idInputForManual.value = tidForManual;
       var lookupBtn = document.querySelector('[data-action="manual_lookup"]');
@@ -877,7 +884,8 @@
     var downloadedCount = eps.filter(function (e) { return e.downloaded; }).length;
     box.innerHTML =
       '<div class="wtm-box" style="margin-top:10px">' +
-      '<div class="wtm-box-title">' + escapeHtml(lookupResult.title) + ' (titleId=' + lookupResult.titleId + ')' +
+      '<div class="wtm-box-title">' + (lookupResult.platform === 'kakao' ? '[카카오] ' : '[네이버] ') + escapeHtml(lookupResult.title) +
+      ' (' + (lookupResult.platform === 'kakao' ? '작품번호' : 'titleId') + '=' + lookupResult.titleId + ')' +
       ' <span class="wtm-hint" style="margin:0">- 받음 ' + downloadedCount + '/' + eps.length + '화</span></div>' +
       '<div style="max-height:260px;overflow:auto">' +
       eps.map(function (e) {
@@ -888,8 +896,10 @@
           (isPaid ? ' disabled title="유료 회차는 선택할 수 없습니다"' :
             (isDone ? ' title="이미 받은 회차입니다 - 체크 후 \'선택 회차 다운로드\'를 누르면 기존 파일을 지우고 강제로 다시 받습니다(파일이 잘못됐을 때 사용)"' : '')) +
           '> ' +
-          '<span' + (isDone ? ' style="opacity:.6"' : '') + '>' + e.no + '화 - ' + escapeHtml(e.subtitle || '') + '</span>' +
+          '<span' + (isDone ? ' style="opacity:.6"' : '') + '>' +
+          (e.special ? '특별회차(파일 ' + e.no + '화)' : e.no + '화') + ' - ' + escapeHtml(e.subtitle || '') + '</span>' +
           (isPaid ? ' <b>(유료 - 선택불가)</b>' : '') +
+          (e.rented ? ' <span class="wtm-badge up">대여·소장</span>' : '') +
           (isDone ? ' <span class="wtm-badge" style="background:color-mix(in srgb, #4f9d76 22%, transparent);color:color-mix(in srgb, #4f9d76 90%, var(--app-text-primary))">받음</span>' : '') +
           '</label>';
       }).join('') +

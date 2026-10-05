@@ -98,10 +98,13 @@ def _info_patch(info):
 # 파일 번호 규칙 버전. "subtitle" = 회차 제목의 "N화" 번호(1.18.5~).
 # 그 전 버전은 사이트 순번(order_value)을 썼기 때문에, 트레일러가 1번인 작품은
 # 실제 1화가 0002화로 저장됐다. 버전이 다르면 기존 파일 이름을 새 번호로 바꾼다.
-EP_NUMBERING = "subtitle"
+EP_NUMBERING = "subtitle2"
+# "subtitle"(1.18.5~1.27.0): 회차 제목의 마지막 "N화" - "208화 (외전 8화)"가 8로 잡히는 문제가
+# 있어 "subtitle2"(첫 번째 "N화", 작품 제목 접두어 제외)로 바꿨다. 예전 번호 파일은 자동 이름 변경.
+INCREMENTAL_FULL_EVERY = 7 * 24 * 3600   # 새 회차만 받는 빠른 확인을 쓰더라도 일주일에 1번은 전체 목록 확인
 
 
-def _renumber_existing_files(root, title, sid, episodes, folder_zero_fill=4, log=print):
+def _renumber_existing_files(root, title, sid, episodes, folder_zero_fill=4, log=print, old_map=None):
     """예전(사이트 순번) 번호로 저장된 회차 파일을 회차 제목 번호로 이름 변경.
     번호끼리 겹칠 수 있으므로(2->1, 3->2 ...) 임시 이름을 거쳐 2단계로 바꾼다."""
     series_dir = downloader.title_dir(root, title, sid)
@@ -109,7 +112,13 @@ def _renumber_existing_files(root, title, sid, episodes, folder_zero_fill=4, log
         return 0
     zf = int(folder_zero_fill or 4)
     prefix = downloader.safe_name(title) + " "
-    mapping = {ep["order"]: ep["no"] for ep in episodes if ep.get("order") is not None}
+    # 예전 파일 번호 -> 새 번호. old_map({순번: 예전 번호})이 없으면 예전 번호 = 사이트 순번(1.18.4 이하)
+    mapping = {}
+    for ep in episodes:
+        if ep.get("order") is None:
+            continue
+        old_no = (old_map or {}).get(ep["order"], ep["order"]) if old_map is not None else ep["order"]
+        mapping[old_no] = ep["no"]
     moves = []
     for f in os.listdir(series_dir):
         if not f.startswith(prefix) or not f.lower().endswith(".zip"):
@@ -494,7 +503,7 @@ def _existing_nos(series_dir):
 
 
 def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
-                    on_progress=None):
+                    on_progress=None, only_nos=None, force=False):
     """작품 하나의 볼 수 있는 미보유 회차를 받는다.
     full=True(수동 '지금 다운로드'): 미보유 회차를 전부 시도.
     full=False(자동): 새 회차 + 이미 대여/소장 표시된 회차 + (옵션)기다무만 시도.
@@ -530,8 +539,19 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
         res["adult_blocked"] = True
         return res
 
+    # 새 회차만 빠르게 확인할 수 있는 조건: 자동 실행 + 이미 전체 목록을 현재 번호 규칙으로
+    # 본 적이 있음 + 앞쪽 회차를 볼 필요가 있는 이용권 옵션이 꺼져 있음 + 최근 일주일 안에 전체 확인함.
+    # 이 경우 최신 순으로 받다가 이미 아는 회차에서 멈춘다(대부분 요청 1번).
+    incremental = (not full and t.get("ep_numbering") == EP_NUMBERING and t.get("max_order_seen")
+                   and not cfg.get("KAKAO_USE_WAITFREE") and not cfg.get("KAKAO_USE_OWNED_TICKETS")
+                   and time.time() - float(t.get("last_full_list_at") or 0) < INCREMENTAL_FULL_EVERY)
     try:
-        episodes = kakao_api.fetch_episode_list(session, sid, log=log)
+        if incremental:
+            episodes = kakao_api.fetch_episode_list(
+                session, sid, log=log, series_title=title,
+                newer_than_order=int(t["max_order_seen"]), max_regular_no=t.get("max_regular_no"))
+        else:
+            episodes = kakao_api.fetch_episode_list(session, sid, log=log, series_title=title)
     except kakao_api.KakaoAuthExpired as e:
         log("%s: %s" % (title, e))
         res["auth_expired"] = True
@@ -545,14 +565,30 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
         ss.upsert_kakao_title({sid: {"last_result": "회차 목록 조회 실패: %s" % e,
                                      "last_result_at": time.time()}})
         return res
+    if incremental and not episodes:
+        ss.upsert_kakao_title({sid: {"last_result": "새 회차 없음", "last_result_at": time.time(),
+                                     "last_checked_at": time.time(),
+                                     "checked_slide_dt": t.get("last_slide_added_dt") or ""}})
+        return res
     if not episodes:
         log("%s: 회차 목록이 비어 있음" % title)
         ss.upsert_kakao_title({sid: {"last_result": "회차 목록이 비어 있음", "last_result_at": time.time()}})
         return res
 
+    # 이번에 본 최대 순번/본편 최대 번호 기록(다음 빠른 확인의 기준)
+    seen_patch = {"max_order_seen": max([ep["order"] for ep in episodes] + [int(t.get("max_order_seen") or 0)])}
+    regular = [ep["no"] for ep in episodes if ep["no"] < kakao_api.SPECIAL_EP_BASE]
+    if regular:
+        seen_patch["max_regular_no"] = max(regular + [int(t.get("max_regular_no") or 0)])
+    if not incremental:
+        seen_patch["last_full_list_at"] = time.time()
+    ss.upsert_kakao_title({sid: seen_patch})
+    t.update(seen_patch)
+
     if t.get("ep_numbering") != EP_NUMBERING:
+        old_map = kakao_api.legacy_numbers_v1(episodes) if t.get("ep_numbering") == "subtitle" else None
         _renumber_existing_files(kakao_root(cfg), title, sid, episodes,
-                                 _num(cfg, "FOLDER_ZERO_FILL", 4), log=log)
+                                 _num(cfg, "FOLDER_ZERO_FILL", 4), log=log, old_map=old_map)
         done = _existing_nos(downloader.title_dir(kakao_root(cfg), title, sid))
         real = [n for n in done if n < kakao_api.SPECIAL_EP_BASE]
         renum = {"ep_numbering": EP_NUMBERING, "checked_no": 0,
@@ -560,8 +596,12 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
         ss.upsert_kakao_title({sid: renum})
         t.update(renum)
 
-    rd = kavita_yaml.release_date_from_episodes(episodes)
-    patch = {"episode_count": len(episodes), "last_checked_at": time.time()}
+    rd = kavita_yaml.release_date_from_episodes(episodes) if not incremental else ""
+    patch = {"last_checked_at": time.time()}
+    if not incremental:
+        patch["episode_count"] = len(episodes)
+    else:
+        patch["episode_count"] = max(int(t.get("episode_count") or 0), int(t.get("max_order_seen") or 0))
     if rd and (not t.get("release_date") or rd < t["release_date"]):
         patch["release_date"] = rd
     ss.upsert_kakao_title({sid: patch})
@@ -643,6 +683,14 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
         if ticket_eps:
             targets.extend(ticket_eps)
             targets.sort(key=lambda e: e.get("order", e["no"]))
+    if only_nos:
+        # [선택 회차 다운로드]: 고른 회차만. force면 이미 받은 회차도 지우고 다시 받는다.
+        # 유료 표시 회차도 고르면 한 번 시도한다(앱에서 방금 대여했을 수 있음).
+        only = set(int(n) for n in only_nos)
+        targets = [ep for ep in episodes if ep["no"] in only and ep.get("product_id")
+                   and (force or ep["no"] not in have)]
+        locked_eps, ticket_eps, wait_ep = [], [], None
+        ticket_available = False
     res["locked"] = len(locked_eps) - (1 if wait_ep else 0) - len(ticket_eps)
     res["paid_total"] = len(locked_eps)
     res["tickets_used"] = 0
@@ -705,7 +753,7 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
                 max_concurrent=_num(cfg, "MAX_CONCURRENT_DOWNLOADS", 5),
                 delay_seconds=_num(cfg, "DELAY_SECONDS", 1.0),
                 timeout=_num(cfg, "REQUEST_TIMEOUT_SECONDS", 15), log=log,
-                image_list_func=_images, referer=kakao_api.BASE + "/")
+                image_list_func=_images, referer=kakao_api.BASE + "/", force=force)
 
         try:
             try:
@@ -941,7 +989,28 @@ def run_kakao_cycle(cfg, log=print, manage_job=False):
     return total
 
 
-def run_kakao_series_job(cfg, sid, log=print):
+def lookup_episodes(cfg, sid):
+    """[선택 회차 다운로드] 탭용 회차 목록(받음/유료 표시 포함)."""
+    t = ss.load_kakao_titles().get(str(sid)) or {}
+    session = build_session_from_cfg(cfg)
+    if not t.get("title"):
+        info = kakao_api.fetch_series_info(session, sid)
+        t = dict(t, **_info_patch(info)) if info else t
+    title = t.get("title") or str(sid)
+    eps = kakao_api.fetch_episode_list(session, sid, series_title=title)
+    have = _existing_nos(downloader.title_dir(kakao_root(cfg), title, sid))
+    out = []
+    for ep in eps:
+        out.append({
+            "no": ep["no"], "order": ep.get("order"), "subtitle": ep.get("subtitle", ""),
+            "charge": not (ep.get("free") or ep.get("rented")),
+            "rented": bool(ep.get("rented")), "downloaded": ep["no"] in have,
+            "special": ep["no"] >= kakao_api.SPECIAL_EP_BASE,
+        })
+    return {"titleId": str(sid), "title": title, "platform": "kakao", "episodes": out}
+
+
+def run_kakao_series_job(cfg, sid, log=print, only_nos=None, force=False):
     """작품 하나 '지금 다운로드'(title_job 상태 사용). 미보유 회차 전부 시도."""
     t = ss.load_kakao_titles().get(sid) or {}
     log("카카오 다운로드 시작: %s (series_id=%s) / 저장 경로 %s / 로그인 쿠키 %s" % (
@@ -959,7 +1028,7 @@ def run_kakao_series_job(cfg, sid, log=print):
     try:
         r = download_series(cfg, session, sid, log=log, full=True,
                             cancel_check=lambda: ss.load_title_job_state().get("cancel_requested"),
-                            on_progress=_progress)
+                            on_progress=_progress, only_nos=only_nos, force=force)
     finally:
         kakao_api.save_session_cookies(session)
     msg = "카카오 %s: 신규 %d화 / 볼 수 없는 회차 %d / 실패 %d%s" % (
