@@ -412,10 +412,11 @@ def _load_state():
 
 
 def _save_state(series_dir, archives, sig):
-    st = _load_state()
-    st[_state_key(series_dir)] = {"latest": archives[-1][0], "count": len(archives), "sig": sig,
-                                  "at": time.time()}
-    ss.write_json(KAVITA_STATE_PATH, st)
+    with ss._lock:   # 여러 작품을 동시에 처리할 때 서로 덮어쓰지 않게
+        st = _load_state()
+        st[_state_key(series_dir)] = {"latest": archives[-1][0], "count": len(archives), "sig": sig,
+                                      "at": time.time()}
+        ss.write_json(KAVITA_STATE_PATH, st)
 
 
 def _already_current(path, series_dir, archives, sig):

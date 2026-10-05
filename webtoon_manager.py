@@ -78,7 +78,8 @@ DEFAULTS = {
     "AUTO_SUBSCRIBE_NEW_TITLES": False,
     "AUTO_SUBSCRIBE_DAILY_PLUS": False,
     "MAX_NEW_EPISODES_PER_TITLE": 10,
-    "BATCH_REST_MINUTES": 5.0,
+    "PARALLEL_TITLES": 2,
+    "INITIAL_EPISODES_LIMIT": 0,
     "MAX_CONCURRENT_DOWNLOADS": 5,
     "DELAY_SECONDS": 1.0,
     "REQUEST_TIMEOUT_SECONDS": 10,
@@ -222,7 +223,11 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
          "type": "checkbox", "default": True},
         {"key": "MAX_NEW_EPISODES_PER_TITLE", "label": "1회 실행당 작품별 최대 신규 다운로드 회차 수(0=무제한)",
          "type": "number", "default": 10},
-        {"key": "BATCH_REST_MINUTES", "label": "상한 도달 시 휴식(분)", "type": "number", "default": 5},
+        {"key": "PARALLEL_TITLES",
+         "label": "동시에 처리할 작품 수(1~5, 네이버·카카오 각각 적용)", "type": "number", "default": 2},
+        {"key": "INITIAL_EPISODES_LIMIT",
+         "label": "처음 구독한 작품은 최신 N화만 받기(0 = 전체 회차). 이전 회차는 카드의 '다운로드'/'다시 확인'으로 받을 수 있음",
+         "type": "number", "default": 0},
         {"key": "MAX_CONCURRENT_DOWNLOADS", "label": "이미지 동시 다운로드 수", "type": "number", "default": 5},
         {"key": "DELAY_SECONDS", "label": "회차 간 대기(초)", "type": "number", "default": 1.0},
         {"key": "REQUEST_TIMEOUT_SECONDS", "label": "요청 타임아웃(초)", "type": "number", "default": 10},
@@ -448,7 +453,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 "DOWNLOAD_NICE_LEVEL": cfg.get("DOWNLOAD_NICE_LEVEL", 10),
                 "ZIP_STORED": bool(cfg.get("ZIP_STORED", True)),
                 "MAX_NEW_EPISODES_PER_TITLE": cfg.get("MAX_NEW_EPISODES_PER_TITLE"),
-                "BATCH_REST_MINUTES": cfg.get("BATCH_REST_MINUTES"),
+                "PARALLEL_TITLES": cfg.get("PARALLEL_TITLES", 2),
+                "INITIAL_EPISODES_LIMIT": cfg.get("INITIAL_EPISODES_LIMIT", 0),
                 "MAX_CONCURRENT_DOWNLOADS": cfg.get("MAX_CONCURRENT_DOWNLOADS"),
                 "DELAY_SECONDS": cfg.get("DELAY_SECONDS"),
                 "has_cookie": bool(cfg.get("NAVER_COOKIE_JSON")),
@@ -762,7 +768,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             ss.upsert_kakao_title({sid: flags[action]})
             return True, "적용됨"
         if action == "resync_title":
-            ss.upsert_kakao_title({sid: {"checked_no": 0, "last_downloaded_no": None}})
+            ss.upsert_kakao_title({sid: {"checked_no": 0, "last_downloaded_no": None, "min_order": None}})
             return True, "다음 다운로드부터 전체 회차를 다시 확인합니다(이미 있는 파일은 스킵됨)"
         return self._dispatch_kakao(db_type, "kakao_download", {"seriesId": sid})
 
@@ -1290,7 +1296,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         ("common", "공통 경로", ("TEMP_DOWNLOAD_ROOT", "COMPARE_FOLDER")),
         ("common", "생성 파일", ("ADD_COVER_AS_FIRST_PAGE", "GENERATE_COMICINFO_XML", "GENERATE_SERIES_JSON",
                                 "GENERATE_KAVITA_YAML", "KAVITA_YAML_EMBED_COVER", "ZIP_STORED")),
-        ("common", "다운로드 속도 / 서버 부하", ("MAX_NEW_EPISODES_PER_TITLE", "BATCH_REST_MINUTES",
+        ("common", "다운로드 속도 / 서버 부하", ("PARALLEL_TITLES", "MAX_NEW_EPISODES_PER_TITLE",
+                                            "INITIAL_EPISODES_LIMIT",
                                             "MAX_CONCURRENT_DOWNLOADS", "DELAY_SECONDS",
                                             "REQUEST_TIMEOUT_SECONDS", "LOW_PRIORITY_MODE",
                                             "DOWNLOAD_NICE_LEVEL", "FOLDER_ZERO_FILL", "IMAGE_ZERO_FILL")),

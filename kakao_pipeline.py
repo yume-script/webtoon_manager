@@ -14,7 +14,9 @@ KAKAO_USE_WAITFREE를 켜면 볼 수 없는 회차 중 기다무 가능한 가�
 """
 import json
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import discord_notify, downloader, kakao_api, kavita_yaml, state_store as ss
 
@@ -578,9 +580,24 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
     # - 예전에 "받을 수 없는 회차"(동영상 트레일러 등)로 확인된 회차는 다시 시도 안 함
     skip_pids = set(t.get("skip_pids") or [])
     has_cookie = bool((cfg.get("KAKAO_COOKIE") or "").strip())
+    # 처음 구독한 작품은 "최신 N화만 받기" 설정에 따라 볼 수 있는 회차 중 최신 N개만 받고,
+    # 그 기준 순번(min_order)을 기억해 이후 실행에서도 그 이전 회차는 받지 않는다.
+    # 카드의 "다운로드"(full)나 "다시 확인"은 이 제한을 무시하고 전부 받는다.
+    initial_n = _num(cfg, "INITIAL_EPISODES_LIMIT", 0)
+    min_order = None if full else t.get("min_order")
+    if (not full and initial_n > 0 and min_order is None and t.get("last_downloaded_no") is None
+            and not have):
+        acc = [ep for ep in episodes if (ep["free"] or ep["rented"]) and ep.get("product_id")
+               and ep["product_id"] not in skip_pids]
+        if len(acc) > initial_n:
+            min_order = acc[-initial_n].get("order", acc[-initial_n]["no"])
+            ss.upsert_kakao_title({sid: {"min_order": min_order}})
+            log("%s: 처음 구독한 작품이라 볼 수 있는 %d화 중 최신 %d화만 받음" % (title, len(acc), initial_n))
     targets, locked_eps = [], []
     for ep in episodes:
         if ep["no"] in have or not ep.get("product_id") or ep["product_id"] in skip_pids:
+            continue
+        if min_order is not None and ep.get("order", ep["no"]) < min_order:
             continue
         if ep["free"] or ep["rented"]:
             targets.append(ep)
@@ -851,25 +868,53 @@ def run_kakao_cycle(cfg, log=print, manage_job=False):
     log("카카오페이지: 구독 %d개 중 이번에 확인할 작품 %d개(오늘 요일·기다무 중 새 회차/대여권 충전된 작품만)" %
         (all_count, len(titles)))
     items = sorted(titles.items(), key=lambda kv: str(kv[1].get("title") or ""))
-    try:
-        for i, (sid, t) in enumerate(items):
-            if ss.load_job_state().get("cancel_requested"):
-                total["cancelled"] = True
-                break
-            ss.save_job_state({"stage": "kakao", "progress": i, "total": len(items),
-                                "message": "카카오페이지: %s" % t.get("title", sid)})
-            r = download_series(cfg, session, sid, log=log,
-                                cancel_check=lambda: ss.load_job_state().get("cancel_requested"))
+    lock = threading.Lock()
+    tls = threading.local()
+    done = {"n": 0}
+
+    def _stop():
+        return bool(ss.load_job_state().get("cancel_requested")) or total["auth_expired"]
+
+    def _one(sid, t):
+        if _stop():
+            total["cancelled"] = total["cancelled"] or bool(ss.load_job_state().get("cancel_requested"))
+            return
+        # 작업 스레드마다 별도 세션(토큰 연장된 쿠키는 위에서 저장해 둔 파일을 같이 씀)
+        if getattr(tls, "session", None) is None:
+            tls.session = build_session_from_cfg(cfg)
+            if cfg.get("LOW_PRIORITY_MODE", True):
+                downloader.lower_thread_priority(int(cfg.get("DOWNLOAD_NICE_LEVEL", 10)))
+        with lock:
+            done["n"] += 1
+            n = done["n"]
+        ss.save_job_state({"stage": "kakao", "progress": n, "total": len(items),
+                            "message": "카카오페이지: %s" % t.get("title", sid)})
+        r = download_series(cfg, tls.session, sid, log=log, cancel_check=_stop)
+        with lock:
             for k in ("downloaded", "locked", "waitfree_used"):
                 total[k] += r[k]
             total["failures"].extend(r["failures"])
             if r["cancelled"]:
                 total["cancelled"] = True
-                break
             if r["auth_expired"]:
                 total["auth_expired"] = True
-                break
-            time.sleep(0.5)
+
+    workers = max(1, min(5, _num(cfg, "PARALLEL_TITLES", 2)))
+    try:
+        if workers == 1:
+            for sid, t in items:
+                _one(sid, t)
+                if total["cancelled"] or total["auth_expired"]:
+                    break
+        else:
+            log("카카오페이지: 작품 %d개를 동시에 처리합니다" % workers)
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="wtm_kakao") as ex:
+                futs = [ex.submit(_one, sid, t) for sid, t in items]
+                for f in as_completed(futs):
+                    try:
+                        f.result()
+                    except Exception as e:  # noqa: BLE001
+                        log("카카오 작품 처리 중 오류(다음 작품은 계속): %s" % e)
     finally:
         kakao_api.save_session_cookies(session)
 

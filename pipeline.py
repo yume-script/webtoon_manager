@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import hashlib
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import re
 import time
@@ -455,7 +457,6 @@ def run_download_cycle(cfg, log=print):
     else:
         log("이번 다운로드 경로(설정값): %s" % download_root)
     max_new = int(_cfg_num(cfg, "MAX_NEW_EPISODES_PER_TITLE", 10))
-    batch_rest_min = _cfg_num(cfg, "BATCH_REST_MINUTES", 5.0)
     max_concurrent = int(_cfg_num(cfg, "MAX_CONCURRENT_DOWNLOADS", 5))
     delay_seconds = _cfg_num(cfg, "DELAY_SECONDS", 1.0)
     image_zero_fill = int(_cfg_num(cfg, "IMAGE_ZERO_FILL", 4))
@@ -466,38 +467,61 @@ def run_download_cycle(cfg, log=print):
                         "progress": 0, "total": len(subscribed)})
 
     failures = []
-    downloaded_count = 0
-    cookie_expired = False
-    cancelled = False
 
     def _cancelled():
         return bool(ss.load_job_state().get("cancel_requested"))
 
     naver_cookie = (cfg.get("NAVER_COOKIE_JSON") or "").strip()
     cookie_hash = hashlib.sha1(naver_cookie.encode("utf-8")).hexdigest() if naver_cookie else ""
-    for i, (tid, t) in enumerate(subscribed.items()):
+    state = {"downloaded": 0, "cookie_expired": False, "cancelled": False, "done": 0}
+    lock = threading.Lock()
+    tls = threading.local()
+
+    def _thread_session():
+        # requests.Session은 스레드 간 공유가 안전하지 않아 작업 스레드마다 따로 만든다
+        if getattr(tls, "session", None) is None:
+            tls.session = build_session_from_cfg(cfg)
+            if cfg.get("LOW_PRIORITY_MODE", True):
+                downloader.lower_thread_priority(int(cfg.get("DOWNLOAD_NICE_LEVEL", 10)))
+        return tls.session
+
+    initial_n = int(_cfg_num(cfg, "INITIAL_EPISODES_LIMIT", 0))
+
+    def _process_title(i, tid, t):
         # 성인 작품: 쿠키가 없거나, 지금 쿠키로 성인 인증 실패를 이미 확인했으면
         # 회차를 끝까지 두들기지 않고 작품 자체를 건너뛴다
         if t.get("is_adult") and (not naver_cookie or t.get("adult_block_hash") == cookie_hash):
-            continue
-        if _cancelled():
-            log("취소 요청 확인됨 - 남은 %d개 작품은 건너뛰고 다운로드를 중단합니다" %
-                (len(subscribed) - i))
-            cancelled = True
-            break
-        ss.save_job_state({"progress": i, "message": "%s 새 회차 확인 중" % t.get("title", tid)})
+            return
+        if _cancelled() or state["cookie_expired"]:
+            state["cancelled"] = state["cancelled"] or _cancelled()
+            return
+        with lock:
+            state["done"] += 1
+            done_n = state["done"]
+        ss.save_job_state({"progress": done_n, "message": "%s 새 회차 확인 중" % t.get("title", tid)})
+        session = _thread_session()
         try:
             new_eps = _episodes_to_download(session, cfg, tid, t.get("last_downloaded_no"))
         except Exception as e:  # noqa: BLE001
             log("회차 목록 조회 실패 titleId=%s: %s" % (tid, e))
-            continue
+            return
 
         if not new_eps:
             # 새 회차가 없어도 작품 정보(완결/휴재/줄거리 등)가 바뀌었을 수 있으니
             # kavita.yaml을 다시 맞춰본다. 상세정보 조회는 작품당 하루 1회로
             # 제한되고, 내용이 같으면 파일은 건드리지 않는다.
             update_kavita_yaml(cfg, session, download_root, tid, log=log)
-            continue
+            return
+
+        # 새로 구독한 작품(아직 한 화도 안 받음)은 설정에 따라 최신 N화만 받는다.
+        # 이후로는 last_downloaded_no 다음 회차부터 이어지므로 그 이전 회차는 받지 않는다
+        # (필요하면 backfill_all.py 또는 "다시 확인"으로 전체를 받을 수 있음).
+        if initial_n > 0 and t.get("last_downloaded_no") is None and not t.get("initial_limit_done"):
+            free_eps = [e for e in new_eps if not e.get("charge")]
+            if len(free_eps) > initial_n:
+                log("%s: 처음 구독한 작품이라 최신 %d화만 받음(전체 무료 %d화)" %
+                    (t.get("title", tid), initial_n, len(free_eps)))
+                new_eps = free_eps[-initial_n:]
 
         capped = new_eps if max_new <= 0 else new_eps[:max_new]
         rest_needed = max_new > 0 and len(new_eps) > max_new
@@ -512,7 +536,7 @@ def run_download_cycle(cfg, log=print):
         for ep in capped:
             if _cancelled():
                 log("titleId=%s: 취소 요청 확인됨 - 남은 회차는 다음 실행 때 이어받습니다" % tid)
-                cancelled = True
+                state["cancelled"] = True
                 break
             if ep.get("charge") and not naver_try_owned_paid(cfg):
                 # 목록 API가 이미 유료(charge=true)라고 알려주는 회차를 만나면,
@@ -542,7 +566,7 @@ def run_download_cycle(cfg, log=print):
                     ss.upsert_title({tid: {"adult_block_hash": cookie_hash}})
                     break
                 log("인증 만료: %s" % e)
-                cookie_expired = True
+                state["cookie_expired"] = True
                 break
             except naver_api.NaverPaidEpisode as e:
                 # 마찬가지로 이후 회차도 계속 유료일 가능성이 높아 이 작품은
@@ -567,7 +591,8 @@ def run_download_cycle(cfg, log=print):
                     consecutive_fail = 0
                     last_ok_no = ep["no"]
                 else:
-                    downloaded_count += 1
+                    with lock:
+                        state["downloaded"] += 1
                     ss.append_history({
                         "type": "download", "source": "auto", "title_id": tid,
                         "title": t.get("title", tid),
@@ -626,23 +651,37 @@ def run_download_cycle(cfg, log=print):
         # rest_needed 값으로 갱신한다. 예전에는 last_ok_no가 바뀔 때만
         # upsert했는데, 유료/연속실패로 하나도 못 받은 회차라도 밀린 회차가
         # 있으면(rest_needed=True) UP 뱃지가 떠야 하는데 안 뜨는 문제가 있었다.
-        patch = {"up_flag": rest_needed}
+        patch = {"up_flag": rest_needed, "initial_limit_done": True}
         if last_ok_no != t.get("last_downloaded_no"):
             patch["last_downloaded_no"] = last_ok_no
         ss.upsert_title({tid: patch})
 
         # 새 회차를 받았거나(목록 변경) 작품 정보가 바뀌었으면 kavita.yaml 갱신.
         # 내용이 같으면 파일은 건드리지 않는다.
-        if not cookie_expired:
+        if not state["cookie_expired"]:
             update_kavita_yaml(cfg, session, download_root, tid, log=log)
 
-        if cookie_expired or cancelled:
-            break
+        return
 
-        if rest_needed and batch_rest_min > 0:
-            log("titleId=%s 회차가 많이 밀려 %.1f분 휴식" % (tid, batch_rest_min))
-            time.sleep(min(batch_rest_min * 60, 60))  # 실제 배포 환경에서는 스케줄러가
-            # 다음 주기에 이어받는 구조이므로 여기서는 과도한 슬립을 피하고 살짝만 쉼
+    workers = max(1, min(5, int(_cfg_num(cfg, "PARALLEL_TITLES", 2))))
+    items = list(subscribed.items())
+    if workers == 1:
+        for i, (tid, t) in enumerate(items):
+            _process_title(i, tid, t)
+            if state["cancelled"] or state["cookie_expired"]:
+                break
+    else:
+        log("작품 %d개를 동시에 처리합니다" % workers)
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="wtm_naver") as ex:
+            futs = [ex.submit(_process_title, i, tid, t) for i, (tid, t) in enumerate(items)]
+            for f in as_completed(futs):
+                try:
+                    f.result()
+                except Exception as e:  # noqa: BLE001
+                    log("작품 처리 중 오류(다음 작품은 계속): %s" % e)
+    downloaded_count = state["downloaded"]
+    cookie_expired = state["cookie_expired"]
+    cancelled = state["cancelled"]
 
     ss.save_job_state({"progress": len(subscribed), "message": "다운로드 사이클 종료"})
 
@@ -682,16 +721,24 @@ def run_full_cycle(cfg, log=print):
     ss.save_job_state({"running": True, "started_at": time.time(), "last_error": None})
     try:
         scan_result = run_scan_weekday(cfg, log=log)
-        dl_result = run_download_cycle(cfg, log=log)
-        kakao_result = None
+        # 네이버와 카카오는 서로 다른 사이트라 동시에 받아도 차단 위험이 늘지 않는다.
+        # 카카오를 별도 스레드로 띄워 네이버 다운로드와 나란히 진행한다.
+        kakao_box = {"result": None}
+        kakao_thread = None
         if (_cfg_bool(cfg, "KAKAO_ENABLE", False) and _cfg_bool(cfg, "KAKAO_AUTO", True)
-                and not dl_result.get("cancelled")
                 and not ss.load_job_state().get("cancel_requested")):
-            try:
-                from . import kakao_pipeline
-                kakao_result = kakao_pipeline.run_kakao_cycle(cfg, log=log)
-            except Exception as e:  # noqa: BLE001
-                log("카카오페이지 사이클 오류(네이버 결과에는 영향 없음): %s" % e)
+            def _kakao_run():
+                try:
+                    from . import kakao_pipeline
+                    kakao_box["result"] = kakao_pipeline.run_kakao_cycle(cfg, log=log)
+                except Exception as e:  # noqa: BLE001
+                    log("카카오페이지 사이클 오류(네이버 결과에는 영향 없음): %s" % e)
+            kakao_thread = threading.Thread(target=_kakao_run, name="wtm_kakao_cycle", daemon=True)
+            kakao_thread.start()
+        dl_result = run_download_cycle(cfg, log=log)
+        if kakao_thread is not None:
+            kakao_thread.join()
+        kakao_result = kakao_box["result"]
         # 하루 한 번, 다운로드 경로 전체를 훑어 kavita.yaml이 없거나 낡은 폴더를 채운다
         # (구독하지 않은 작품 폴더, 예전에 받아둔 폴더, 수동으로 넣은 폴더 등).
         if (_cfg_bool(cfg, "GENERATE_KAVITA_YAML", True)
