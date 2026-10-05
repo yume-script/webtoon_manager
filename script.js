@@ -161,6 +161,7 @@
       out += '<span class="wtm-badge" style="background:color-mix(in srgb, #03c75a 22%, transparent);color:color-mix(in srgb, #03a14a 90%, var(--app-text-primary))">네이버</span>';
     }
     if (t.waitfree && t.status !== '완결') out += '<span class="wtm-badge up">기다무</span>';
+    if (t.purchased) out += '<span class="wtm-badge new" title="카카오페이지 보관함 > 구매 목록에 있는 작품 - 구독하지 않아도 구매·대여 회차를 받습니다">구매</span>';
     if (t.bl) out += '<span class="wtm-badge rest" title="' + ((state.config_public || {}).ALLOW_BL ? 'BL 장르' : 'BL 장르 - [설정] > [공통]에서 허용해야 다운로드됨') + '">BL' + ((state.config_public || {}).ALLOW_BL ? '' : ' (받지 않음)') + '</span>';
     if (t.gl) out += '<span class="wtm-badge rest" title="' + ((state.config_public || {}).ALLOW_GL ? 'GL 장르' : 'GL 장르 - [설정] > [공통]에서 허용해야 다운로드됨') + '">GL' + ((state.config_public || {}).ALLOW_GL ? '' : ' (받지 않음)') + '</span>';
     if (t.novel) out += '<span class="wtm-badge" style="background:color-mix(in srgb, #8a63d2 22%, transparent);color:color-mix(in srgb, #8a63d2 90%, var(--app-text-primary))"' +
@@ -706,7 +707,8 @@
       if (action === 'refresh') { await refresh(); return; }
       if (action === 'scan_now' || action === 'scan_finished_now' || action === 'run_full_cycle_now' || action === 'cancel_job' ||
           action === 'cancel_title_job' || action === 'test_discord' || action === 'force_reset_job' ||
-          action === 'kavita_yaml_all' || action === 'kakao_run_all' || action === 'kakao_scan') {
+          action === 'kavita_yaml_all' || action === 'kakao_run_all' || action === 'kakao_scan' ||
+          action === 'kakao_sync_purchased') {
         if (action === 'force_reset_job' && !confirm('정말로 작업 상태를 강제 초기화할까요? 지금 실제로 뭔가 진행 중이라면 중간에 끊길 수 있습니다.')) return;
         headerAction.disabled = true;
         var r = await callAction(action, {});
@@ -895,16 +897,21 @@
       ' <span class="wtm-hint" style="margin:0">- 받음 ' + downloadedCount + '/' + eps.length + '화</span></div>' +
       '<div style="max-height:260px;overflow:auto">' +
       eps.map(function (e) {
-        var isPaid = !!e.charge;
+        var cfgp = state.config_public || {};
+        // 로그인 쿠키가 있으면 유료 회차도 고를 수 있다(구매·대여한 회차만 실제로 받아짐)
+        var loggedIn = lookupResult.platform === 'kakao' ? !!cfgp.has_kakao_cookie : !!cfgp.has_cookie;
+        var isPaid = !!e.charge && !loggedIn;
+        var paidButSelectable = !!e.charge && loggedIn;
         var isDone = !!e.downloaded;
         return '<label style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12px;' + (isPaid ? 'opacity:.5' : '') + '">' +
           '<input type="checkbox" data-ep-checkbox="' + e.no + '"' +
-          (isPaid ? ' disabled title="유료 회차는 선택할 수 없습니다"' :
+          (isPaid ? ' disabled title="유료 회차는 로그인 쿠키를 넣어야 선택할 수 있습니다(구매·대여한 회차만 받아짐)"' :
             (isDone ? ' title="이미 받은 회차입니다 - 체크 후 \'선택 회차 다운로드\'를 누르면 기존 파일을 지우고 강제로 다시 받습니다(파일이 잘못됐을 때 사용)"' : '')) +
           '> ' +
           '<span' + (isDone ? ' style="opacity:.6"' : '') + '>' +
           (e.special ? '특별회차(파일 ' + e.no + '화)' : e.no + '화') + ' - ' + escapeHtml(e.subtitle || '') + '</span>' +
           (isPaid ? ' <b>(유료 - 선택불가)</b>' : '') +
+          (paidButSelectable && !e.rented ? ' <span class="wtm-hint" style="margin:0">(유료 - 구매·대여한 경우만 받아짐)</span>' : '') +
           (e.rented ? ' <span class="wtm-badge up">대여·소장</span>' : '') +
           (isDone ? ' <span class="wtm-badge" style="background:color-mix(in srgb, #4f9d76 22%, transparent);color:color-mix(in srgb, #4f9d76 90%, var(--app-text-primary))">받음</span>' : '') +
           '</label>';

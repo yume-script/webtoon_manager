@@ -101,6 +101,7 @@ DEFAULTS = {
     "KAKAO_USE_PAID_TICKETS": False,
     "ALLOW_BL": False,
     "KAKAO_NOVEL_ENABLE": False,
+    "KAKAO_SYNC_PURCHASED": True,
     "KAKAO_NOVEL_DOWNLOAD_ROOT": "",
     "KAKAO_NOVEL_AUTO_SUBSCRIBE_WAITFREE": False,
     "ALLOW_GL": False,
@@ -203,6 +204,9 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         {"key": "KAKAO_AUTO_SUBSCRIBE_WAITFREE",
          "label": "기다무 작품 자동 구독(연재 중인 기다무 작품을 전부 구독 -> 자동 다운로드 대상. "
                   "구독해제/제외한 작품은 건드리지 않음)",
+         "type": "checkbox", "default": True},
+        {"key": "KAKAO_SYNC_PURCHASED",
+         "label": "구매 작품 자동 동기화(하루 1번, 보관함 > 구매 목록의 작품을 구독 여부와 상관없이 구매·대여 회차까지 받음, 로그인 쿠키 필요)",
          "type": "checkbox", "default": True},
         {"key": "KAKAO_NOVEL_ENABLE",
          "label": "카카오 웹소설 사용(목록 수집/다운로드, 회차별 EPUB으로 저장 - 삽화 포함)",
@@ -604,7 +608,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
     _UI_FIELDS = ("title", "author", "thumbnail", "weekdays", "status", "subscribed",
                   "unsubscribed", "excluded", "new", "rest", "up_flag", "rating", "waitfree",
                   "category", "last_result", "adult", "is_adult", "last_downloaded_no",
-                  "episode_count", "last_seen_at")
+                  "episode_count", "last_seen_at", "purchased")
 
     def _build_title_items(self, cfg, compare_set):
         """목록 데이터. titles.json/kakao_titles.json이 바뀌지 않았으면 이전 결과를
@@ -876,6 +880,10 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 ss.save_job_state({"running": False, "stage": "done", "finished_at": time.time(),
                                     "message": "카카오페이지 요일별 목록 수집 완료"})
             return self._act_run_bg(db_type, _scan, "카카오페이지 목록 수집")
+        if action == "kakao_sync_purchased":
+            def _sync(c, log):
+                return kakao_pipeline.sync_purchased(c, log=log, manage_job=True)
+            return self._act_run_bg(db_type, _sync, "카카오 구매 작품 동기화")
         if action == "kakao_run_all":
             def _run(c, log):
                 return kakao_pipeline.run_kakao_cycle(c, log=log, manage_job=True)
@@ -1380,7 +1388,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         ("naver", "네이버 계정", ("NAVER_ID", "NAVER_PW", "NAVER_COOKIE_JSON")),
         ("naver", "네이버 다운로드", ("DOWNLOAD_ROOT", "AUTO_SUBSCRIBE_DAILY_PLUS", "NAVER_TRY_OWNED_PAID")),
         ("kakao", "카카오페이지 사용 / 계정", ("KAKAO_ENABLE", "KAKAO_COOKIE")),
-        ("kakao", "카카오페이지 다운로드", ("KAKAO_DOWNLOAD_ROOT", "KAKAO_AUTO", "KAKAO_AUTO_SUBSCRIBE_WAITFREE")),
+        ("kakao", "카카오페이지 다운로드", ("KAKAO_DOWNLOAD_ROOT", "KAKAO_AUTO", "KAKAO_AUTO_SUBSCRIBE_WAITFREE",
+                                          "KAKAO_SYNC_PURCHASED")),
         ("kakao", "카카오 웹소설", ("KAKAO_NOVEL_ENABLE", "KAKAO_NOVEL_DOWNLOAD_ROOT",
                                    "KAKAO_NOVEL_AUTO_SUBSCRIBE_WAITFREE")),
         ("kakao", "카카오페이지 이용권(웹툰·웹소설 공통)", ("KAKAO_USE_WAITFREE", "KAKAO_USE_OWNED_TICKETS",

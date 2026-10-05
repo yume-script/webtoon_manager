@@ -760,6 +760,63 @@ def use_ticket(session, product_id, ticket_type):
         return True
 
 
+# ---------------------------------------------------------------------------
+# 내 구매 목록 (보관함 > 구매)
+# ---------------------------------------------------------------------------
+INVEN_PAID_API = BFF + "/api/gateway/api/v1/inven/paid"
+
+
+def fetch_purchased_series(session, category_uid=None, max_pages=200, log=None):
+    """로그인 계정의 구매 작품 목록(카카오페이지 보관함 > 구매). 웹 코드와 같은 파라미터
+    (page, size=25, sort_type, category_uid)로 끝까지 받는다. 반환: [{series_id, title, category}]
+    응답 형식이 공개돼 있지 않아 series_id가 들어 있는 항목을 방어적으로 찾는다."""
+    out, seen = [], set()
+    for page in range(max_pages):
+        params = {"page": page, "size": 25}
+        if category_uid:
+            params["category_uid"] = category_uid
+        r = session.get(INVEN_PAID_API, params=params, timeout=session.request_timeout)
+        _check_auth(r, "구매 목록")
+        body = json.loads(r.content.decode("utf-8"))
+        if body.get("result_code") not in (None, 0, "0"):
+            key = str(body.get("message_key") or "")
+            if "authorize" in key or "login" in key:
+                raise KakaoAuthExpired("구매 목록: %s" % (body.get("message") or key))
+            raise RuntimeError("구매 목록 조회 실패: %s (%s)" % (body.get("message") or "", key))
+        result = body.get("result") or {}
+        items = result.get("list") if isinstance(result, dict) else None
+        if items is None and isinstance(result, list):
+            items = result
+        found = 0
+
+        def walk(o):
+            nonlocal found
+            if isinstance(o, dict):
+                sid = o.get("series_id")
+                if not sid and isinstance(o.get("series"), dict):
+                    sid = o["series"].get("series_id")
+                if sid and str(sid) not in seen and (o.get("title") or o.get("series_title")):
+                    seen.add(str(sid))
+                    out.append({"series_id": str(sid), "title": o.get("title") or o.get("series_title") or "",
+                                "category": o.get("category") or ""})
+                    found += 1
+                    return
+                for v in o.values():
+                    if isinstance(v, (dict, list)):
+                        walk(v)
+            elif isinstance(o, list):
+                for v in o:
+                    walk(v)
+        walk(items if items is not None else result)
+        if log and page == 0 and not found:
+            log("카카오 구매 목록 응답(확인용): %s" % json.dumps(body, ensure_ascii=False)[:400])
+        is_end = isinstance(result, dict) and result.get("is_end")
+        if not found or is_end or (items is not None and len(items) < 25):
+            break
+        time.sleep(0.3)
+    return out
+
+
 def use_waitfree_ticket(session, product_id):
     """기다무 대여권 사용. 성공 True, 대여 불가(대기 시간 미충족 등) False."""
     r = session.post(TICKET_USE_API, data={"product_id": product_id,

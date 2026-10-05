@@ -340,6 +340,17 @@ def fetch_episode_list(session, title_id, max_pages=200, stop_at_no=None):
                 if ok and isinstance(cur, list):
                     items = cur
                     break
+        # 미리보기(유료) 회차는 articleList가 아니라 chargeFolderArticleList로 따로 온다.
+        # 예전엔 이걸 안 읽어서 목록에 무료 회차만 보였다(구매한 유료 회차도 못 받음).
+        charge_items = body.get("chargeFolderArticleList") if isinstance(body, dict) else None
+        if isinstance(charge_items, list) and charge_items:
+            extra = []
+            for it in charge_items:
+                if isinstance(it, dict) and isinstance(it.get("no"), int) and it.get("no") not in seen_nos:
+                    it = dict(it)
+                    it["charge"] = True
+                    extra.append(it)
+            items = list(items or []) + extra
         if not items:
             break
         new_count = 0

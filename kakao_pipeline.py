@@ -1085,6 +1085,67 @@ def lookup_episodes(cfg, sid):
     return {"titleId": str(sid), "title": title, "platform": "kakao", "episodes": out}
 
 
+def sync_purchased(cfg, log=print, manage_job=False):
+    """카카오페이지 보관함 > 구매 목록의 작품을 자동으로 목록에 넣고, 구독 여부와 상관없이
+    볼 수 있는 회차(구매·대여한 회차 + 무료 회차)를 받는다. 로그인 쿠키 필요."""
+    res = {"series": 0, "added": 0, "downloaded": 0, "auth_expired": False}
+    if not (cfg.get("KAKAO_COOKIE") or "").strip():
+        log("카카오 구매 작품 동기화: 로그인 쿠키가 없어 건너뜀")
+        return res
+    session = build_session_from_cfg(cfg)
+    try:
+        kakao_api.refresh_token(session, log=log)
+        bought = kakao_api.fetch_purchased_series(session, log=log)
+    except kakao_api.KakaoAuthExpired as e:
+        log("카카오 구매 작품 동기화: %s" % e)
+        res["auth_expired"] = True
+        return res
+    except Exception as e:  # noqa: BLE001
+        log("카카오 구매 목록 조회 실패: %s" % e)
+        return res
+    res["series"] = len(bought)
+    log("카카오 구매 작품 %d개 확인" % len(bought))
+    titles = ss.load_kakao_titles()
+    from . import pipeline as _pl
+    for i, b in enumerate(bought):
+        if ss.load_job_state().get("cancel_requested"):
+            break
+        sid = b["series_id"]
+        if sid not in titles:
+            ok, msg, _sid = add_series(cfg, sid, log=log)
+            if not ok:
+                log("구매 작품 등록 건너뜀(%s): %s" % (b.get("title") or sid, msg))
+                continue
+            # 구매 작품은 자동 구독하지 않는다(구매 회차만 받으면 되므로) - 표시만
+            ss.upsert_kakao_title({sid: {"subscribed": False, "purchased": True}})
+            res["added"] += 1
+        else:
+            ss.upsert_kakao_title({sid: {"purchased": True}})
+        t = ss.load_kakao_titles().get(sid) or {}
+        if _is_novel(t) and not novel_enabled(cfg):
+            continue
+        if _pl.bl_blocked(cfg, t):
+            log("구매 작품 %s: %s" % (t.get("title", sid), _pl.genre_block_msg(cfg, t)))
+            continue
+        if manage_job:
+            ss.save_job_state({"progress": i + 1, "total": len(bought),
+                                "message": "카카오 구매 작품: %s" % t.get("title", sid)})
+        r = download_series(cfg, session, sid, log=log, full=True,
+                            cancel_check=lambda: ss.load_job_state().get("cancel_requested"))
+        res["downloaded"] += r.get("downloaded", 0)
+        if r.get("auth_expired"):
+            res["auth_expired"] = True
+            break
+    kakao_api.save_session_cookies(session)
+    ss.save_job_state({"last_kakao_purchase_sync_at": time.time()})
+    msg = "카카오 구매 작품 동기화 완료: 작품 %d개(새로 등록 %d) / 신규 %d화" % (
+        res["series"], res["added"], res["downloaded"])
+    log(msg)
+    if manage_job:
+        ss.save_job_state({"running": False, "stage": "done", "finished_at": time.time(), "message": msg})
+    return res
+
+
 def run_kakao_series_job(cfg, sid, log=print, only_nos=None, force=False):
     """작품 하나 '지금 다운로드'(title_job 상태 사용). 미보유 회차 전부 시도."""
     t = ss.load_kakao_titles().get(sid) or {}

@@ -61,6 +61,63 @@ def in_new_episode_scope(cfg, t, platform="naver", now=None):
     return bool(wds & target_weekdays(now))
 
 
+_MAX_PAID_PROBE = 30   # 작품당 한 번에 확인할 유료 회차 상한(구매 여부 확인 요청 수 제한)
+
+
+def _naver_paid_sweep(cfg, session, tid, t, download_root, temp_root, log, skip_nos=None,
+                      cookie_hash=""):
+    """구매(소장/대여)한 유료 회차를 전체 목록에서 찾아 받는다. 받은 회차 수 반환."""
+    title = t.get("title", tid)
+    fz = int(cfg.get("FOLDER_ZERO_FILL", 4))
+    try:
+        eps = naver_api.fetch_episode_list(session, tid)
+    except naver_api.NaverAuthExpired:
+        return 0
+    except Exception as e:  # noqa: BLE001
+        log("%s: 구매 회차 확인용 목록 조회 실패 - %s" % (title, e))
+        return 0
+    paid = sorted([e for e in eps if e.get("charge") and e.get("no") not in (skip_nos or set())],
+                  key=lambda e: e["no"])
+    paid = [e for e in paid if not downloader.find_existing_episode_archive(
+        download_root, title, tid, e["no"], fz)]
+    if not paid:
+        return 0
+    got, probes = 0, 0
+    for ep in paid:
+        if probes >= _MAX_PAID_PROBE:
+            log("%s: 구매 회차 확인 상한(%d) - 나머지는 내일" % (title, _MAX_PAID_PROBE))
+            break
+        probes += 1
+        try:
+            ok, skipped, cnt, err = downloader.download_episode(
+                session, download_root, temp_root, title, tid, ep["no"],
+                image_zero_fill=int(cfg.get("IMAGE_ZERO_FILL", 4)), folder_zero_fill=fz,
+                max_concurrent=int(cfg.get("MAX_CONCURRENT_DOWNLOADS", 5)),
+                delay_seconds=float(cfg.get("DELAY_SECONDS", 1.0)),
+                timeout=int(cfg.get("REQUEST_TIMEOUT_SECONDS", 10)), log=log)
+        except naver_api.NaverPaidEpisode:
+            continue
+        except naver_api.NaverAuthExpired:
+            if t.get("is_adult"):
+                ss.upsert_title({tid: {"adult_block_hash": cookie_hash}})
+            break
+        if not ok or skipped:
+            continue
+        c_ok, _p, c_msg = downloader.compress_episode(
+            download_root, temp_root, title, tid, ep["no"], folder_zero_fill=fz, log=log,
+            zip_stored=bool(cfg.get("ZIP_STORED", True)), session=session,
+            cover_url=t.get("thumbnail") if cfg.get("ADD_COVER_AS_FIRST_PAGE", True) else None,
+            comicinfo_meta=_comicinfo_meta_for(t, ep, tid) if cfg.get("GENERATE_COMICINFO_XML", True) else None)
+        if c_ok:
+            got += 1
+            log("%s %s화: 구매(소장/대여)한 유료 회차 받음" % (title, ep["no"]))
+            ss.append_history({"type": "download", "source": "purchased", "title_id": tid, "title": title,
+                               "episode_no": ep["no"], "subtitle": ep.get("subtitle"), "image_count": cnt})
+    if got:
+        log("%s: 구매한 유료 회차 %d화 받음" % (title, got))
+    return got
+
+
 def naver_try_owned_paid(cfg):
     """유료(charge) 회차라도 로그인 쿠키가 있으면 한 번 열어 보고, 쿠키(결제수단)로
     이미 대여/소장한 회차면 받는다. 결제는 일어나지 않는다(볼 수 있는 회차만 받음)."""
@@ -584,6 +641,9 @@ def run_download_cycle(cfg, log=print):
 
         last_ok_no = t.get("last_downloaded_no")
         consecutive_fail = 0
+        owned_mode = naver_try_owned_paid(cfg)
+        tried_paid = set()
+        paid_probe = {"n": 0}
         for ep in capped:
             if _cancelled():
                 log("titleId=%s: 취소 요청 확인됨 - 남은 회차는 다음 실행 때 이어받습니다" % tid)
@@ -620,6 +680,15 @@ def run_download_cycle(cfg, log=print):
                 state["cookie_expired"] = True
                 break
             except naver_api.NaverPaidEpisode as e:
+                if ep.get("charge") and owned_mode:
+                    # 구매(소장/대여)하지 않은 유료 회차 - 뒤쪽에 띄엄띄엄 구매한 회차가
+                    # 있을 수 있으니 멈추지 않고 다음 유료 회차를 계속 확인한다(상한 있음)
+                    tried_paid.add(ep["no"])
+                    paid_probe["n"] += 1
+                    if paid_probe["n"] >= _MAX_PAID_PROBE:
+                        log("titleId=%s: 유료 회차 확인 상한(%d) 도달 - 나머지는 다음 확인 때" % (tid, _MAX_PAID_PROBE))
+                        break
+                    continue
                 # 마찬가지로 이후 회차도 계속 유료일 가능성이 높아 이 작품은
                 # 여기서 접고 다음 작품으로 넘어간다("24시간마다 무료" 로테이션이
                 # 있으니 last_ok_no는 안 건드려서 다음 스캔 때 다시 확인함).
@@ -632,9 +701,12 @@ def run_download_cycle(cfg, log=print):
                 break
 
             if ep.get("charge") and not ok:
-                # 대여/소장하지 않은 유료 회차 - 이후 회차도 유료일 가능성이 높아 중단
-                log("titleId=%s %s화: 유료 회차(대여/소장 안 됨) - 이 작품은 여기까지" % (tid, ep["no"]))
-                break
+                # 대여/소장하지 않은 유료 회차 - 다음 유료 회차 계속 확인(띄엄띄엄 구매 대응)
+                tried_paid.add(ep["no"])
+                paid_probe["n"] += 1
+                if paid_probe["n"] >= _MAX_PAID_PROBE:
+                    break
+                continue
             if ok and ep.get("charge") and not skipped:
                 log("titleId=%s %s화: 유료 회차지만 대여/소장 중이라 받음" % (tid, ep["no"]))
             if ok:
@@ -702,6 +774,17 @@ def run_download_cycle(cfg, log=print):
         # rest_needed 값으로 갱신한다. 예전에는 last_ok_no가 바뀔 때만
         # upsert했는데, 유료/연속실패로 하나도 못 받은 회차라도 밀린 회차가
         # 있으면(rest_needed=True) UP 뱃지가 떠야 하는데 안 뜨는 문제가 있었다.
+        # 하루 1번: 구매(소장/대여)한 유료 회차를 목록 전체에서 찾아 받는다.
+        # (위 루프는 last_downloaded_no 이후 회차만 보므로, 예전에 산 회차나
+        #  중간에 건너뛴 회차는 여기서 채움)
+        if (owned_mode and not state["cookie_expired"] and not _cancelled()
+                and time.time() - float(t.get("paid_sweep_at") or 0) >= 24 * 3600):
+            got = _naver_paid_sweep(cfg, session, tid, t, download_root, temp_root, log,
+                                    skip_nos=tried_paid, cookie_hash=cookie_hash)
+            with lock:
+                state["downloaded"] += got
+            ss.upsert_title({tid: {"paid_sweep_at": time.time()}})
+
         patch = {"up_flag": rest_needed, "initial_limit_done": True}
         if last_ok_no != t.get("last_downloaded_no"):
             patch["last_downloaded_no"] = last_ok_no
@@ -782,6 +865,12 @@ def run_full_cycle(cfg, log=print):
                 try:
                     from . import kakao_pipeline
                     kakao_box["result"] = kakao_pipeline.run_kakao_cycle(cfg, log=log)
+                    # 하루 1번 구매 작품 동기화(로그인 쿠키가 있을 때)
+                    if ((cfg.get("KAKAO_COOKIE") or "").strip() and _cfg_bool(cfg, "KAKAO_SYNC_PURCHASED", True)
+                            and not ss.load_job_state().get("cancel_requested")
+                            and time.time() - float(ss.load_job_state().get("last_kakao_purchase_sync_at") or 0)
+                            >= 24 * 3600):
+                        kakao_pipeline.sync_purchased(cfg, log=log)
                 except Exception as e:  # noqa: BLE001
                     log("카카오페이지 사이클 오류(네이버 결과에는 영향 없음): %s" % e)
             kakao_thread = threading.Thread(target=_kakao_run, name="wtm_kakao_cycle", daemon=True)
