@@ -727,7 +727,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             nt = ss.load_kakao_titles().get(cur) or {}
             return ss.try_acquire_title_job({
                 "title_id": cur, "title": "[카카오] %s" % nt.get("title", cur),
-                "message": "카카오 %s 회차 확인 중" % nt.get("title", cur),
+                "message": "%s %s 회차 확인 중" % (kakao_pipeline.platform_label(nt), nt.get("title", cur)),
                 "started_at": time.time(), "finished_at": None, "cancel_requested": False,
                 "last_error": None, "progress": 0, "total": 0})
 
@@ -1096,7 +1096,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 if ss.load_title_job_state().get("cancel_requested"):
                     ss.append_log("선택 회차 다운로드 취소됨")
                     break
-                ss.save_title_job_state({"progress": i, "message": "%s %s화 다운로드 중" % (title, no)})
+                ss.save_title_job_state({"progress": i, "message": "[네이버웹툰] %s %s화 받는 중 (%d/%d화)" % (
+                    title, no, i + 1, len(episode_nos))})
                 try:
                     ok, skipped, cnt, err = dl.download_episode(
                         session, cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR,
@@ -1241,7 +1242,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                                         "title": title_name, "episode_no": ep["no"],
                                         "error": "유료 회차(목록 API charge=true)"})
                     break
-                ss.save_title_job_state({"progress": i, "message": "%s %s화 다운로드 중" % (title_name, ep["no"])})
+                ss.save_title_job_state({"progress": i, "total": len(new_eps), "message": "[네이버웹툰] %s %s화 받는 중 (%d/%d화)" % (
+                    title_name, ep["no"], i + 1, len(new_eps))})
                 try:
                     ok, skipped, cnt, err = dl.download_episode(
                         session, cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR,

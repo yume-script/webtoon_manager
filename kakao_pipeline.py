@@ -250,6 +250,10 @@ def _download_novel_episode(cfg, session, root, title, sid, ep, t, force=False, 
     return True, False, data["words"], None
 
 
+def platform_label(t):
+    return "[카카오웹소설]" if _is_novel(t) else "[카카오웹툰]"
+
+
 def _is_novel(t):
     return "소설" in str((t or {}).get("category") or "")
 
@@ -928,9 +932,12 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
         # 이제는 작품 처리가 끝날 때 1번 + 긴 다운로드 대비 20화마다 1번만.
         if res["downloaded"] % 20 == 0:
             _update_yaml()
-        ss.append_history({"type": "download", "source": "kakao", "platform": "kakao",
-                           "title_id": sid, "title": "[카카오] %s" % title, "episode_no": no,
-                           "subtitle": ep.get("subtitle"), "image_count": cnt})
+        ss.append_history({"type": "download",
+                           "source": "manual" if (full or only_nos) else "auto",
+                           "platform": yaml_platform(t),
+                           "title_id": sid, "title": title, "episode_no": no,
+                           "subtitle": ep.get("subtitle"), "image_count": cnt,
+                           "unit": "words" if is_novel else "images"})
         if no < kakao_api.SPECIAL_EP_BASE and (last_ok is None or no > last_ok):
             last_ok = no
 
@@ -1010,9 +1017,15 @@ def run_kakao_cycle(cfg, log=print, manage_job=False):
         with lock:
             done["n"] += 1
             n = done["n"]
-        ss.save_job_state({"stage": "kakao", "progress": n, "total": len(items),
-                            "message": "카카오페이지: %s" % t.get("title", sid)})
-        r = download_series(cfg, tls.session, sid, log=log, cancel_check=_stop)
+        label = platform_label(t)
+
+        def _st(i, m, text, n=n, label=label):
+            msg = "%s %s (%d/%d화)" % (label, text, i + 1, m) if m else "%s %s" % (label, text)
+            ss.save_job_state({"kakao": {"msg": msg, "done": n, "total": len(items), "running": True}})
+
+        _st(0, 0, "%s - 새 회차 확인 중" % t.get("title", sid))
+        r = download_series(cfg, tls.session, sid, log=log, cancel_check=_stop,
+                            on_progress=lambda i, m, text: _st(i, m, text + " 받는 중"))
         with lock:
             for k in ("downloaded", "locked", "waitfree_used"):
                 total[k] += r[k]
@@ -1040,6 +1053,7 @@ def run_kakao_cycle(cfg, log=print, manage_job=False):
                         log("카카오 작품 처리 중 오류(다음 작품은 계속): %s" % e)
     finally:
         kakao_api.save_session_cookies(session)
+        ss.save_job_state({"kakao": None})
 
     # 쿠키 만료 알림은 만료가 처음 감지됐을 때 1번만 보내고, 정상으로 돌아오면
     # 다음 만료 때 다시 1번 보낸다(매 사이클마다 반복 알림 방지)
@@ -1158,8 +1172,11 @@ def run_kakao_series_job(cfg, sid, log=print, only_nos=None, force=False):
     except kakao_api.KakaoAuthExpired as e:
         log("카카오페이지: %s" % e)
 
+    label = platform_label(t)
+
     def _progress(i, n, text):
-        ss.save_title_job_state({"progress": i, "total": n, "message": "카카오: %s" % text})
+        ss.save_title_job_state({"progress": i, "total": n,
+                                  "message": "%s %s 받는 중 (%d/%d화)" % (label, text, i + 1, n)})
 
     try:
         r = download_series(cfg, session, sid, log=log, full=True,

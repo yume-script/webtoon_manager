@@ -70,9 +70,12 @@
 .wtm-status-pill.running { background: color-mix(in srgb, var(--app-accent, #4a7dfc) 85%, transparent); color: #fff; }
 .wtm-status-pill.error { background: color-mix(in srgb, #c0554f 85%, transparent); color: #fff; }
 .wtm-status-pill.done { background: color-mix(in srgb, #4f9d76 85%, transparent); color: #fff; }
-.wtm-progress { flex: 1; min-width: 120px; height: 6px; border-radius: 3px;
-  background: var(--app-border, rgba(127,127,127,.2)); overflow: hidden; }
-.wtm-progress-bar { height: 100%; width: 0%; background: var(--app-accent, #4a7dfc); transition: width .3s; }
+.wtm-progress { flex: 1; min-width: 120px; height: 10px; border-radius: 5px;
+  background: color-mix(in srgb, #16a34a 18%, var(--app-bg-card, #fff)); overflow: hidden;
+  border: 1px solid color-mix(in srgb, #16a34a 45%, transparent); }
+.wtm-progress-bar { height: 100%; width: 0%; background: #16a34a; transition: width .3s;
+  box-shadow: 0 0 6px color-mix(in srgb, #16a34a 60%, transparent); }
+.wtm-progress-text { font-size: 11.5px; font-weight: 700; color: #16a34a; white-space: nowrap; }
 
 /* ---------- 탭 ---------- */
 .wtm-tabs { display: flex; gap: 4px; flex-wrap: wrap;

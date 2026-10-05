@@ -297,33 +297,70 @@
     }
   }
 
+  var historyFilter = 'all';
+  var PLATFORM_LABELS = { naver: '네이버웹툰', kakao: '카카오웹툰', kakao_novel: '카카오웹소설' };
+  var PLATFORM_COLORS = { naver: '#03c75a', kakao: '#e0b400', kakao_novel: '#8a63d2' };
+
+  function historyPlatform(h) {
+    if (h.platform === 'kakao_novel' || h.platform === 'naver') return h.platform;
+    var isKakao = h.platform === 'kakao' || h.source === 'kakao' || /^\[카카오\]/.test(h.title || '');
+    if (!isKakao) return 'naver';
+    // 예전 이력은 웹소설 여부가 없어 목록 정보로 판단
+    var tt = (state.titles || []).filter(function (x) { return x.platform === 'kakao' && String(x.titleId) === String(h.title_id); })[0];
+    return tt && tt.novel ? 'kakao_novel' : 'kakao';
+  }
+
+  function platformBadge(p) {
+    var c = PLATFORM_COLORS[p] || '#888';
+    return '<span class="wtm-badge" style="margin-right:6px;background:color-mix(in srgb, ' + c + ' 22%, transparent);' +
+      'color:color-mix(in srgb, ' + c + ' 85%, var(--app-text-primary))">' + (PLATFORM_LABELS[p] || p) + '</span>';
+  }
+
+  function historyEpLabel(h) {
+    var no = h.episode_no;
+    var label = (no >= 9000) ? ('특별회차(파일 ' + no + '화)') : (no + '화');
+    var sub = (h.subtitle || '').trim();
+    var title = (h.title || '').replace(/^\[카카오\]\s*/, '');
+    // 회차 제목이 "작품명 N화"면 중복이라 생략, 그 외(프롤로그/외전 등)는 함께 표시
+    if (sub && sub !== title + ' ' + no + '화' && sub.indexOf(title) !== 0) label += ' "' + escapeHtml(sub) + '"';
+    else if (sub && no >= 9000) label += ' "' + escapeHtml(sub.replace(title, '').trim()) + '"';
+    return label;
+  }
+
   function renderHistory() {
     var box = el('[data-el="history-list"]');
     if (!box) return;
-    var list = state.history || [];
+    var list = (state.history || []).filter(function (h) {
+      return historyFilter === 'all' || historyPlatform(h) === historyFilter;
+    });
     if (!list.length) { box.innerHTML = '<div class="wtm-hint">다운로드 이력이 없습니다.</div>'; return; }
     box.innerHTML = list.map(function (h) {
       var isFail = (h.type || '').indexOf('fail') >= 0;
       // source 필드가 없는 예전 이력(업데이트 전에 쌓인 기록)은 type 이름으로
       // 대신 추정한다 - manual_download(_fail)만 수동이고 나머지는 자동.
       var isManual = h.source ? h.source === 'manual' : (h.type || '').indexOf('manual') >= 0;
+      var isPurchased = h.source === 'purchased';
       var sourceBadge = '<span class="wtm-badge' + (isManual ? '' : ' new') + '" style="margin-right:6px">' +
-        (isManual ? '수동' : '자동') + '</span>';
+        (isPurchased ? '구매' : (isManual ? '수동' : '자동')) + '</span>';
+      var plat = historyPlatform(h);
+      var title = escapeHtml((h.title || '').replace(/^\[카카오\]\s*/, ''));
+      var unit = (h.unit === 'words' || plat === 'kakao_novel') ? '단어' : '장';
       var text = '';
       if (h.type === 'download' || h.type === 'manual_download') {
-        text = escapeHtml(h.title) + ' - ' + h.episode_no + '화 (' + (h.image_count || 0) + '장)';
+        text = '<b>' + title + '</b> - ' + historyEpLabel(h) + ' (' + (h.image_count || 0) + unit + ')';
       } else if (h.type === 'skipped_paid') {
-        text = escapeHtml(h.title) + ' - ' + h.episode_no + '화: 유료라 건너뜀' +
+        text = '<b>' + title + '</b> - ' + historyEpLabel(h) + ': 유료라 건너뜀' +
           (h.error ? ' (' + escapeHtml(h.error) + ')' : '');
       } else if (isFail) {
-        text = escapeHtml(h.title) + ' - ' + h.episode_no + '화 실패: ' + escapeHtml(h.error || '');
+        text = '<b>' + title + '</b> - ' + historyEpLabel(h) + ' 실패: ' + escapeHtml(h.error || '');
       } else {
-        text = JSON.stringify(h);
+        text = escapeHtml(JSON.stringify(h));
       }
       return '<div class="wtm-history-item' + (isFail ? ' fail' : '') + '">' +
-        sourceBadge + '<span>' + fmtDate(h.ts) + '</span> &middot; ' + text + '</div>';
+        sourceBadge + platformBadge(plat) + '<span>' + fmtDate(h.ts) + '</span> &middot; ' + text + '</div>';
     }).join('');
   }
+
 
   function renderSettingsSummary() {
     var box = el('[data-el="settings-summary"]');
@@ -409,13 +446,33 @@
       pill.className = 'wtm-status-pill' + (job.running ? ' running' : (job.stage === 'error' ? ' error' : (job.stage === 'done' ? ' done' : '')));
       pill.textContent = job.running ? '실행 중' : (job.stage === 'error' ? '오류' : (job.stage === 'done' ? '완료' : '대기 중'));
     }
-    if (msg) msg.textContent = job.message || '';
+    // 네이버/카카오가 동시에 돌 때는 각각의 진행 상황을 따로 보여준다
+    var parts = [job.naver, job.kakao].filter(function (p) { return p && p.running; });
+    var progText = el('[data-el="progress-text"]');
+    if (msg) {
+      if (job.running && parts.length) {
+        msg.innerHTML = parts.map(function (p) {
+          return '<div>' + escapeHtml(p.msg || '') + ' <span class="wtm-hint" style="margin:0">· 작품 ' +
+            (p.done || 0) + '/' + (p.total || 0) + '</span></div>';
+        }).join('');
+      } else {
+        msg.textContent = job.message || '';
+      }
+    }
+    var pDone = 0, pTotal = 0;
+    if (parts.length) {
+      parts.forEach(function (p) { pDone += (p.done || 0); pTotal += (p.total || 0); });
+    } else {
+      pDone = job.progress || 0; pTotal = job.total || 0;
+    }
     if (progWrap && progBar) {
-      if (job.running && job.total) {
+      if (job.running && pTotal) {
         progWrap.style.display = '';
-        progBar.style.width = Math.min(100, Math.round((job.progress / job.total) * 100)) + '%';
+        progBar.style.width = Math.max(2, Math.min(100, Math.round((pDone / pTotal) * 100))) + '%';
+        if (progText) { progText.style.display = ''; progText.textContent = Math.round((pDone / pTotal) * 100) + '% (' + pDone + '/' + pTotal + ')'; }
       } else {
         progWrap.style.display = 'none';
+        if (progText) progText.style.display = 'none';
       }
     }
     if (cancelBtn) cancelBtn.style.display = job.running ? '' : 'none';
@@ -682,6 +739,14 @@
     if (moreBtn) {
       gridLimit += GRID_PAGE;
       renderGrid();
+      return;
+    }
+
+    var histBtn = ev.target.closest('[data-history-filter]');
+    if (histBtn) {
+      historyFilter = histBtn.getAttribute('data-history-filter');
+      els('[data-history-filter]').forEach(function (b) { b.classList.toggle('active', b === histBtn); });
+      renderHistory();
       return;
     }
 

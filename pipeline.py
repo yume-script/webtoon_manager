@@ -118,6 +118,13 @@ def _naver_paid_sweep(cfg, session, tid, t, download_root, temp_root, log, skip_
     return got
 
 
+def _naver_status(done, total, text):
+    """상단 상태 줄의 네이버 진행 표시(카카오와 동시에 돌아도 서로 덮어쓰지 않게 따로 저장)."""
+    ss.save_job_state({"progress": done, "message": "[네이버웹툰] " + text,
+                        "naver": {"msg": "[네이버웹툰] " + text, "done": done, "total": total,
+                                  "running": True}})
+
+
 def naver_try_owned_paid(cfg):
     """유료(charge) 회차라도 로그인 쿠키가 있으면 한 번 열어 보고, 쿠키(결제수단)로
     이미 대여/소장한 회차면 받는다. 결제는 일어나지 않는다(볼 수 있는 회차만 받음)."""
@@ -572,7 +579,9 @@ def run_download_cycle(cfg, log=print):
     timeout = int(_cfg_num(cfg, "REQUEST_TIMEOUT_SECONDS", 10))
 
     ss.save_job_state({"stage": "downloading", "message": "구독 작품 회차 확인 중",
-                        "progress": 0, "total": len(subscribed)})
+                        "progress": 0, "total": len(subscribed),
+                        "naver": {"msg": "[네이버웹툰] 구독 작품 회차 확인 시작", "done": 0,
+                                  "total": len(subscribed), "running": True}})
 
     failures = []
 
@@ -606,7 +615,7 @@ def run_download_cycle(cfg, log=print):
         with lock:
             state["done"] += 1
             done_n = state["done"]
-        ss.save_job_state({"progress": done_n, "message": "%s 새 회차 확인 중" % t.get("title", tid)})
+        _naver_status(done_n, len(subscribed), "%s - 새 회차 확인 중" % t.get("title", tid))
         session = _thread_session()
         try:
             new_eps = _episodes_to_download(session, cfg, tid, t.get("last_downloaded_no"))
@@ -662,6 +671,8 @@ def run_download_cycle(cfg, log=print):
                     "episode_no": ep["no"], "error": "유료 회차(목록 API charge=true)",
                 })
                 break
+            _naver_status(state["done"], len(subscribed), "%s - %s화 받는 중 (%d/%d화)" % (
+                t.get("title", tid), ep["no"], capped.index(ep) + 1, len(capped)))
             try:
                 ok, skipped, img_count, err = downloader.download_episode(
                     session, download_root, temp_root, t.get("title", tid), tid, ep["no"],
@@ -816,6 +827,7 @@ def run_download_cycle(cfg, log=print):
     downloaded_count = state["downloaded"]
     cookie_expired = state["cookie_expired"]
     cancelled = state["cancelled"]
+    ss.save_job_state({"naver": None})
 
     ss.save_job_state({"progress": len(subscribed), "message": "다운로드 사이클 종료"})
 
