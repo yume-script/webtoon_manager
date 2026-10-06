@@ -29,6 +29,17 @@ INFO_VERSION = 3
 MAX_CONSECUTIVE_LOCKED = 3
 
 
+
+def _low_prio(fn):
+    """백그라운드 작업 스레드를 낮은 CPU 우선순위로 실행(웹서버 응답 우선)."""
+    def _wrapped(*a, **kw):
+        try:
+            downloader.lower_thread_priority(10)
+        except Exception:  # noqa: BLE001
+            pass
+        return fn(*a, **kw)
+    return _wrapped
+
 def _num(cfg, key, default):
     try:
         return type(default)(cfg.get(key, default))
@@ -246,6 +257,7 @@ def _download_novel_episode(cfg, session, root, title, sid, ep, t, force=False, 
         path, ep_title, title, t.get("author") or "", data["sections"], data["images"],
         css=data["css"], cover=cover, identifier="kakaopage:%s:%s" % (sid, ep["product_id"]),
         episode_no=no)
+    kavita_yaml.remember_epub_words(path, data["words"])
     time.sleep(max(0.0, float(_num(cfg, "DELAY_SECONDS", 1.0))))
     return True, False, data["words"], None
 
@@ -318,13 +330,13 @@ def repair_old_records_async(cfg):
     def _run():
         session = build_session_from_cfg(cfg)
         for sid in bad:
-            t = ss.load_kakao_titles().get(sid)
+            t = ss.get_kakao_title(sid)
             if t:
                 _refresh_info(cfg, session, sid, t, log=ss.append_log)
                 time.sleep(0.3)
 
     import threading
-    threading.Thread(target=_run, name="webtoon_manager_kakao_repair", daemon=True).start()
+    threading.Thread(target=_low_prio(_run), name="webtoon_manager_kakao_repair", daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
@@ -534,7 +546,7 @@ def add_series(cfg, text, log=print):
     sid = kakao_api.parse_series_id(text)
     if not sid:
         return False, "카카오페이지 작품 URL(page.kakao.com/content/숫자) 또는 작품 번호를 입력하세요.", None
-    existing = ss.load_kakao_titles().get(sid)
+    existing = ss.get_kakao_title(sid)
     session = build_session_from_cfg(cfg)
     info = kakao_api.fetch_series_info(session, sid)
     if not info.get("title") and not existing:
@@ -581,7 +593,7 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
     반환 dict: downloaded, locked, failures(list), auth_expired, cancelled, waitfree_used"""
     res = {"downloaded": 0, "locked": 0, "failures": [], "auth_expired": False,
            "cancelled": False, "waitfree_used": 0}
-    t = dict(ss.load_kakao_titles().get(sid) or {})
+    t = dict(ss.get_kakao_title(sid) or {})
     if not t:
         return res
 
@@ -1080,7 +1092,7 @@ def run_kakao_cycle(cfg, log=print, manage_job=False):
 
 def lookup_episodes(cfg, sid):
     """[선택 회차 다운로드] 탭용 회차 목록(받음/유료 표시 포함)."""
-    t = ss.load_kakao_titles().get(str(sid)) or {}
+    t = ss.get_kakao_title(str(sid)) or {}
     session = build_session_from_cfg(cfg)
     if not t.get("title"):
         info = kakao_api.fetch_series_info(session, sid)
@@ -1135,7 +1147,7 @@ def sync_purchased(cfg, log=print, manage_job=False):
             res["added"] += 1
         else:
             ss.upsert_kakao_title({sid: {"purchased": True}})
-        t = ss.load_kakao_titles().get(sid) or {}
+        t = ss.get_kakao_title(sid) or {}
         if _is_novel(t) and not novel_enabled(cfg):
             continue
         if _pl.bl_blocked(cfg, t):
@@ -1162,7 +1174,7 @@ def sync_purchased(cfg, log=print, manage_job=False):
 
 def run_kakao_series_job(cfg, sid, log=print, only_nos=None, force=False):
     """작품 하나 '지금 다운로드'(title_job 상태 사용). 미보유 회차 전부 시도."""
-    t = ss.load_kakao_titles().get(sid) or {}
+    t = ss.get_kakao_title(sid) or {}
     log("카카오 다운로드 시작: %s (series_id=%s) / 저장 경로 %s / 로그인 쿠키 %s" % (
         t.get("title", sid), sid, series_root(cfg, t),
         "있음" if (cfg.get("KAKAO_COOKIE") or "").strip() else "없음(무료 회차만)"))
@@ -1190,7 +1202,7 @@ def run_kakao_series_job(cfg, sid, log=print, only_nos=None, force=False):
     if r["failures"]:
         msg += " - 첫 실패: %s" % (r["failures"][0].get("error") or "")[:150]
     if not r["downloaded"] and not r["failures"] and not r["locked"]:
-        cur = ss.load_kakao_titles().get(sid) or {}
+        cur = ss.get_kakao_title(sid) or {}
         if cur.get("last_result"):
             msg += " (%s)" % cur["last_result"]
     log(msg)

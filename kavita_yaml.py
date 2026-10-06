@@ -162,8 +162,7 @@ def _zip_image_count(path):
         return 0
 
 
-def _epub_word_count(path):
-    """EPUB 본문 단어 수(Kavita의 wordcount용)."""
+def _epub_word_count_raw(path):
     try:
         with zipfile.ZipFile(path) as zf:
             words = 0
@@ -174,6 +173,67 @@ def _epub_word_count(path):
             return words
     except Exception:  # noqa: BLE001
         return 0
+
+
+# EPUB 단어 수 캐시 {절대경로: [크기, mtime_ns, 단어수]}. 예전에는 kavita.yaml을
+# 갱신할 때마다 그 작품의 EPUB을 전부 열어 본문을 파싱해서(회차 수백 개 x 작품 수)
+# 웹소설 처리 중 CPU를 크게 잡아먹었다. 파일이 그대로면 다시 열지 않는다.
+EPUB_WORDS_PATH = os.path.join(ss.DATA_DIR, "epub_words.json")
+_epub_words = None
+_epub_words_dirty = False
+
+
+def _epub_cache():
+    global _epub_words
+    if _epub_words is None:
+        _epub_words = ss.read_json(EPUB_WORDS_PATH, {})
+    return _epub_words
+
+
+def flush_epub_cache():
+    global _epub_words_dirty
+    with ss._lock:
+        if _epub_words_dirty and _epub_words is not None:
+            ss.write_json(EPUB_WORDS_PATH, _epub_words)
+            _epub_words_dirty = False
+
+
+def remember_epub_words(path, words):
+    """방금 만든 EPUB의 단어 수를 캐시에 넣어 둔다(나중에 다시 열지 않게)."""
+    global _epub_words_dirty
+    try:
+        st = os.stat(path)
+    except OSError:
+        return
+    with ss._lock:
+        _epub_cache()[os.path.abspath(path)] = [st.st_size, st.st_mtime_ns, int(words or 0)]
+        _epub_words_dirty = True
+
+
+def _epub_word_count(path):
+    """EPUB 본문 단어 수(Kavita의 wordcount용). 캐시에 있으면 파일을 열지 않는다.
+    처음 여는 예전 EPUB은 이때 HTML 코드 노출 문제(이중 이스케이프)도 고친다."""
+    global _epub_words_dirty
+    key = os.path.abspath(path)
+    try:
+        st = os.stat(path)
+    except OSError:
+        return 0
+    with ss._lock:
+        rec = _epub_cache().get(key)
+    if rec and rec[0] == st.st_size and rec[1] == st.st_mtime_ns:
+        return rec[2]
+    try:
+        from . import novel_epub
+        if novel_epub.repair_epub(path):
+            st = os.stat(path)
+    except Exception:  # noqa: BLE001
+        pass
+    words = _epub_word_count_raw(path)
+    with ss._lock:
+        _epub_cache()[key] = [st.st_size, st.st_mtime_ns, words]
+        _epub_words_dirty = True
+    return words
 
 
 def _list_archives(series_dir):
@@ -359,7 +419,7 @@ def refresh_title_info(session, title_id, t, force=False, log=None):
         })
         if not t.get("thumbnail") and info.get("thumbnail"):
             patch["thumbnail"] = info["thumbnail"]
-    if str(title_id) in ss.load_titles():
+    if ss.has_title(str(title_id)):
         titles = ss.upsert_title({str(title_id): patch})
         return titles.get(str(title_id), dict(t, **patch))
     _save_info_cache(title_id, patch)
@@ -461,7 +521,7 @@ def _already_current(path, series_dir, archives, sig):
     return False
 
 
-def write_kavita_yaml(download_root, title_id, session=None, embed_cover=True,
+def _write_kavita_yaml_impl(download_root, title_id, session=None, embed_cover=True,
                       refresh_info=True, force_info=False, log=None,
                       series_dir=None, folder_title=None, platform="naver"):
     """시리즈 폴더에 kavita.yaml을 생성/갱신한다.
@@ -479,9 +539,9 @@ def write_kavita_yaml(download_root, title_id, session=None, embed_cover=True,
         refresh_info = False
     try:
         if platform in ("kakao", "kakao_novel"):
-            t = ss.load_kakao_titles().get(tid)
+            t = ss.get_kakao_title(tid)
         else:
-            t = ss.load_titles().get(tid)
+            t = ss.get_title(tid)
         if t is not None:
             t = dict(t)
         if not t:
@@ -512,11 +572,11 @@ def write_kavita_yaml(download_root, title_id, session=None, embed_cover=True,
             # titles.json에 없는 작품은 상세정보의 제목/썸네일/성인 여부로 보강
             if not t.get("title") or t.get("title") == tid:
                 t["title"] = folder_title or tid
-            if not t.get("release_date") and (force_info or tid not in ss.load_titles()):
+            if not t.get("release_date") and (force_info or not ss.has_title(tid)):
                 rd = _fetch_release_date(session, tid, log=log)
                 if rd:
                     t["release_date"] = rd
-                    if tid in ss.load_titles():
+                    if ss.has_title(tid):
                         ss.upsert_title({tid: {"release_date": rd}})
                     else:
                         _save_info_cache(tid, {"release_date": rd})
@@ -570,3 +630,13 @@ def _existing_first_cover(path):
     except OSError:
         pass
     return None
+
+
+def write_kavita_yaml(*args, **kwargs):
+    try:
+        return _write_kavita_yaml_impl(*args, **kwargs)
+    finally:
+        try:
+            flush_epub_cache()
+        except Exception:  # noqa: BLE001
+            pass

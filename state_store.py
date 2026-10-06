@@ -110,27 +110,157 @@ def titles_rev():
     return "|".join(parts)
 
 
+# ---- 작품 목록(titles.json / kakao_titles.json) 메모리 캐시 + 묶음 저장 ----------
+# 작품 목록 파일은 수 MB라, 예전처럼 회차 하나 받을 때마다 파일 전체를 다시 읽고
+# (json 파싱) 다시 쓰면(직렬화+디스크 쓰기) 다운로드 중 CPU 대부분을 여기서 썼다.
+#  - 읽기: 파일 서명(mtime+크기)이 그대로면 메모리에 있는 걸 쓴다.
+#  - 쓰기: 바뀐 내용(patch)을 모아 두었다가 FLUSH_DELAY초마다 한 번만 파일에 쓴다.
+#    같은 프로세스 안의 읽기는 즉시 새 값이 보인다. 다른 곳에서 파일이 바뀌었으면
+#    파일을 다시 읽은 뒤 모아 둔 patch만 덮어써서 서로의 변경을 잃지 않는다.
+# 모듈이 다시 로드돼도 캐시/대기 중인 변경이 사라지지 않게 sys 모듈에 붙여 둔다.
+import sys as _sys
+
+TITLES_FLUSH_DELAY = 5.0
+_shared = getattr(_sys, "_wtm_titles_shared", None)
+if _shared is None:
+    _shared = {"cache": {}, "pending": {}, "timer": None, "lock": threading.RLock()}
+    _sys._wtm_titles_shared = _shared
+
+
+def _file_sig(path):
+    try:
+        st = os.stat(path)
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
+def _apply_pending(data, pend):
+    for k, patch in pend.items():
+        if patch is None:
+            data.pop(k, None)
+        else:
+            cur = data.get(k)
+            cur = dict(cur) if isinstance(cur, dict) else {}
+            cur.update(patch)
+            data[k] = cur
+
+
+def _titles_data(path):
+    """캐시된 원본 dict(수정 금지 - 내부용)."""
+    with _shared["lock"]:
+        sig = _file_sig(path)
+        ent = _shared["cache"].get(path)
+        if ent is None or ent[0] != sig:
+            data = read_json(path, {})
+            if not isinstance(data, dict):
+                data = {}
+            pend = _shared["pending"].get(path)
+            if pend:
+                _apply_pending(data, pend)
+            ent = [sig, data]
+            _shared["cache"][path] = ent
+        return ent[1]
+
+
+def _titles_load(path):
+    # 바깥 dict와 작품별 dict는 복사해서 준다(호출 측이 고쳐도 캐시가 안 망가지게).
+    with _shared["lock"]:
+        return {k: (dict(v) if isinstance(v, dict) else v) for k, v in _titles_data(path).items()}
+
+
+def _titles_get(path, key):
+    with _shared["lock"]:
+        v = _titles_data(path).get(str(key))
+        return dict(v) if isinstance(v, dict) else v
+
+
+def _titles_patch(path, patches):
+    """patches: {id: patch dict | None(삭제)}"""
+    with _shared["lock"]:
+        data = _titles_data(path)
+        pend = _shared["pending"].setdefault(path, {})
+        for k, patch in patches.items():
+            k = str(k)
+            if patch is None:
+                data.pop(k, None)
+                pend[k] = None
+            else:
+                cur = dict(data.get(k) or {})
+                cur.update(patch)
+                data[k] = cur
+                if pend.get(k) is None and k in pend:
+                    pend[k] = dict(cur)      # 삭제 후 다시 추가 -> 전체 값으로
+                else:
+                    pend.setdefault(k, {}).update(patch)
+        _schedule_flush()
+
+
+def _schedule_flush():
+    if _shared["timer"] is not None:
+        return
+    t = threading.Timer(TITLES_FLUSH_DELAY, flush_titles)
+    t.daemon = True
+    _shared["timer"] = t
+    t.start()
+
+
+def flush_titles():
+    """모아 둔 작품 목록 변경을 지금 파일에 쓴다(작업 끝/종료 시에도 호출)."""
+    with _shared["lock"]:
+        _shared["timer"] = None
+        for path, pend in list(_shared["pending"].items()):
+            if not pend:
+                continue
+            ent = _shared["cache"].get(path)
+            if ent is None or ent[0] != _file_sig(path):
+                # 다른 곳에서 파일이 바뀜 -> 새로 읽고 내 변경만 다시 얹는다
+                data = read_json(path, {})
+                if not isinstance(data, dict):
+                    data = {}
+                _apply_pending(data, pend)
+            else:
+                data = ent[1]
+            try:
+                write_json(path, data)
+            except Exception:  # noqa: BLE001
+                _schedule_flush()   # 디스크 오류 등 - 다음에 다시 시도
+                continue
+            _shared["cache"][path] = [_file_sig(path), data]
+            _shared["pending"][path] = {}
+
+
+import atexit as _atexit
+_atexit.register(flush_titles)
+
+
 # ---- titles.json : { titleId(str): {...} } -----------------------------
 def load_titles():
-    return read_json(TITLES_PATH, {})
+    return _titles_load(TITLES_PATH)
+
+
+def get_title(title_id):
+    return _titles_get(TITLES_PATH, title_id)
+
+
+def has_title(title_id):
+    with _shared["lock"]:
+        return str(title_id) in _titles_data(TITLES_PATH)
 
 
 def save_titles(titles):
-    save_titles_map = {str(k): v for k, v in titles.items()}
-    write_json(TITLES_PATH, save_titles_map)
+    """목록 전체 저장(드묾). 지금 바로 쓴다."""
+    with _shared["lock"]:
+        flush_titles()
+        data = {str(k): v for k, v in titles.items()}
+        write_json(TITLES_PATH, data)
+        _shared["cache"][TITLES_PATH] = [_file_sig(TITLES_PATH), data]
 
 
 def upsert_title(patch_by_id):
     """patch_by_id: {titleId: {field: value, ...}} - 기존 값에 병합"""
-    with _lock:
-        titles = load_titles()
-        for tid, patch in patch_by_id.items():
-            tid = str(tid)
-            cur = titles.get(tid, {})
-            cur.update(patch)
-            titles[tid] = cur
-        save_titles(titles)
-    return titles
+    _titles_patch(TITLES_PATH, patch_by_id)
+    return load_titles()
 
 
 # ---- kakao_titles.json : 카카오페이지 작품 { series_id(str): {...} } ------------
@@ -142,25 +272,28 @@ _COMPACT_PATHS.update({TITLES_PATH, KAKAO_TITLES_PATH})
 
 
 def load_kakao_titles():
-    return read_json(KAKAO_TITLES_PATH, {})
+    return _titles_load(KAKAO_TITLES_PATH)
+
+
+def get_kakao_title(series_id):
+    return _titles_get(KAKAO_TITLES_PATH, series_id)
+
+
+def has_kakao_title(series_id):
+    with _shared["lock"]:
+        return str(series_id) in _titles_data(KAKAO_TITLES_PATH)
 
 
 def upsert_kakao_title(patch_by_id):
-    with _lock:
-        titles = load_kakao_titles()
-        for sid, patch in patch_by_id.items():
-            cur = titles.get(str(sid), {})
-            cur.update(patch)
-            titles[str(sid)] = cur
-        write_json(KAKAO_TITLES_PATH, titles)
-    return titles
+    _titles_patch(KAKAO_TITLES_PATH, patch_by_id)
+    return None
 
 
 def remove_kakao_title(series_id):
-    with _lock:
-        titles = load_kakao_titles()
-        removed = titles.pop(str(series_id), None)
-        write_json(KAKAO_TITLES_PATH, titles)
+    with _shared["lock"]:
+        removed = _titles_get(KAKAO_TITLES_PATH, series_id)
+        _titles_patch(KAKAO_TITLES_PATH, {str(series_id): None})
+        flush_titles()
     return removed
 
 
@@ -174,22 +307,47 @@ def save_authors_tags(data):
 
 
 # ---- history.jsonl (append-only, capped) ---------------------------------
+def _append_capped(path, line, max_lines, trim_bytes):
+    """파일 끝에 한 줄만 덧붙인다(예전처럼 매번 전체를 읽고 다시 쓰지 않음).
+    파일이 trim_bytes를 넘으면 그때만 마지막 max_lines줄로 줄인다."""
+    ensure_dirs()
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(line)
+    try:
+        if os.path.getsize(path) > trim_bytes:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+            _atomic_write(path, "".join(lines[-max_lines:]))
+    except OSError:
+        pass
+
+
 def append_history(entry):
     with _lock:
-        ensure_dirs()
         entry = dict(entry)
         entry.setdefault("ts", time.time())
-        lines = []
-        if os.path.exists(HISTORY_PATH):
-            with open(HISTORY_PATH, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-        lines.append(json.dumps(entry, ensure_ascii=False) + "\n")
-        if len(lines) > MAX_HISTORY_LINES:
-            lines = lines[-MAX_HISTORY_LINES:]
-        _atomic_write(HISTORY_PATH, "".join(lines))
+        _append_capped(HISTORY_PATH, json.dumps(entry, ensure_ascii=False) + "\n",
+                       MAX_HISTORY_LINES, 1024 * 1024)
+
+
+_hist_cache = {}
 
 
 def load_history(limit=200, query=None):
+    # 화면 폴링마다 이력 파일 전체를 다시 읽지 않도록, 파일이 그대로면 이전 결과를 쓴다.
+    sig = _file_sig(HISTORY_PATH)
+    if sig is None:
+        return []
+    ck = (sig, limit, query)
+    hit = _hist_cache.get("k")
+    if hit == ck:
+        return list(_hist_cache["v"])
+    out = _load_history_raw(limit, query)
+    _hist_cache["k"], _hist_cache["v"] = ck, out
+    return list(out)
+
+
+def _load_history_raw(limit=200, query=None):
     if not os.path.exists(HISTORY_PATH):
         return []
     with open(HISTORY_PATH, "r", encoding="utf-8") as f:
@@ -236,6 +394,8 @@ def load_job_state():
 
 
 def save_job_state(patch):
+    if patch.get("running") is False:
+        flush_titles()      # 작업이 끝나면 모아 둔 작품 정보 변경을 바로 저장
     with _lock:
         st = load_job_state()
         st.update(patch)
@@ -285,6 +445,8 @@ TITLE_JOB_STALE_SECONDS = 15 * 60
 
 
 def save_title_job_state(patch):
+    if patch.get("running") is False:
+        flush_titles()
     with _lock:
         st = load_title_job_state()
         st.update(patch)
@@ -340,16 +502,8 @@ def kakao_queue_list():
 
 def append_log(line):
     with _lock:
-        ensure_dirs()
-        lines = []
-        if os.path.exists(JOB_LOG_PATH):
-            with open(JOB_LOG_PATH, "r", encoding="utf-8") as f:
-                lines = f.readlines()
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
-        lines.append("[%s] %s\n" % (ts, line))
-        if len(lines) > MAX_LOG_LINES:
-            lines = lines[-MAX_LOG_LINES:]
-        _atomic_write(JOB_LOG_PATH, "".join(lines))
+        _append_capped(JOB_LOG_PATH, "[%s] %s\n" % (ts, line), MAX_LOG_LINES, 256 * 1024)
 
 
 # ---- update_check.json (GitHub 원격 버전 확인 결과 캐시) -------------------

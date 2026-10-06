@@ -319,7 +319,14 @@ def download_episode(session, download_root, temp_root, title, title_id, episode
                 return False
 
         ok_count = 0
-        with ThreadPoolExecutor(max_workers=max(1, int(max_concurrent or 5))) as ex:
+        # 이미지 받는 하위 스레드도 부모(작업 스레드)와 같은 낮은 우선순위로 돌게 한다.
+        # (예전에는 작업 스레드만 낮추고 실제로 일하는 하위 스레드는 기본 우선순위였다)
+        try:
+            _prio = os.getpriority(os.PRIO_PROCESS, threading.get_native_id())
+        except (AttributeError, OSError):
+            _prio = None
+        _init = (lambda: lower_thread_priority(_prio)) if _prio else None
+        with ThreadPoolExecutor(max_workers=max(1, int(max_concurrent or 5)), initializer=_init) as ex:
             futures = [ex.submit(_dl_one, pair) for pair in enumerate(images)]
             for fut in as_completed(futures):
                 if fut.result():

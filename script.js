@@ -536,7 +536,9 @@
     }
   }
 
+  var lastListRefresh = 0;
   async function refresh() {
+    lastListRefresh = Date.now();
     try {
       state = await fetchData();
       renderAll();
@@ -559,8 +561,13 @@
     state.log_tail = data.log_tail || state.log_tail;
     state.history = data.history || state.history;
     if (data.titles_rev && data.titles_rev !== state.titles_rev) {
-      await refresh();
-      return;
+      // 다운로드 중에는 작품 정보가 몇 초마다 바뀐다. 그때마다 수천 개 목록을 다시
+      // 받아 그리면 서버/브라우저 CPU를 많이 쓰므로 작업 중엔 60초에 한 번만 갱신.
+      var busy = (state.job && state.job.running) || (state.title_job && state.title_job.running);
+      if (!busy || Date.now() - lastListRefresh > 60000) {
+        await refresh();
+        return;
+      }
     }
     renderStatusBar();
     renderHistory();

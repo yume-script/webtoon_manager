@@ -52,6 +52,17 @@ _EPISODE_SUFFIX_RE = re.compile(r'\s*\d+\s*(화|권|話|卷)(\s*#\s*\d+)?\s*$')
 _COMPARE_WS_RE = re.compile(r'\s+')
 
 
+
+def _low_prio(fn):
+    """백그라운드 작업 스레드를 낮은 CPU 우선순위로 실행(웹서버 응답 우선)."""
+    def _wrapped(*a, **kw):
+        try:
+            downloader.lower_thread_priority(10)
+        except Exception:  # noqa: BLE001
+            pass
+        return fn(*a, **kw)
+    return _wrapped
+
 def _normalize_series_name(name):
     if not name:
         return ""
@@ -506,6 +517,12 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         (튜플이면 '반환값 형식이 올바르지 않습니다'로 간주하고 HTTP 400을 내려버림).
         apply()와 달리 _dispatch()의 (bool, str) 튜플을 여기서 dict로 감싸준다."""
         ok, message = self._dispatch(db_type, action_id, context or {})
+        if action_id not in ("poll_status", "get_settings"):
+            # 버튼으로 바꾼 작품 정보(구독/제외 등)는 묶음 저장을 기다리지 않고 바로 반영
+            try:
+                ss.flush_titles()
+            except Exception:  # noqa: BLE001
+                pass
         if ok:
             return {"success": True, "message": message}
         return {"success": False, "error": message}
@@ -687,14 +704,14 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         force = bool(payload.get("force", True))
         if not sid or not nos:
             return False, "작품 번호/회차 선택 필요"
-        t = ss.load_kakao_titles().get(sid)
+        t = ss.get_kakao_title(sid)
         if not t:
             # 목록에 없는 작품이면 먼저 등록(구독은 하지 않음)
             ok, msg, _ = kakao_pipeline.add_series(cfg, sid, log=ss.append_log)
             if not ok:
                 return False, msg
             ss.upsert_kakao_title({sid: {"subscribed": False}})
-            t = ss.load_kakao_titles().get(sid) or {}
+            t = ss.get_kakao_title(sid) or {}
         if pipeline.bl_blocked(cfg, t):
             return False, pipeline.genre_block_msg(cfg, t)
         acquired = ss.try_acquire_title_job({
@@ -715,7 +732,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 ss.save_title_job_state({"running": False, "finished_at": time.time(),
                                           "last_error": str(e), "message": "실패: %s" % e})
 
-        threading.Thread(target=_runner, name="webtoon_manager_kakao_manual", daemon=True).start()
+        threading.Thread(target=_low_prio(_runner), name="webtoon_manager_kakao_manual", daemon=True).start()
         return True, "카카오 %s: 선택한 %d개 회차 다운로드 시작(백그라운드)" % (t.get("title", sid), len(nos))
 
     def _start_kakao_worker(self, cfg, sid):
@@ -724,7 +741,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         from . import kakao_pipeline
 
         def _acquire(cur):
-            nt = ss.load_kakao_titles().get(cur) or {}
+            nt = ss.get_kakao_title(cur) or {}
             return ss.try_acquire_title_job({
                 "title_id": cur, "title": "[카카오] %s" % nt.get("title", cur),
                 "message": "%s %s 회차 확인 중" % (kakao_pipeline.platform_label(nt), nt.get("title", cur)),
@@ -754,7 +771,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                     ss.kakao_queue_push(cur)   # 다른 작업이 잡았으면 되돌려 두고 종료
                     break
 
-        threading.Thread(target=_runner, name="webtoon_manager_kakao_dl", daemon=True).start()
+        threading.Thread(target=_low_prio(_runner), name="webtoon_manager_kakao_dl", daemon=True).start()
         return True
 
     def _maybe_drain_kakao_queue(self, cfg):
@@ -835,7 +852,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
     def _kakao_card_action(self, db_type, action, payload):
         """통합 목록 카드에서 카카오 작품에 대해 누른 버튼(네이버와 같은 액션 이름)."""
         sid = str(payload.get("titleId") or "").strip()
-        if sid not in ss.load_kakao_titles():
+        if not ss.has_kakao_title(sid):
             return False, "목록에 없는 카카오 작품입니다"
         flags = {
             "subscribe": {"subscribed": True, "excluded": False, "unsubscribed": False},
@@ -864,7 +881,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             ok, msg, _sid = kakao_pipeline.add_series(cfg, payload.get("value"), log=ss.append_log)
             return ok, msg
         if action in ("kakao_subscribe", "kakao_unsubscribe"):
-            if sid not in ss.load_kakao_titles():
+            if not ss.has_kakao_title(sid):
                 return False, "등록되지 않은 작품입니다"
             ss.upsert_kakao_title({sid: {"subscribed": action == "kakao_subscribe",
                                          "unsubscribed": action != "kakao_subscribe",
@@ -889,7 +906,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 return kakao_pipeline.run_kakao_cycle(c, log=log, manage_job=True)
             return self._act_run_bg(db_type, _run, "카카오페이지 전체 확인")
         if action == "kakao_download":
-            t = ss.load_kakao_titles().get(sid)
+            t = ss.get_kakao_title(sid)
             if not t:
                 return False, "등록되지 않은 작품입니다"
             if pipeline.bl_blocked(cfg, t):
@@ -949,7 +966,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                     ss.save_job_state({"running": False, "finished_at": time.time(), "message": msg,
                                         "stage": "done" if not cancelled else "cancelled"})
 
-        t = threading.Thread(target=_runner, name="webtoon_manager_%s" % action_slug(label),
+        t = threading.Thread(target=_low_prio(_runner), name="webtoon_manager_%s" % action_slug(label),
                               daemon=True)
         t.start()
         return True, "%s 시작됨(백그라운드)" % label
@@ -1007,7 +1024,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             # find_existing_episode_archive()의 파일명 접두어가 어긋나서, 이미
             # 받은 회차인데도 "다운로드 안 됨"으로 잘못 표시될 수 있다. 구독
             # 목록에 이미 있는 titleId라면 그때 실제로 쓰인 제목을 우선한다.
-            stored = ss.load_titles().get(str(title_id)) or {}
+            stored = ss.get_title(str(title_id)) or {}
             title_for_check = stored.get("title") or meta.get("title")
 
             # 회차가 많은 장기 연재작(10페이지 이상)도 전부 가져오도록 상한을
@@ -1053,7 +1070,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         # 성인여부까지 채울 수 있고, 구독 목록에 없는(수동 조회만 한) 작품이면
         # 제목 외 필드는 빈 채로 둔다(그래도 XML 자체는 만들어짐). 회차별
         # 소제목(subtitle)은 이 함수에 안 넘어오므로 <Title> 태그는 생략된다.
-        _t_for_comicinfo = ss.load_titles().get(str(title_id)) or {"title": title}
+        _t_for_comicinfo = ss.get_title(str(title_id)) or {"title": title}
         if pipeline.bl_blocked(self._get_cfg(db_type), _t_for_comicinfo):
             return False, pipeline.genre_block_msg(self._get_cfg(db_type), _t_for_comicinfo)
 
@@ -1160,7 +1177,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             ss.save_title_job_state({"running": False, "finished_at": time.time(),
                                       "message": "선택 회차 다운로드 완료(%d화)" % ok_count})
 
-        t = threading.Thread(target=_runner, name="webtoon_manager_manual_dl", daemon=True)
+        t = threading.Thread(target=_low_prio(_runner), name="webtoon_manager_manual_dl", daemon=True)
         t.start()
         return True, "선택 회차 다운로드 시작됨(백그라운드)"
 
@@ -1328,7 +1345,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             ss.save_title_job_state({"running": False, "finished_at": time.time(),
                                       "message": "%s 다운로드 완료(%d화)" % (title_name, ok_count)})
 
-        t = threading.Thread(target=_runner, name="webtoon_manager_dl_title", daemon=True)
+        t = threading.Thread(target=_low_prio(_runner), name="webtoon_manager_dl_title", daemon=True)
         t.start()
         return True, "%s 다운로드 시작됨(백그라운드)" % title_name
 

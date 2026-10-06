@@ -128,6 +128,11 @@ def _is_finished_scan_due(job, target_hour):
 
 def _loop(get_cfg_func, run_full_cycle_func, run_finished_scan_func):
     from . import state_store as _ss
+    try:
+        from . import downloader as _dl
+        _dl.lower_thread_priority(10)   # 예약 작업 전체를 낮은 CPU 우선순위로
+    except Exception:  # noqa: BLE001
+        pass
     while True:
         cfg = get_cfg_func() or {}
         enabled = str(cfg.get("ENABLE_SCHEDULER", "")).lower() in ("1", "true", "on", "y", "yes")

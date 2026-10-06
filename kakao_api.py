@@ -18,6 +18,7 @@ Next.js 데이터에서 방어적으로 읽는다(형식이 바뀌면 빈 값으
 - 기다무 사용은 계정의 대여권을 실제로 소모하므로 설정에서 켠 경우에만 한다.
 """
 import hashlib
+import html as _html
 import json
 import os
 import re
@@ -578,8 +579,23 @@ _ALLOWED_TAGS = {"P", "SPAN", "B", "STRONG", "I", "EM", "U", "DEL", "S", "SUB", 
 _VOID_TAGS = {"BR", "HR"}
 
 
+_XML_BAD_CHARS = re.compile(u"[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
+
+
 def _xml_escape(s):
-    return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    # 카카오 원문 텍스트에는 이미 &lt; &gt; &amp; &quot; &#39; 같은 엔티티가 들어 있다.
+    # 그대로 다시 이스케이프하면 EPUB 에 '&lt;어둠&gt;' 같은 코드가 그대로 보이므로
+    # 먼저 한 번 풀고(반복 이스케이프된 경우까지) 다시 정확히 한 번만 이스케이프한다.
+    s = str(s)
+    for _ in range(3):
+        if "&" not in s:
+            break
+        u = _html.unescape(s)
+        if u == s:
+            break
+        s = u
+    s = _XML_BAD_CHARS.sub("", s)
+    return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             .replace('"', "&quot;"))
 
 

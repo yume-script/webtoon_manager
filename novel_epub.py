@@ -103,3 +103,67 @@ def build_epub(path, book_title, series_title, author, sections, images, css="",
             zf.writestr("OEBPS/text/images/" + name, data, compress_type=zipfile.ZIP_STORED)
     os.replace(tmp, path)
     return path
+
+
+# ---- 1.32.0 이전에 만든 EPUB 복구 -------------------------------------------
+# 예전 버전은 카카오 원문에 이미 들어 있던 엔티티(&lt; &gt; &quot; ...)를 한 번 더
+# 이스케이프해서 본문에 '&lt;어둠탐사기록&gt;' 같은 코드가 그대로 보였다.
+# 파일을 다시 받지 않고 EPUB 안의 XHTML만 고쳐 쓴다.
+import html as _html
+import re as _re
+
+_DOUBLE_ENT_RE = _re.compile(r"&amp;(#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]{1,31});")
+_XML_ENTS = {"lt", "gt", "amp", "quot", "apos"}
+
+
+def _fix_double_entities(text):
+    def _sub(m):
+        name = m.group(1)
+        if name in _XML_ENTS or name.startswith("#"):
+            return "&%s;" % name
+        ch = _html.unescape("&%s;" % name)
+        if ch == "&%s;" % name:          # 모르는 이름이면 손대지 않음
+            return m.group(0)
+        return escape(ch)
+    for _ in range(3):
+        new = _DOUBLE_ENT_RE.sub(_sub, text)
+        if new == text:
+            break
+        text = new
+    return text
+
+
+def repair_epub(path):
+    """본문에 이중 이스케이프된 엔티티가 있으면 고쳐서 다시 저장. 고쳤으면 True."""
+    try:
+        with zipfile.ZipFile(path) as zf:
+            infos = zf.infolist()
+            items = [(i, zf.read(i.filename)) for i in infos]
+    except Exception:  # noqa: BLE001
+        return False
+    changed = False
+    out = []
+    for info, data in items:
+        if info.filename.lower().endswith((".xhtml", ".html")) and b"&amp;" in data:
+            txt = data.decode("utf-8", "replace")
+            fixed = _fix_double_entities(txt)
+            if fixed != txt:
+                data = fixed.encode("utf-8")
+                changed = True
+        out.append((info, data))
+    if not changed:
+        return False
+    tmp = path + ".tmp"
+    try:
+        with zipfile.ZipFile(tmp, "w") as zf:
+            for info, data in out:
+                ct = zipfile.ZIP_STORED if info.filename == "mimetype" else info.compress_type
+                zf.writestr(info.filename, data, compress_type=ct)
+        os.replace(tmp, path)
+        return True
+    except Exception:  # noqa: BLE001
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return False

@@ -13,6 +13,17 @@ from . import naver_api, downloader, discord_notify, kavita_yaml, state_store as
 _MAX_CONSECUTIVE_FAILURES = 3
 
 
+
+def _low_prio(fn):
+    """백그라운드 작업 스레드를 낮은 CPU 우선순위로 실행(웹서버 응답 우선)."""
+    def _wrapped(*a, **kw):
+        try:
+            downloader.lower_thread_priority(10)
+        except Exception:  # noqa: BLE001
+            pass
+        return fn(*a, **kw)
+    return _wrapped
+
 def _cfg_num(cfg, key, default):
     try:
         v = cfg.get(key)
@@ -885,7 +896,7 @@ def run_full_cycle(cfg, log=print):
                         kakao_pipeline.sync_purchased(cfg, log=log)
                 except Exception as e:  # noqa: BLE001
                     log("카카오페이지 사이클 오류(네이버 결과에는 영향 없음): %s" % e)
-            kakao_thread = threading.Thread(target=_kakao_run, name="wtm_kakao_cycle", daemon=True)
+            kakao_thread = threading.Thread(target=_low_prio(_kakao_run), name="wtm_kakao_cycle", daemon=True)
             kakao_thread.start()
         dl_result = run_download_cycle(cfg, log=log)
         if kakao_thread is not None:
