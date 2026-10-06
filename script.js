@@ -3,6 +3,12 @@
   // 형태로 실행되는 것으로 확인됨(RCLONE_MANAGER 등 기존 플러그인과 동일 컨벤션).
   // pluginId, container 는 바깥 스코프에서 주입됨.
 
+  // 같은 탭 컨테이너에 이 스크립트가 두 번 이상 실행되면(탭 재진입 등) 클릭 핸들러와
+  // 폴링이 중복 등록되어 확인창/알림창이 두 번씩 뜬다. 가장 최근 실행만 동작하게 한다.
+  var myInst = {};
+  container.__wtmInst = myInst;
+  function alive() { return container.__wtmInst === myInst; }
+
   var dbType = (container.dataset && container.dataset.dbType) ||
     (window.currentDbType) ||
     (window.BookOasisDbType) ||
@@ -578,7 +584,9 @@
   function schedulePoll() {
     if (pollTimer) clearTimeout(pollTimer);
     var interval = (Date.now() < pollFastUntil) ? 2500 : 10000;
+    if (!alive()) return;   // 새로 실행된 스크립트가 폴링을 이어받음
     pollTimer = setTimeout(function () {
+      if (!alive()) return;
       if (!document.hidden) pollLight().catch(function () {}).then(schedulePoll);
       else schedulePoll();
     }, interval);
@@ -711,6 +719,7 @@
   // 이벤트 바인딩
   // ------------------------------------------------------------------
   container.addEventListener('click', async function (ev) {
+    if (!alive()) return;
     var tabBtn = ev.target.closest('.wtm-tab');
     if (tabBtn) { setTab(tabBtn.getAttribute('data-tab')); return; }
 
@@ -781,6 +790,7 @@
           action === 'cancel_title_job' || action === 'test_discord' || action === 'force_reset_job' ||
           action === 'kavita_yaml_all' || action === 'kakao_run_all' || action === 'kakao_scan' ||
           action === 'kakao_sync_purchased') {
+        if (headerAction.disabled) return;
         if (action === 'force_reset_job' && !confirm('정말로 작업 상태를 강제 초기화할까요? 지금 실제로 뭔가 진행 중이라면 중간에 끊길 수 있습니다.')) return;
         headerAction.disabled = true;
         var r = await callAction(action, {});
@@ -944,6 +954,7 @@
   var searchInput = el('[data-el="search-input"]');
   if (searchInput) {
     searchInput.addEventListener('input', function () {
+      if (!alive()) return;
       searchQuery = searchInput.value.trim();
       renderGrid();
     });
@@ -952,6 +963,7 @@
   var sortSelect = el('[data-el="sort-select"]');
   if (sortSelect) {
     sortSelect.addEventListener('change', function () {
+      if (!alive()) return;
       sortMode = sortSelect.value;
       renderGrid();
     });
