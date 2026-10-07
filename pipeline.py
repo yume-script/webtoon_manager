@@ -395,7 +395,7 @@ def run_scan_finished(cfg, log=print, max_pages=200):
         for ev in finished_events:
             discord_notify.notify_finished(cfg, ev["title"], ev["titleId"])
             # 완결로 바뀌었으니 kavita.yaml의 Publication Status도 갱신
-            update_kavita_yaml(cfg, session, dl_root, ev["titleId"], log=log, force_info=True)
+            update_kavita_yaml(cfg, session, dl_root, ev["titleId"], log=log)
     return {"scanned": len(patch), "finished_events": finished_events}
 
 

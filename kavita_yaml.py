@@ -198,9 +198,12 @@ def flush_epub_cache():
             _epub_words_dirty = False
 
 
-def remember_epub_words(path, words):
-    """방금 만든 EPUB의 단어 수를 캐시에 넣어 둔다(나중에 다시 열지 않게)."""
+def remember_epub_words(path, words=None):
+    """방금 만든 EPUB의 단어 수를 캐시에 넣어 둔다(나중에 다시 열지 않게).
+    값은 항상 파일에서 직접 센 값으로 통일한다 - API 단어 수와 세는 방식이 달라서,
+    캐시가 다시 만들어질 때 wordcount가 바뀌어 yaml이 다시 써지는 일이 없게."""
     global _epub_words_dirty
+    words = _epub_word_count_raw(path)
     try:
         st = os.stat(path)
     except OSError:
@@ -470,15 +473,36 @@ def _fetch_release_date(session, title_id, log=None):
 # 폴더별로 마지막으로 반영한 최종 회차 파일명/회차 수/작품정보 서명을 기억해 두고,
 # 셋 다 같으면 상세정보 조회·표지 다운로드·yaml 생성을 전부 건너뛴다.
 KAVITA_STATE_PATH = os.path.join(ss.DATA_DIR, "kavita_state.json")
-_SIG_FIELDS = ("title", "status", "rest", "info_finished", "info_rest", "author", "info_writers",
-               "info_painters", "tags", "info_tags", "synopsis", "release_date", "thumbnail",
-               "adult", "is_adult", "info_adult", "info_age_type")
+# kavita.yaml을 다시 쓸지 판단하는 "작품 정보 서명"에 넣는 값.
+# 표지(썸네일 URL/이미지), 휴재 여부, 태그 순서, 성인 표시처럼 회차와 상관없이 자주
+# 흔들리는 값은 넣지 않는다 - 예전에는 이런 값 때문에 새 회차가 없어도 yaml이 계속
+# 다시 써졌다(카카오는 같은 작품의 표지 kid가 목록/정보 API마다 다르고 수시로 바뀜,
+# 네이버는 주간 스캔마다 휴재 플래그가 바뀜). 이런 값은 새 회차가 생겨 yaml을 다시
+# 쓸 때 함께 최신으로 반영된다.
+SIG_VERSION = 2
+
+
+def _names(v):
+    if isinstance(v, (list, tuple)):
+        items = v
+    else:
+        items = str(v or "").split(",")
+    return sorted(set(x.strip() for x in items if str(x).strip()))
 
 
 def _meta_sig(t, platform, embed_cover):
-    data = {k: t.get(k) for k in _SIG_FIELDS}
-    data["_platform"] = platform
-    data["_cover"] = bool(embed_cover)
+    data = {
+        "title": (t.get("title") or "").strip(),
+        "writers": _names(t.get("info_writers") or t.get("author")),
+        "painters": _names(t.get("info_painters")),
+        "synopsis": " ".join(str(t.get("synopsis") or "").split()),
+        "finished": (t.get("status") == "완결") or bool(t.get("info_finished")),
+        "genre": (t.get("genre") or "").strip(),
+        "release_date": t.get("release_date") or "",
+        "_platform": platform,
+        "_cover": bool(embed_cover),
+        "_v": SIG_VERSION,
+    }
     raw = json.dumps(data, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
@@ -495,7 +519,7 @@ def _save_state(series_dir, archives, sig):
     with ss._lock:   # 여러 작품을 동시에 처리할 때 서로 덮어쓰지 않게
         st = _load_state()
         st[_state_key(series_dir)] = {"latest": archives[-1][0], "count": len(archives), "sig": sig,
-                                      "at": time.time()}
+                                      "v": SIG_VERSION, "at": time.time()}
         ss.write_json(KAVITA_STATE_PATH, st)
 
 
@@ -506,7 +530,14 @@ def _already_current(path, series_dir, archives, sig):
     latest, count = archives[-1][0], len(archives)
     rec = _load_state().get(_state_key(series_dir))
     if rec:
-        return rec.get("latest") == latest and rec.get("count") == count and rec.get("sig") == sig
+        if rec.get("latest") != latest or rec.get("count") != count:
+            return False                    # 새 회차/회차 변경 -> 다시 씀
+        if rec.get("v") != SIG_VERSION:
+            # 1.32.1 이전 기록(서명 방식이 다름): 회차는 그대로이므로 다시 쓰지 않고
+            # 새 방식 서명만 기록해 둔다(업데이트 직후 전체 yaml이 한꺼번에 바뀌지 않게)
+            _save_state(series_dir, archives, sig)
+            return True
+        return rec.get("sig") == sig
     # 이 기능 이전에 만들어진 yaml: 파일 안에 최종 회차 항목이 있고 회차 수가 같으면
     # 최신으로 보고 기록만 남긴다(작품 정보 변경은 다음부터 서명으로 감지).
     try:
@@ -581,12 +612,18 @@ def _write_kavita_yaml_impl(download_root, title_id, session=None, embed_cover=T
                     else:
                         _save_info_cache(tid, {"release_date": rd})
 
-        cover = _cover_b64(session, t.get("thumbnail"), log=log) if embed_cover else None
-
-        # 썸네일을 이번에 못 받았으면(네트워크 오류 등) 기존 파일의 표지 값을
-        # 그대로 유지해서, 표지 하나 때문에 파일이 계속 바뀌지 않게 한다.
-        if embed_cover and not cover and os.path.exists(path):
-            cover = _existing_first_cover(path)
+        # 표지는 기존 kavita.yaml에 이미 들어 있으면 그대로 쓴다. 같은 표지라도 CDN이
+        # 돌려주는 이미지 바이트/주소가 수시로 달라져서, 매번 새로 받으면 새 회차가
+        # 없어도 파일이 바뀌었다. 새로 받는 건 표지가 아직 없을 때와
+        # [전체 작품 kavita.yaml 생성/갱신](force_info) 때뿐.
+        cover = None
+        if embed_cover:
+            if not force_info and os.path.exists(path):
+                cover = _existing_first_cover(path)
+            if not cover:
+                cover = _cover_b64(session, t.get("thumbnail"), log=log)
+            if not cover and os.path.exists(path):
+                cover = _existing_first_cover(path)
 
         text = dump_yaml(build_data(t, tid, archives, cover_b64=cover, platform=platform))
 
