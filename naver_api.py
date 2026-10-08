@@ -10,7 +10,11 @@ import json
 import re
 import time
 
+import hashlib
+import os
 import requests
+
+from . import state_store as ss
 
 BASE = "https://comic.naver.com"
 API_BASE = BASE + "/api/webtoon/titlelist"
@@ -103,7 +107,68 @@ def build_session(cookie_storage_state_json=None, naver_id=None, naver_pw=None,
                 # comic.naver.com 같은 호스트 전용 쿠키도 섞여 있어 전부 .naver.com으로
                 # 맞춘다(로그인 쿠키 NID_AUT/NID_SES는 원래 .naver.com).
                 sess.cookies.set(name, value, domain=".naver.com", path="/")
+        # 자동 갱신(keep-alive) 때 네이버가 새로 내려준 쿠키가 있으면 그걸 우선 사용.
+        # 설정의 쿠키를 새로 붙여넣으면(source_hash가 달라짐) 저장분은 무시된다.
+        saved = ss.read_json(COOKIE_STATE_PATH, {})
+        if saved.get("source_hash") == cookie_hash(cookie_storage_state_json) and saved.get("cookies"):
+            for c in saved["cookies"]:
+                if c.get("name") and c.get("value") is not None:
+                    sess.cookies.set(c["name"], c["value"], domain=".naver.com", path="/")
+    sess.naver_cookie_source_hash = cookie_hash(cookie_storage_state_json)
     return sess
+
+
+# ---- 쿠키 자동 갱신(keep-alive) ---------------------------------------------
+# 네이버에는 카카오 같은 토큰 연장 API가 없다. 대신 로그인된 쿠키로 주기적으로
+# 네이버 계정 페이지를 열어 세션을 살려 두고, 그 응답에서 네이버가 새로 내려준
+# 쿠키(NID_SES 등)를 파일에 저장해 다음 요청부터 쓴다.
+COOKIE_STATE_PATH = os.path.join(ss.DATA_DIR, "naver_cookie_state.json")
+LOGIN_CHECK_URL = "https://nid.naver.com/user2/help/myInfoV2?lang=ko_KR"
+
+
+def cookie_hash(raw):
+    if raw is None:
+        return ""
+    if not isinstance(raw, str):
+        raw = json.dumps(raw, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha1(raw.strip().encode("utf-8")).hexdigest() if raw.strip() else ""
+
+
+def save_session_cookies(sess):
+    """세션의 네이버 쿠키를 저장(같은 이름은 .naver.com 도메인 값을 우선)."""
+    try:
+        by_name = {}
+        for c in sess.cookies:
+            dom = c.domain or ""
+            if "naver" not in dom or not c.value:
+                continue
+            if c.name in by_name and by_name[c.name][1] == ".naver.com" and dom != ".naver.com":
+                continue
+            by_name[c.name] = (c.value, dom)
+        ss.write_json(COOKIE_STATE_PATH, {
+            "source_hash": getattr(sess, "naver_cookie_source_hash", ""),
+            "saved_at": time.time(),
+            "cookies": [{"name": k, "value": v[0]} for k, v in sorted(by_name.items())]})
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def check_login(sess):
+    """로그인 상태 확인. True=로그인됨, False=로그인 안 됨(쿠키 만료), None=확인 실패.
+    로그인 안 된 상태로 네이버 계정 페이지를 열면 로그인 화면으로 넘겨 보내는 것을 이용한다.
+    이 요청 자체가 세션을 살려 두는 역할도 하고, 새 쿠키가 오면 세션에 쌓인다."""
+    try:
+        r = sess.get(LOGIN_CHECK_URL, allow_redirects=False,
+                     timeout=getattr(sess, "request_timeout", 10) or 10)
+    except requests.RequestException:
+        return None
+    loc = r.headers.get("Location") or ""
+    if r.status_code in (301, 302, 303, 307, 308):
+        return "nidlogin.login" not in loc
+    if r.status_code == 200:
+        return True
+    return None
 
 
 NAVER_LOGIN_COOKIES = ("NID_AUT", "NID_SES")

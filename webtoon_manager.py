@@ -94,6 +94,7 @@ DEFAULTS = {
     "MAX_CONCURRENT_DOWNLOADS": 5,
     "DELAY_SECONDS": 1.0,
     "REQUEST_TIMEOUT_SECONDS": 10,
+    "COOKIE_KEEPALIVE_HOURS": 6,
     "FOLDER_ZERO_FILL": 4,
     "IMAGE_ZERO_FILL": 4,
     "GENERATE_COMICINFO_XML": True,
@@ -261,6 +262,9 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         {"key": "MAX_CONCURRENT_DOWNLOADS", "label": "이미지 동시 다운로드 수", "type": "number", "default": 5},
         {"key": "DELAY_SECONDS", "label": "회차 간 대기(초)", "type": "number", "default": 1.0},
         {"key": "REQUEST_TIMEOUT_SECONDS", "label": "요청 타임아웃(초)", "type": "number", "default": 10},
+        {"key": "COOKIE_KEEPALIVE_HOURS",
+         "label": "쿠키 자동 갱신 간격(시간, 0=끔) - 예약 실행을 꺼 둬도 동작. 만료되면 디스코드로 알림",
+         "type": "number", "default": 6},
         {"key": "FOLDER_ZERO_FILL", "label": "회차 폴더명 자릿수", "type": "number", "default": 4},
         {"key": "IMAGE_ZERO_FILL", "label": "이미지 파일명 자릿수", "type": "number", "default": 4},
         {"key": "DISCORD_WEBHOOK_URL", "label": "디스코드 웹훅 URL(선택)", "type": "text"},
@@ -799,6 +803,13 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         res = naver_api.verify_cookie(session, adult_ids)
         lines = ["로그인 쿠키(NID_AUT, NID_SES): %s" % ("✅ 있음" if res["login_cookies"] else
                                                        "❌ 없음 - comic.naver.com에 로그인한 상태에서 다시 내보내세요")]
+        if res["login_cookies"]:
+            live = naver_api.check_login(session)
+            lines.append("로그인 상태: %s" % {True: "✅ 로그인 유지 중", False: "❌ 로그인 풀림(쿠키 만료) - 새로 내보내세요",
+                                            None: "확인 못 함(네트워크)"}[live])
+            if live and raw == (cfg.get("NAVER_COOKIE_JSON") or "").strip():
+                naver_api.save_session_cookies(session)
+        lines.append(self._keepalive_line(cfg, "naver"))
         if res["adult"] is True:
             lines.append("성인 인증: ✅ 됨 - 성인 작품 다운로드 가능")
             blocked = {tid: {"adult_block_hash": None} for tid, t in ss.load_titles().items()
@@ -847,7 +858,23 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                          % ", ".join(missing))
         if res.get("detail") and not res["logged_in"]:
             lines.append("상세: %s" % res["detail"])
+        lines.append(self._keepalive_line(cfg, "kakao"))
         return bool(res["logged_in"]), " / ".join(lines)
+
+    def _keepalive_line(self, cfg, platform):
+        from . import cookie_keeper
+        try:
+            h = float(cfg.get("COOKIE_KEEPALIVE_HOURS", 6) or 0)
+        except (TypeError, ValueError):
+            h = 6
+        if h <= 0:
+            return "쿠키 자동 갱신: 꺼짐([공통] 설정)"
+        st = cookie_keeper.load_state().get(platform) or {}
+        if not st.get("last_at"):
+            return "쿠키 자동 갱신: %g시간마다(아직 실행 전)" % h
+        res = {True: "✅ 로그인 유지", False: "❌ 만료 감지", None: "확인 못 함"}.get(st.get("ok"), "확인 못 함")
+        return "쿠키 자동 갱신: %g시간마다 / 마지막 %s %s" % (
+            h, time.strftime("%m-%d %H:%M", time.localtime(st["last_at"])), res)
 
     def _kakao_card_action(self, db_type, action, payload):
         """통합 목록 카드에서 카카오 작품에 대해 누른 버튼(네이버와 같은 액션 이름)."""
@@ -1394,6 +1421,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
     _SETTINGS_GROUPS = [
         ("common", "자동 실행", ("ENABLE_SCHEDULER", "INTERVAL_MINUTES", "FINISHED_SCAN_HOUR",
                                 "NEW_EP_SCOPE", "AUTO_SUBSCRIBE_NEW_TITLES")),
+        ("common", "쿠키 자동 갱신", ("COOKIE_KEEPALIVE_HOURS",)),
         ("common", "다운로드 대상", ("ALLOW_BL", "ALLOW_GL")),
         ("common", "공통 경로", ("TEMP_DOWNLOAD_ROOT", "COMPARE_FOLDER")),
         ("common", "생성 파일", ("ADD_COVER_AS_FIRST_PAGE", "GENERATE_COMICINFO_XML", "GENERATE_SERIES_JSON",

@@ -223,9 +223,13 @@ def refresh_token(session, log=None):
         if r.status_code in (401, 403):
             raise KakaoAuthExpired("refresh_token 응답 %s - 쿠키가 만료된 것으로 보임" % r.status_code)
         ok = r.status_code < 300
-        if ok:
+        # 로그인이 풀린 쿠키에도 200(빈 응답)이 오므로, 새 쿠키를 실제로 내려줬을 때만
+        # 연장된 것으로 보고 저장한다(만료된 상태를 저장해 버리지 않게).
+        renewed = ok and bool(r.headers.get("Set-Cookie"))
+        session.kakao_renewed = renewed
+        if renewed:
             save_session_cookies(session)
-        elif log:
+        elif not ok and log:
             log("카카오페이지 토큰 연장 실패(HTTP %s) - 기존 쿠키로 계속" % r.status_code)
         return ok
     except requests.RequestException as e:

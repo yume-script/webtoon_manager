@@ -183,6 +183,13 @@ def _loop(get_cfg_func, run_full_cycle_func, run_finished_scan_func):
                         except Exception as e:  # noqa: BLE001
                             _ss.append_log("스케줄러(완결 스캔) 실행 오류: %s" % e)
 
+        # 쿠키 자동 갱신은 예약 다운로드를 꺼 둬도 따로 돈다(기본 6시간마다).
+        try:
+            from . import cookie_keeper
+            if cookie_keeper.is_due(cfg):
+                cookie_keeper.run(cfg, log=_ss.append_log)
+        except Exception as e:  # noqa: BLE001
+            _ss.append_log("쿠키 자동 갱신 오류(무시): %s" % e)
         time.sleep(60)
 
 
