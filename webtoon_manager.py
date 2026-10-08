@@ -119,6 +119,9 @@ DEFAULTS = {
     "KAKAO_NOVEL_AUTO_SUBSCRIBE_WAITFREE": False,
     "ALLOW_GL": False,
     "COMPARE_FOLDER": "",
+    "COMPARE_FOLDERS_NAVER": "",
+    "COMPARE_FOLDERS_KAKAO": "",
+    "COMPARE_FOLDERS_NOVEL": "",
     "ADD_COVER_AS_FIRST_PAGE": True,
     "LOW_PRIORITY_MODE": True,
     "DOWNLOAD_NICE_LEVEL": 10,
@@ -173,10 +176,18 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                   "구독해제/제외한 적 없다면 즉시 잡아냄, 자동 다운로드는 실행 주기마다 새 회차 확인)",
          "type": "checkbox", "default": False},
         {"key": "COMPARE_FOLDER",
-         "label": "중복 확인 폴더(이미 갖고 있는 웹툰이 모여있는 폴더의 절대경로. 하위 폴더명/"
-                  "압축파일명을 시리즈명으로 보고 비교합니다. DB 스키마에 의존하지 않아 가장 확실한 "
-                  "방법이며, 아직 BookOasis에 스캔 등록하지 않은 폴더도 잡아냅니다)",
-         "type": "text", "default": ""},
+         "label": "공통 중복 확인 폴더(네이버·카카오웹툰·카카오웹소설 모두와 비교). 한 줄에 폴더 하나씩 여러 개 가능. "
+                  "하위 폴더명/압축파일명을 시리즈명으로 보고 비교합니다",
+         "type": "textarea", "default": ""},
+        {"key": "COMPARE_FOLDERS_NAVER",
+         "label": "네이버웹툰 중복 확인 폴더(네이버 작품만 비교). 한 줄에 폴더 하나씩 여러 개 가능",
+         "type": "textarea", "default": ""},
+        {"key": "COMPARE_FOLDERS_KAKAO",
+         "label": "카카오웹툰 중복 확인 폴더(카카오 웹툰만 비교). 한 줄에 폴더 하나씩 여러 개 가능",
+         "type": "textarea", "default": ""},
+        {"key": "COMPARE_FOLDERS_NOVEL",
+         "label": "카카오웹소설 중복 확인 폴더(카카오 웹소설만 비교). 한 줄에 폴더 하나씩 여러 개 가능",
+         "type": "textarea", "default": ""},
         {"key": "COMPARE_LIBRARY_ID",
          "label": "중복 확인 라이브러리 ID(카테고리탭의 '설정' 탭에서 드롭다운으로 선택하는 걸 권장 - "
                   "여기 직접 입력해도 됨, 비우면 중복 확인 기능 꺼짐)",
@@ -485,6 +496,9 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 "COMPARE_LIBRARY_ID": cfg.get("COMPARE_LIBRARY_ID", ""),
                 "COMPARE_LIBRARY_NAME": cfg.get("COMPARE_LIBRARY_NAME", ""),
                 "COMPARE_FOLDER": cfg.get("COMPARE_FOLDER", ""),
+                "COMPARE_FOLDERS_NAVER": cfg.get("COMPARE_FOLDERS_NAVER", ""),
+                "COMPARE_FOLDERS_KAKAO": cfg.get("COMPARE_FOLDERS_KAKAO", ""),
+                "COMPARE_FOLDERS_NOVEL": cfg.get("COMPARE_FOLDERS_NOVEL", ""),
                 "ADD_COVER_AS_FIRST_PAGE": bool(cfg.get("ADD_COVER_AS_FIRST_PAGE", True)),
                 "GENERATE_COMICINFO_XML": bool(cfg.get("GENERATE_COMICINFO_XML", True)),
                 "GENERATE_SERIES_JSON": bool(cfg.get("GENERATE_SERIES_JSON", True)),
@@ -642,7 +656,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         """목록 데이터. titles.json/kakao_titles.json이 바뀌지 않았으면 이전 결과를
         그대로 재사용한다(파일 수정 시각 + 비교 폴더 결과로 캐시 키)."""
         key = (ss.titles_rev(), bool(cfg.get("KAKAO_ENABLE")),
-               id(compare_set) if compare_set is not None else None)
+               (compare_set or {}).get("_sig") if compare_set is not None else None)
         cached = _TITLE_ITEMS_CACHE.get("v")
         if cached and cached[0] == key:
             return cached[1]
@@ -657,8 +671,14 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 item["gl"] = True
             if platform == "kakao" and "소설" in str(t.get("category") or ""):
                 item["novel"] = True
-            item["in_library"] = (None if compare_set is None else
-                                  _normalize_series_name(t.get("title", "")) in compare_set)
+            if compare_set is None:
+                item["in_library"] = None
+            else:
+                scope = "naver" if platform == "naver" else ("novel" if item.get("novel") else "kakao")
+                hits = self.compare_hits(compare_set, t.get("title", ""), scope)
+                item["in_library"] = bool(hits)
+                if hits:
+                    item["in_library_src"] = hits[:5]
             return item
 
         items_list = [_slim(t, tid, "naver") for tid, t in ss.load_titles().items()]
@@ -1442,7 +1462,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                                 "NEW_EP_SCOPE", "AUTO_SUBSCRIBE_NEW_TITLES")),
         ("common", "쿠키 자동 갱신", ("COOKIE_KEEPALIVE_HOURS",)),
         ("common", "다운로드 대상", ("ALLOW_BL", "ALLOW_GL")),
-        ("common", "공통 경로", ("TEMP_DOWNLOAD_ROOT", "COMPARE_FOLDER")),
+        ("common", "공통 경로", ("TEMP_DOWNLOAD_ROOT",)),
+        ("common", "중복 확인 폴더(공통)", ("COMPARE_FOLDER",)),
         ("common", "생성 파일", ("ADD_COVER_AS_FIRST_PAGE", "GENERATE_COMICINFO_XML", "GENERATE_SERIES_JSON",
                                 "GENERATE_KAVITA_YAML", "KAVITA_YAML_EMBED_COVER", "ZIP_STORED")),
         ("common", "다운로드 속도 / 서버 부하", ("FAST_MODE", "PARALLEL_TITLES", "MAX_NEW_EPISODES_PER_TITLE",
@@ -1453,11 +1474,13 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         ("common", "디스코드 알림", ("DISCORD_WEBHOOK_URL", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID")),
         ("naver", "네이버 계정", ("NAVER_ID", "NAVER_PW", "NAVER_COOKIE_JSON")),
         ("naver", "네이버 다운로드", ("DOWNLOAD_ROOT", "AUTO_SUBSCRIBE_DAILY_PLUS", "NAVER_TRY_OWNED_PAID")),
+        ("naver", "중복 확인 폴더(네이버웹툰)", ("COMPARE_FOLDERS_NAVER",)),
         ("kakao", "카카오페이지 사용 / 계정", ("KAKAO_ENABLE", "KAKAO_COOKIE")),
         ("kakao", "카카오페이지 다운로드", ("KAKAO_DOWNLOAD_ROOT", "KAKAO_AUTO", "KAKAO_AUTO_SUBSCRIBE_WAITFREE",
                                           "KAKAO_SYNC_PURCHASED")),
         ("kakao", "카카오 웹소설", ("KAKAO_NOVEL_ENABLE", "KAKAO_NOVEL_DOWNLOAD_ROOT",
                                    "KAKAO_NOVEL_AUTO_SUBSCRIBE_WAITFREE")),
+        ("kakao", "중복 확인 폴더(카카오)", ("COMPARE_FOLDERS_KAKAO", "COMPARE_FOLDERS_NOVEL")),
         ("kakao", "카카오페이지 이용권(웹툰·웹소설 공통)", ("KAKAO_USE_WAITFREE", "KAKAO_USE_OWNED_TICKETS",
                                                        "KAKAO_USE_PAID_TICKETS")),
     ]
@@ -1584,26 +1607,31 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         except Exception as e:  # noqa: BLE001
             return None, "라이브러리 조회 실패: %s" % e
 
-    def _get_compare_folder_series_set(self, cfg):
-        """설정된 '비교 폴더'를 직접 훑어서 이미 갖고 있는 시리즈명 집합을
-        만든다. DB 스키마에 전혀 의존하지 않아 라이브러리 방식보다 훨씬
-        튼튼하고, 아직 BookOasis에 등록(스캔)하지 않은 폴더도 잡아낸다.
+    # 중복 확인 폴더 설정 키 -> (적용 대상, 화면 표시 이름)
+    _COMPARE_FOLDER_KEYS = (("COMPARE_FOLDER", "all", "공통"),
+                            ("COMPARE_FOLDERS_NAVER", "naver", "네이버웹툰"),
+                            ("COMPARE_FOLDERS_KAKAO", "kakao", "카카오웹툰"),
+                            ("COMPARE_FOLDERS_NOVEL", "novel", "카카오웹소설"))
 
-        하위 폴더 이름(= 보통 시리즈명)과, 폴더 바로 밑에 있는 압축파일
-        이름(권/화 번호는 떼고)을 모두 후보로 넣는다. 원격 마운트에서 매
-        폴링마다 훑으면 부담이 크므로 결과를 60초간 메모리에 캐시한다.
+    @staticmethod
+    def _split_folders(raw):
+        """여러 줄(또는 ';' 구분)로 넣은 폴더 목록 -> [경로]. 중복/빈 줄 제거."""
+        out = []
+        for line in str(raw or "").replace("\r", "\n").replace(";", "\n").split("\n"):
+            p = line.strip().strip('"').strip()
+            if p and p not in out:
+                out.append(p)
+        return out
+
+    def _scan_compare_folder(self, folder):
+        """폴더 하나의 시리즈명 집합. 원격 마운트 부담을 줄이려고 60초 캐시.
         반환: (set|None, error_message|None)"""
-        folder = (cfg.get("COMPARE_FOLDER") or "").strip()
-        if not folder:
-            return None, None
         if not os.path.isdir(folder):
             return None, "폴더를 찾을 수 없음: %s" % folder
-
         now = time.time()
         cached = _COMPARE_FOLDER_CACHE.get(folder)
         if cached and (now - cached[0]) < 60:
             return cached[1], None
-
         try:
             names = set()
             with os.scandir(folder) as it:
@@ -1614,42 +1642,68 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                         names.add(_normalize_series_name(entry.name))
                     elif entry.name.lower().endswith((".zip", ".cbz", ".epub", ".pdf")):
                         stem = os.path.splitext(entry.name)[0]
-                        # "제목 0012화#110" / "제목 05권" 같은 꼬리표를 떼어
-                        # 시리즈명만 남긴다.
+                        # "제목 0012화#110" / "제목 05권" 같은 꼬리표를 떼어 시리즈명만 남긴다.
                         stem = _EPISODE_SUFFIX_RE.sub("", stem)
                         names.add(_normalize_series_name(stem))
             names.discard("")
             _COMPARE_FOLDER_CACHE[folder] = (now, names)
             return names, None
         except Exception as e:  # noqa: BLE001
-            return None, "폴더 읽기 실패: %s" % e
+            return None, "폴더 읽기 실패: %s (%s)" % (folder, e)
 
     def _build_compare_set(self, db_type, cfg):
-        """폴더 기준 + 라이브러리 기준 결과를 합쳐서 최종 비교 집합을 만든다.
-        둘 다 설정 안 됐으면 (None, status) - 이 경우 카드에 뱃지를 아예 안
-        띄운다("없음"으로 단정하면 안 되므로 True/False가 아닌 '모름' 상태).
-        반환: (set|None, status dict)"""
-        status = {"enabled": False, "sources": [], "count": 0, "errors": []}
-        merged = None
-
-        folder_set, folder_err = self._get_compare_folder_series_set(cfg)
-        if folder_err:
-            status["errors"].append(folder_err)
-        if folder_set is not None:
-            merged = set(folder_set)
-            status["sources"].append("폴더(%d개)" % len(folder_set))
+        """중복 확인 기준을 만든다. 폴더는 공통/네이버웹툰/카카오웹툰/카카오웹소설별로
+        여러 개 지정할 수 있고, 각 작품은 자기 플랫폼 폴더 + 공통 폴더 + 라이브러리와만 비교한다.
+        반환: (compare dict|None, status dict)
+          compare = {"all"|"naver"|"kakao"|"novel": {정규화된 이름: [출처 표시, ...]}}
+        아무것도 설정 안 됐으면 None - 카드에 뱃지를 아예 안 띄운다('모름' 상태)."""
+        status = {"enabled": False, "sources": [], "count": 0, "errors": [], "folders": []}
+        compare = {"all": {}, "naver": {}, "kakao": {}, "novel": {}}
+        any_source = False
+        for key, scope, label in self._COMPARE_FOLDER_KEYS:
+            folders = self._split_folders(cfg.get(key))
+            for idx, folder in enumerate(folders, 1):
+                names, err = self._scan_compare_folder(folder)
+                src = "%s 폴더%s" % (label, (" %d" % idx) if len(folders) > 1 else "")
+                if err:
+                    status["errors"].append("%s: %s" % (src, err))
+                    status["folders"].append({"scope": label, "path": folder, "count": None, "error": err})
+                    continue
+                any_source = True
+                status["folders"].append({"scope": label, "path": folder, "count": len(names)})
+                status["sources"].append("%s(%d개)" % (src, len(names)))
+                bucket = compare[scope]
+                tag = "%s: %s" % (src, folder)
+                for n in names:
+                    bucket.setdefault(n, []).append(tag)
 
         lib_set, lib_err = self._get_compare_library_series_set(db_type, cfg)
         if lib_err:
             status["errors"].append(lib_err)
         if lib_set is not None:
-            merged = lib_set if merged is None else (merged | lib_set)
+            any_source = True
+            tag = "라이브러리: %s" % (cfg.get("COMPARE_LIBRARY_NAME") or cfg.get("COMPARE_LIBRARY_ID"))
+            for n in lib_set:
+                compare["all"].setdefault(n, []).append(tag)
             status["sources"].append("라이브러리(%d개)" % len(lib_set))
 
-        if merged is not None:
-            status["enabled"] = True
-            status["count"] = len(merged)
-        return merged, status
+        if not any_source:
+            return None, status
+        status["enabled"] = True
+        status["count"] = len(set().union(*[set(v) for k, v in compare.items()]))
+        # 목록 캐시 키: 폴더별 스캔 시각 + 결과 크기(폴더 캐시가 갱신될 때만 목록을 다시 만든다)
+        compare["_sig"] = repr((tuple((f["path"], f.get("count"), (_COMPARE_FOLDER_CACHE.get(f["path"]) or (0,))[0])
+                                      for f in status["folders"]),
+                                len(lib_set) if lib_set is not None else None))
+        return compare, status
+
+    @staticmethod
+    def compare_hits(compare, name, scope):
+        """작품 하나의 중복 출처 목록(자기 플랫폼 + 공통)."""
+        if compare is None:
+            return None
+        n = _normalize_series_name(name)
+        return list(compare["all"].get(n, [])) + list((compare.get(scope) or {}).get(n, []))
 
 
 def action_slug(label):

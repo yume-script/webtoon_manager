@@ -177,9 +177,10 @@
     if (t.rest) out += '<span class="wtm-badge rest">휴재</span>';
     if (t.up_flag) out += '<span class="wtm-badge up">UP</span>';
     if (t.in_library === true) {
+      var srcTip = (t.in_library_src && t.in_library_src.length) ? ('\n' + t.in_library_src.join('\n')) : '';
       out += '<span class="wtm-badge" style="background:color-mix(in srgb, #c58a3a 22%, transparent);' +
         'color:color-mix(in srgb, #c58a3a 90%, var(--app-text-primary))" ' +
-        'title="지정한 중복 확인 폴더/라이브러리에 같은 이름의 시리즈가 이미 있습니다(제목 비교라 정확하지 않을 수 있음)">' +
+        'title="' + escapeHtml('같은 이름의 시리즈가 이미 있습니다(제목 비교라 정확하지 않을 수 있음)' + srcTip) + '">' +
         '📚 보유중</span>';
     }
     return out;
@@ -224,14 +225,14 @@
 
   function compareStatusText() {
     var cs = state.compare_status || {};
-    if (cs.errors && cs.errors.length) {
-      return '⚠️ 중복 확인 중 문제가 발생했습니다: ' + escapeHtml(cs.errors.join(' / '));
-    }
+    var warn = (cs.errors && cs.errors.length) ? ('⚠️ ' + escapeHtml(cs.errors.join(' / ')) + '<br>') : '';
+    if (warn && !cs.enabled) return warn;
     if (!cs.enabled) {
-      return '중복 확인이 설정되지 않았습니다. [설정] 탭의 ' +
-        '<b>"중복 확인 폴더"</b>에 이미 갖고 있는 웹툰 폴더 경로를 넣어주세요.';
+      return '중복 확인이 설정되지 않았습니다. [설정]의 <b>[공통] 중복 확인 폴더(공통)</b>, ' +
+        '<b>[네이버] 중복 확인 폴더</b>, <b>[카카오페이지] 중복 확인 폴더(웹툰/웹소설)</b>에 ' +
+        '이미 갖고 있는 폴더 경로를 한 줄에 하나씩 넣어주세요.';
     }
-    return '중복 확인 기준: ' + escapeHtml((cs.sources || []).join(' + ')) +
+    return warn + '중복 확인 기준: ' + escapeHtml((cs.sources || []).join(' + ')) +
       ' / 비교 대상 시리즈 ' + (cs.count || 0) + '개';
   }
 
@@ -432,7 +433,10 @@
     var statusEl = el('[data-el="compare-library-status"]');
     if (statusEl) {
       var lines = [];
-      if (cfg.COMPARE_FOLDER) lines.push('폴더: ' + escapeHtml(cfg.COMPARE_FOLDER));
+      ((state.compare_status || {}).folders || []).forEach(function (f) {
+        lines.push(escapeHtml(f.scope) + ' 폴더: ' + escapeHtml(f.path) +
+          (f.error ? ' ⚠️ ' + escapeHtml(f.error) : ' (' + (f.count || 0) + '개)'));
+      });
       if (cfg.COMPARE_LIBRARY_ID) {
         lines.push('라이브러리: ' + escapeHtml(cfg.COMPARE_LIBRARY_NAME || cfg.COMPARE_LIBRARY_ID));
       }
@@ -669,6 +673,9 @@
         (secretSet ? '저장됨 - 바꾸려면 새 값 입력' : '(비어 있음)') + '">' +
         (secretSet ? '<label style="font-size:11px;white-space:nowrap"><input type="checkbox" data-setting-clear="' + key + '"> 지우기</label>' : '') +
         '</div>';
+    } else if (f.type === 'textarea') {
+      input = '<textarea class="wtm-input" rows="3" data-setting="' + key + '" placeholder="/mnt/webtoon/네이버&#10;/mnt/webtoon2/완결" ' +
+        'style="resize:vertical;font-family:inherit">' + escapeHtml(value == null ? '' : String(value)) + '</textarea>';
     } else {
       var isLong = /COOKIE|JSON/.test(f.key);
       input = '<input type="' + (f.type === 'number' ? 'number' : 'text') + '" class="wtm-input" data-setting="' + key + '"' +
