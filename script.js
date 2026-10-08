@@ -374,17 +374,16 @@
     if (!box) return;
     var cfg = state.config_public || {};
     var rows = [
-      ['네이버 아이디', cfg.NAVER_ID || '(미설정)'],
       ['쿠키 등록', cfg.has_cookie ? '등록됨' : '(미설정)'],
       ['다운로드 경로', cfg.DOWNLOAD_ROOT || '(기본값)'],
       ['임시 작업 경로', cfg.TEMP_DOWNLOAD_ROOT || '(기본값)'],
       ['자동 실행', cfg.ENABLE_SCHEDULER ? ('사용 / ' + cfg.INTERVAL_MINUTES + '분 주기') : '사용 안 함'],
       ['신간 자동 구독', cfg.AUTO_SUBSCRIBE_NEW_TITLES ? '사용' : '사용 안 함(관심 작가만 자동구독)'],
-      ['매일+ 자동 구독', cfg.AUTO_SUBSCRIBE_DAILY_PLUS ? '사용' : '사용 안 함'],
+      ['매일+ 작품 받기', cfg.NAVER_DOWNLOAD_DAILY_PLUS ? '받음' : '받지 않음'],
       ['ComicInfo.xml 생성', cfg.GENERATE_COMICINFO_XML ? '사용' : '사용 안 함'],
       ['메인 이미지 1페이지 포함', cfg.ADD_COVER_AS_FIRST_PAGE ? '사용' : '사용 안 함'],
       ['series.json 생성(BookOasis 스캐너용)', cfg.GENERATE_SERIES_JSON ? '사용' : '사용 안 함'],
-      ['카카오페이지', cfg.KAKAO_ENABLE ? ('사용' + (cfg.KAKAO_AUTO_SUBSCRIBE_WAITFREE ? ' / 기다무 자동구독' : '') + (cfg.KAKAO_USE_WAITFREE ? ' / 대여권 사용' : '') + (cfg.KAKAO_AUTO ? ' / 자동 실행 포함' : '')) : '사용 안 함'],
+      ['카카오페이지', cfg.KAKAO_ENABLE ? ('사용' + (cfg.KAKAO_DOWNLOAD_WAITFREE ? ' / 기다무 받음' : ' / 기다무 안 받음') + (cfg.KAKAO_USE_WAITFREE ? ' / 대여권 사용' : '') + (cfg.KAKAO_AUTO ? ' / 자동 실행 포함' : '')) : '사용 안 함'],
       ['kavita.yaml 생성', cfg.GENERATE_KAVITA_YAML ? ('사용' + (cfg.KAVITA_YAML_EMBED_COVER ? ' / 표지 포함' : '')) : '사용 안 함'],
       ['서버 리소스 양보', cfg.LOW_PRIORITY_MODE ? ('사용 / nice ' + cfg.DOWNLOAD_NICE_LEVEL) : '사용 안 함'],
       ['중복 확인', (state.compare_status && state.compare_status.enabled) ?
@@ -411,7 +410,7 @@
     if (r.success) {
       var data = parseMaybeJson(r.message);
       var libs = (data && data.libraries) || [];
-      sel.innerHTML = '<option value="">중복 확인 안 함</option>' +
+      sel.innerHTML = '<option value="">사용 안 함</option>' +
         libs.map(function (l) {
           return '<option value="' + l.id + '">' + escapeHtml(l.name) + '</option>';
         }).join('');
@@ -424,7 +423,7 @@
     var sel = el('[data-el="compare-library-select"]');
     if (!sel) return;
     var cfg = state.config_public || {};
-    var current = cfg.COMPARE_LIBRARY_ID || '';
+    var current = sel.getAttribute('data-current') || cfg.COMPARE_LIBRARY_ID || '';
     // 옵션 목록이 아직 안 불러와졌으면(첫 렌더) 값만 기억해뒀다가, 목록이
     // 로드된 뒤 다시 이 함수가 불려서 실제로 선택된다.
     if (sel.value !== current && el('option[value="' + current + '"]')) {
@@ -522,13 +521,14 @@
     if (!status) return;
     var cfg = state.config_public || {};
     if (!cfg.KAKAO_ENABLE) {
-      status.innerHTML = '⚠️ [설정] 탭의 카카오페이지 항목에서 <b>"카카오페이지 웹툰 사용"</b>을 켜야 목록 수집/다운로드가 동작합니다.';
+      status.innerHTML = '⚠️ [설정] &gt; [카카오웹툰] 탭에서 <b>"카카오페이지 사용"</b>을 켜야 목록 수집/다운로드가 동작합니다.';
       return;
     }
     var kcount = (state.titles || []).filter(function (t) { return t.platform === 'kakao'; }).length;
     status.textContent = '작품 ' + kcount + '개 / 저장 경로: ' + (cfg.KAKAO_DOWNLOAD_ROOT || '') +
       ' / 로그인 쿠키: ' + (cfg.has_kakao_cookie ? '설정됨' : '없음(무료 회차만)') +
-      ' / 기다무 자동 구독: ' + (cfg.KAKAO_AUTO_SUBSCRIBE_WAITFREE ? '켜짐' : '꺼짐') +
+      ' / 기다무 작품 받기: 웹툰 ' + (cfg.KAKAO_DOWNLOAD_WAITFREE ? '켜짐' : '꺼짐') +
+      ', 웹소설 ' + (cfg.KAKAO_NOVEL_DOWNLOAD_WAITFREE ? '켜짐' : '꺼짐') +
       ' / 기다무 대여권 사용: ' + (cfg.KAKAO_USE_WAITFREE ? '켜짐' : '꺼짐') +
       ' / 자동 실행 포함: ' + (cfg.KAKAO_AUTO ? '예' : '아니오');
   }
@@ -643,26 +643,36 @@
       var groups = data.groups.filter(function (g) { return (g.section || 'common') === sec.id; });
       return '<div data-settings-pane="' + escapeHtml(sec.id) + '"' + (sec.id === settingsSection ? '' : ' style="display:none"') + '>' +
         groups.map(function (g) {
-          return '<div style="margin:14px 0 6px;font-weight:700;font-size:13px;border-bottom:1px dashed var(--app-border, rgba(127,127,127,.25));padding-bottom:4px">' +
-            escapeHtml(g.label) + '</div>' +
-            '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px 16px">' +
-            g.fields.map(function (f) { return settingFieldHtml(f, data.values[f.key], (data.secret_set || {})[f.key]); }).join('') +
-            '</div>';
+          var fields = g.fields.filter(function (f) { return f.type !== 'hidden'; });
+          return '<div class="wtm-set-group">' +
+            '<div class="wtm-set-group-title">' + escapeHtml(g.label) + '</div>' +
+            (g.desc ? '<div class="wtm-hint" style="margin:0 0 8px">' + escapeHtml(g.desc) + '</div>' : '') +
+            '<div class="wtm-set-grid">' +
+            fields.map(function (f) { return settingFieldHtml(f, data.values[f.key], (data.secret_set || {})[f.key]); }).join('') +
+            '</div></div>';
         }).join('') + '</div>';
     }).join('');
+    // 라이브러리 드롭다운은 폼을 새로 그릴 때마다 목록을 다시 채운다
+    librariesLoaded = false;
+    loadLibraryOptionsIfNeeded();
   }
   var settingsSection = 'common';
 
   function settingFieldHtml(f, value, secretSet) {
     var key = escapeHtml(f.key);
     var label = escapeHtml(f.label || f.key);
+    var hint = f.hint ? '<span class="wtm-set-hint">' + escapeHtml(f.hint) + '</span>' : '';
     if (f.type === 'checkbox') {
-      return '<label style="display:flex;gap:8px;align-items:flex-start;font-size:12.5px;cursor:pointer">' +
-        '<input type="checkbox" data-setting="' + key + '"' + (value ? ' checked' : '') + ' style="margin-top:2px">' +
-        '<span>' + label + '</span></label>';
+      return '<label class="wtm-set-field wtm-set-check">' +
+        '<input type="checkbox" data-setting="' + key + '"' + (value ? ' checked' : '') + '>' +
+        '<span><span class="wtm-set-label">' + label + '</span>' + hint + '</span></label>';
     }
     var input;
-    if (f.type === 'select') {
+    if (f.type === 'library') {
+      input = '<select class="wtm-input" data-setting="' + key + '" data-el="compare-library-select" data-current="' +
+        escapeHtml(value == null ? '' : String(value)) + '"><option value="">사용 안 함</option></select>' +
+        '<div class="wtm-hint" data-el="compare-library-status" style="margin:0"></div>';
+    } else if (f.type === 'select') {
       input = '<select class="wtm-input" data-setting="' + key + '">' + (f.options || []).map(function (o) {
         return '<option value="' + escapeHtml(o[0]) + '"' + (String(value) === String(o[0]) ? ' selected' : '') + '>' +
           escapeHtml(o[1]) + '</option>';
@@ -674,7 +684,7 @@
         (secretSet ? '<label style="font-size:11px;white-space:nowrap"><input type="checkbox" data-setting-clear="' + key + '"> 지우기</label>' : '') +
         '</div>';
     } else if (f.type === 'textarea') {
-      input = '<textarea class="wtm-input" rows="3" data-setting="' + key + '" placeholder="/mnt/webtoon/네이버&#10;/mnt/webtoon2/완결" ' +
+      input = '<textarea class="wtm-input" rows="3" data-setting="' + key + '" placeholder="예) /mnt/library/웹툰&#10;/mnt/library2/완결작" ' +
         'style="resize:vertical;font-family:inherit">' + escapeHtml(value == null ? '' : String(value)) + '</textarea>';
     } else {
       var isLong = /COOKIE|JSON/.test(f.key);
@@ -696,8 +706,9 @@
         '<span class="wtm-hint" style="margin:0">성인 작품은 <b>성인 인증된 카카오 계정</b>으로 page.kakao.com에 로그인한 뒤 ' +
         'Cookie-Editor로 내보낸 JSON 전체를 붙여넣어야 받을 수 있습니다(필수: _kau, _kpwtkn, _T_ANO, _karmt, _kahai, _kawlt, _kpdid).</span>';
     }
-    return '<div style="display:flex;flex-direction:column;gap:4px;font-size:12px">' +
-      '<span style="color:var(--app-text-secondary, inherit)">' + label + '</span>' + input + '</div>';
+    var wide = (f.type === 'textarea' || f.key === 'NAVER_COOKIE_JSON' || f.key === 'KAKAO_COOKIE') ? ' wtm-set-wide' : '';
+    return '<div class="wtm-set-field' + wide + '">' +
+      '<span class="wtm-set-label">' + label + '</span>' + input + hint + '</div>';
   }
 
   async function saveSettingsForm() {
@@ -707,6 +718,10 @@
     els('[data-setting]').forEach(function (inp) {
       var k = inp.getAttribute('data-setting');
       values[k] = inp.type === 'checkbox' ? inp.checked : inp.value;
+      if (k === 'COMPARE_LIBRARY_ID') {
+        var opt = inp.options && inp.options[inp.selectedIndex];
+        values.COMPARE_LIBRARY_NAME = (inp.value && opt) ? opt.textContent : '';
+      }
     });
     els('[data-setting-clear]').forEach(function (c) { if (c.checked) clear.push(c.getAttribute('data-setting-clear')); });
     els('[data-el="settings-save"]').forEach(function (b) { b.disabled = true; });

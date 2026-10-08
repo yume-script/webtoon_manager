@@ -82,6 +82,56 @@ def apply_fast_mode(cfg):
     return c
 
 
+def is_manual_subscription(t):
+    """사용자가 직접 구독한 작품인지(자동 구독(기다무/매일+)으로 들어온 게 아닌지)."""
+    return bool(t.get("manual_subscribed")) or not t.get("auto_subscribed")
+
+
+def kind_download_blocked(cfg, t, platform):
+    """매일+/기다무 작품 다운로드 설정이 꺼져 있어 자동 다운로드에서 뺄 작품이면 그 이름.
+    직접 구독한 작품은 설정과 상관없이 받는다."""
+    if is_manual_subscription(t):
+        return None
+    if platform == "naver":
+        if naver_api.DAILY_PLUS in (t.get("weekdays") or []) and not _truthy(cfg.get("NAVER_DOWNLOAD_DAILY_PLUS")):
+            return "매일+"
+        return None
+    if t.get("waitfree") and t.get("status") != "완결":
+        novel = "소설" in str(t.get("category") or "")
+        key = "KAKAO_NOVEL_DOWNLOAD_WAITFREE" if novel else "KAKAO_DOWNLOAD_WAITFREE"
+        if not _truthy(cfg.get(key)):
+            return "기다무"
+    return None
+
+
+def filter_auto_targets(cfg, titles, platform, log=print, label=""):
+    """자동 다운로드 대상에서 (1) 매일+/기다무 다운로드가 꺼진 작품, (2) 이미 갖고 있는
+    작품(중복 확인 폴더/라이브러리에 있고 '보유 작품도 받기'가 꺼진 경우)을 뺀다."""
+    from . import compare
+    kind_skip, owned_skip = {}, []
+    try:
+        cmp_, _st = compare.build(cfg)
+    except Exception as e:  # noqa: BLE001
+        cmp_ = None
+        log("%s중복 확인 기준을 만들지 못해 보유 작품 건너뛰기는 이번에 하지 않음: %s" % (label, e))
+    out = {}
+    for tid, t in titles.items():
+        kind = kind_download_blocked(cfg, t, platform)
+        if kind:
+            kind_skip[kind] = kind_skip.get(kind, 0) + 1
+            continue
+        if compare.should_skip_owned(cfg, cmp_, t, platform):
+            owned_skip.append(t.get("title", tid))
+            continue
+        out[tid] = t
+    for kind, n in kind_skip.items():
+        log("%s%s 작품 %d개는 설정('%s 작품 받기' 꺼짐)에 따라 받지 않음(직접 구독한 작품은 받음)" % (label, kind, n, kind))
+    if owned_skip:
+        log("%s이미 갖고 있는 작품 %d개는 받지 않음(중복 확인 폴더/라이브러리에 있음): %s%s" % (
+            label, len(owned_skip), ", ".join(owned_skip[:5]), " 외" if len(owned_skip) > 5 else ""))
+    return out
+
+
 _WD_KO = {"mon": "월", "tue": "화", "wed": "수", "thu": "목", "fri": "금", "sat": "토", "sun": "일"}
 
 
@@ -380,7 +430,20 @@ def run_scan_weekday(cfg, log=print):
 
     patch = {tid: _autosubscribe_patch(item, old_titles.get(tid, {}), author_names, auto_new=auto_new)
              for tid, item in merged.items()}
-    patch = _apply_daily_plus_autosubscribe(patch, bool(cfg.get("AUTO_SUBSCRIBE_DAILY_PLUS")), log=log)
+    dp_on = _truthy(cfg.get("NAVER_DOWNLOAD_DAILY_PLUS"))
+    patch = _apply_daily_plus_autosubscribe(patch, dp_on, log=log)
+    if not dp_on:
+        # '매일+ 작품 다운로드'가 꺼져 있으면 예전에 자동 구독됐던 매일+ 작품을 구독 전 상태로
+        # 되돌린다(직접 구독한 작품은 그대로). 다시 켜면 다음 스캔 때 다시 자동 구독된다.
+        demoted = 0
+        for tid, item in patch.items():
+            o = old_titles.get(tid) or {}
+            if o.get("auto_subscribed") == "dailyPlus" and item.get("subscribed") and not o.get("manual_subscribed"):
+                item["subscribed"] = False
+                item["auto_subscribed"] = None
+                demoted += 1
+        if demoted:
+            log("매일+ 작품 받기가 꺼져 있어 자동 구독됐던 매일+ 작품 %d개를 구독 해제 전 상태로 되돌림" % demoted)
     apply_bl_policy(cfg, patch, old_titles, log=log, label="네이버: ")
 
     ss.upsert_title(patch)
@@ -625,6 +688,7 @@ def run_download_cycle(cfg, log=print):
     if bl_skip:
         log("BL/GL 장르 %d개 작품은 설정에 따라 다운로드하지 않음" % len(bl_skip))
         subscribed = {tid: t for tid, t in subscribed.items() if tid not in bl_skip}
+    subscribed = filter_auto_targets(cfg, subscribed, "naver", log=log)
     log("새 회차 확인 대상: 구독 %d개 중 %d개 (%s)" % (
         all_sub, len(subscribed),
         "전체" if str(cfg.get("NEW_EP_SCOPE") or "today") == "all" else

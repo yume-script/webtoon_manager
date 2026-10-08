@@ -35,22 +35,12 @@ from . import scheduler
 from . import discord_notify
 from . import naver_api
 from . import downloader
+from . import compare
 
 PLUGIN_ID = "webtoon_manager"
 
-# 시리즈명 비교용 정규화: 괄호류 안 내용(예: "(완결)", "(19)")과 공백을 제거하고
-# 소문자로 통일한다. 네이버 목록의 표기와 BookOasis 라이브러리에 등록된 폴더명
-# 표기가 완전히 똑같지 않을 수 있어(공백, 완결 표시 등) 정확한 문자열 일치
-# 대신 이 정도로 느슨하게 비교한다 - "혹시 이미 있을 수도 있다"는 참고용 알림
-# 기능이라 약간의 오탐/누락은 감수한다.
-_COMPARE_BRACKET_RE = re.compile(r'[\(\[（【].*?[\)\]）】]')
-# 비교 폴더 스캔 결과 캐시: {폴더경로: (timestamp, 시리즈명집합)}
-_COMPARE_FOLDER_CACHE = {}
+# 목록 데이터 캐시(작품 목록 파일/중복 확인 결과가 그대로면 재사용). 중복 확인은 compare.py
 _TITLE_ITEMS_CACHE = {}
-# 파일명 끝의 "0012화#110", "05권", "12화" 같은 권/화 꼬리표를 떼기 위한 패턴
-_EPISODE_SUFFIX_RE = re.compile(r'\s*\d+\s*(화|권|話|卷)(\s*#\s*\d+)?\s*$')
-_COMPARE_WS_RE = re.compile(r'\s+')
-
 
 
 def _low_prio(fn):
@@ -63,12 +53,6 @@ def _low_prio(fn):
         return fn(*a, **kw)
     return _wrapped
 
-def _normalize_series_name(name):
-    if not name:
-        return ""
-    n = _COMPARE_BRACKET_RE.sub('', str(name))
-    n = _COMPARE_WS_RE.sub('', n)
-    return n.strip().lower()
 
 
 # 업데이트 가능 여부 배지용 상수. update_manifest의 raw_base_url/version_file과
@@ -87,7 +71,6 @@ DEFAULTS = {
     "INTERVAL_MINUTES": 240,
     "FINISHED_SCAN_HOUR": 4,
     "AUTO_SUBSCRIBE_NEW_TITLES": False,
-    "AUTO_SUBSCRIBE_DAILY_PLUS": False,
     "MAX_NEW_EPISODES_PER_TITLE": 10,
     "PARALLEL_TITLES": 2,
     "FAST_MODE": False,
@@ -107,7 +90,6 @@ DEFAULTS = {
     "KAKAO_DOWNLOAD_ROOT": "",
     "KAKAO_AUTO": True,
     "KAKAO_USE_WAITFREE": False,
-    "KAKAO_AUTO_SUBSCRIBE_WAITFREE": True,
     "NEW_EP_SCOPE": "today",
     "NAVER_TRY_OWNED_PAID": True,
     "KAKAO_USE_OWNED_TICKETS": False,
@@ -116,7 +98,6 @@ DEFAULTS = {
     "KAKAO_NOVEL_ENABLE": False,
     "KAKAO_SYNC_PURCHASED": True,
     "KAKAO_NOVEL_DOWNLOAD_ROOT": "",
-    "KAKAO_NOVEL_AUTO_SUBSCRIBE_WAITFREE": False,
     "ALLOW_GL": False,
     "COMPARE_FOLDER": "",
     "COMPARE_FOLDERS_NAVER": "",
@@ -126,6 +107,12 @@ DEFAULTS = {
     "LOW_PRIORITY_MODE": True,
     "DOWNLOAD_NICE_LEVEL": 10,
     "ZIP_STORED": True,
+    "NAVER_DOWNLOAD_DAILY_PLUS": False,
+    "KAKAO_DOWNLOAD_WAITFREE": False,
+    "KAKAO_NOVEL_DOWNLOAD_WAITFREE": False,
+    "NAVER_DOWNLOAD_OWNED": False,
+    "KAKAO_DOWNLOAD_OWNED": False,
+    "KAKAO_NOVEL_DOWNLOAD_OWNED": False,
 }
 
 
@@ -139,153 +126,128 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
     config_schema = []
 
     settings_schema = [
-        {"key": "NAVER_ID", "label": "네이버 아이디", "type": "text"},
-        {"key": "NAVER_PW", "label": "네이버 비밀번호", "type": "password"},
-        {"key": "NAVER_COOKIE_JSON", "label": "네이버 쿠키(JSON, storage_state 형식)",
-         "type": "password",
-         "required": False},
-        {"key": "DOWNLOAD_ROOT", "label": "네이버 웹툰 저장 경로(비우면 플러그인 기본 경로)",
-         "type": "text"},
-        {"key": "TEMP_DOWNLOAD_ROOT",
-         "label": "임시 작업 경로(압축 전 낱장 이미지를 내려받는 곳 - 비우면 플러그인 데이터 폴더 "
-                  "밑의 로컬 임시 폴더 사용. 다운로드 저장 경로가 원격/rclone 마운트라면 이 값을 "
-                  "빠른 로컬 디스크 경로로 지정하는 걸 권장)",
-         "type": "text"},
-        {"key": "ENABLE_SCHEDULER", "label": "자동 실행(스케줄러) 사용", "type": "checkbox",
-         "default": False},
-        {"key": "INTERVAL_MINUTES", "label": "실행 주기(분, 최소 10) - 요일별 스캔+다운로드", "type": "number",
-         "default": 240},
-        {"key": "FINISHED_SCAN_HOUR", "label": "완결 전체 목록 수집 시각(0~23시, 하루 1번)", "type": "number",
-         "default": 4},
-        {"key": "ALLOW_BL",
-         "label": "BL 장르 웹툰 다운로드 허용(끄면 BL 작품은 받지 않고 자동 구독도 하지 않음 - 네이버/카카오 공통)",
-         "type": "checkbox", "default": False},
-        {"key": "ALLOW_GL",
-         "label": "GL 장르 웹툰 다운로드 허용(끄면 GL 작품은 받지 않고 자동 구독도 하지 않음 - 네이버/카카오 공통)",
-         "type": "checkbox", "default": False},
-        {"key": "NEW_EP_SCOPE",
-         "label": "자동 실행의 새 회차 확인 범위",
-         "type": "select", "default": "today",
-         "options": [["today", "오늘 요일(어제·22시 이후 내일 포함) + 매일+ + 기다무 + 아직 안 받은 작품"],
+        # ---------------- 공통 ----------------
+        {"key": "ENABLE_SCHEDULER", "label": "자동 실행 사용", "type": "checkbox", "default": False,
+         "hint": "켜면 아래 주기마다 요일별 스캔 + 새 회차 다운로드를 자동으로 합니다."},
+        {"key": "INTERVAL_MINUTES", "label": "실행 주기(분)", "type": "number", "default": 240,
+         "hint": "최소 10분."},
+        {"key": "FINISHED_SCAN_HOUR", "label": "완결 목록 수집 시각(0~23시)", "type": "number", "default": 4,
+         "hint": "하루 1번 완결 작품 전체 목록을 수집합니다."},
+        {"key": "NEW_EP_SCOPE", "label": "새 회차 확인 범위", "type": "select", "default": "today",
+         "options": [["today", "오늘 연재 요일 작품 + 매일+/기다무 + 아직 안 받은 작품"],
                      ["all", "구독작 전부(매 실행마다)"]]},
-        {"key": "AUTO_SUBSCRIBE_NEW_TITLES",
-         "label": "신간 자동 구독(요일별 목록에 처음 나타나는 작품을 관심 작가와 무관하게 전부 구독)",
-         "type": "checkbox", "default": False},
-        {"key": "AUTO_SUBSCRIBE_DAILY_PLUS",
-         "label": "매일+ 자동 구독('매일+' 탭의 작품을 전부 구독 처리 - 이미 스캔된 적 있는 작품도 "
-                  "구독해제/제외한 적 없다면 즉시 잡아냄, 자동 다운로드는 실행 주기마다 새 회차 확인)",
-         "type": "checkbox", "default": False},
-        {"key": "COMPARE_FOLDER",
-         "label": "공통 중복 확인 폴더(네이버·카카오웹툰·카카오웹소설 모두와 비교). 한 줄에 폴더 하나씩 여러 개 가능. "
-                  "하위 폴더명/압축파일명을 시리즈명으로 보고 비교합니다",
-         "type": "textarea", "default": ""},
-        {"key": "COMPARE_FOLDERS_NAVER",
-         "label": "네이버웹툰 중복 확인 폴더(네이버 작품만 비교). 한 줄에 폴더 하나씩 여러 개 가능",
-         "type": "textarea", "default": ""},
-        {"key": "COMPARE_FOLDERS_KAKAO",
-         "label": "카카오웹툰 중복 확인 폴더(카카오 웹툰만 비교). 한 줄에 폴더 하나씩 여러 개 가능",
-         "type": "textarea", "default": ""},
-        {"key": "COMPARE_FOLDERS_NOVEL",
-         "label": "카카오웹소설 중복 확인 폴더(카카오 웹소설만 비교). 한 줄에 폴더 하나씩 여러 개 가능",
-         "type": "textarea", "default": ""},
-        {"key": "COMPARE_LIBRARY_ID",
-         "label": "중복 확인 라이브러리 ID(카테고리탭의 '설정' 탭에서 드롭다운으로 선택하는 걸 권장 - "
-                  "여기 직접 입력해도 됨, 비우면 중복 확인 기능 꺼짐)",
-         "type": "text", "default": ""},
-        {"key": "COMPARE_LIBRARY_NAME",
-         "label": "중복 확인 라이브러리 이름(표시용, ID와 함께 자동으로 채워짐)",
-         "type": "text", "default": ""},
-        {"key": "ADD_COVER_AS_FIRST_PAGE",
-         "label": "메인 이미지를 1페이지로 포함(회차 zip 맨 앞에 시리즈 썸네일을 표지 페이지로 "
-                  "함께 넣음 - 대부분의 리더에서 첫 장으로 보임)",
-         "type": "checkbox", "default": True},
-        {"key": "GENERATE_COMICINFO_XML",
-         "label": "ComicInfo.xml 함께 생성(Komga/Kavita 등에서 인식하는 메타데이터 - 회차 zip 안에 포함됨)",
-         "type": "checkbox", "default": True},
-        {"key": "GENERATE_SERIES_JSON",
-         "label": "series.json 함께 생성(BookOasis 자체 스캐너가 인식하는 시리즈 메타데이터 - "
-                  "시리즈 폴더에 zip과 별도로 저장됨)",
-         "type": "checkbox", "default": True},
-        {"key": "GENERATE_KAVITA_YAML",
-         "label": "kavita.yaml 함께 생성(시리즈 폴더에 회차 목록/작품 메타데이터를 담은 kavita.yaml 저장 - "
-                  "새 회차를 받거나 작품 정보가 바뀌었을 때만 갱신)",
-         "type": "checkbox", "default": True},
-        {"key": "KAVITA_YAML_EMBED_COVER",
-         "label": "kavita.yaml 첫 회차 cover에 시리즈 썸네일(base64) 포함(끄면 모든 회차가 FIRST)",
-         "type": "checkbox", "default": True},
-        {"key": "KAKAO_ENABLE", "label": "카카오페이지 웹툰 사용(목록 수집/다운로드)",
-         "type": "checkbox", "default": False},
-        {"key": "KAKAO_COOKIE",
-         "label": "로그인 쿠키(page.kakao.com 요청의 Cookie 헤더 문자열 또는 "
-                  "Cookie-Editor JSON). 비우면 무료 회차만 시도",
-         "type": "password", "required": False},
-        {"key": "KAKAO_DOWNLOAD_ROOT",
-         "label": "카카오 웹툰 저장 경로(비우면 플러그인 데이터 폴더/kakao_downloads)",
-         "type": "text"},
-        {"key": "KAKAO_AUTO",
-         "label": "스케줄러 자동 실행에 포함(네이버 다운로드가 끝난 뒤 이어서 확인)",
-         "type": "checkbox", "default": True},
-        {"key": "KAKAO_AUTO_SUBSCRIBE_WAITFREE",
-         "label": "기다무 작품 자동 구독(연재 중인 기다무 작품을 전부 구독 -> 자동 다운로드 대상. "
-                  "구독해제/제외한 작품은 건드리지 않음)",
-         "type": "checkbox", "default": True},
-        {"key": "KAKAO_SYNC_PURCHASED",
-         "label": "구매 작품 자동 동기화(하루 1번, 보관함 > 구매 목록의 작품을 구독 여부와 상관없이 구매·대여 회차까지 받음, 로그인 쿠키 필요)",
-         "type": "checkbox", "default": True},
-        {"key": "KAKAO_NOVEL_ENABLE",
-         "label": "카카오 웹소설 사용(목록 수집/다운로드, 회차별 EPUB으로 저장 - 삽화 포함)",
-         "type": "checkbox", "default": False},
-        {"key": "KAKAO_NOVEL_DOWNLOAD_ROOT",
-         "label": "카카오 웹소설 저장 경로(비우면 플러그인 데이터 폴더/kakao_novels)", "type": "text"},
-        {"key": "KAKAO_NOVEL_AUTO_SUBSCRIBE_WAITFREE",
-         "label": "기다무 웹소설 자동 구독(웹툰의 기다무 자동 구독과 별도 - 작품 수가 많아 기본 꺼짐)",
-         "type": "checkbox", "default": False},
-        {"key": "NAVER_TRY_OWNED_PAID",
-         "label": "유료 회차도 대여/소장 중이면 받기(네이버 로그인 쿠키 필요, 결제는 하지 않음)",
-         "type": "checkbox", "default": True},
-        {"key": "KAKAO_USE_OWNED_TICKETS",
-         "label": "보유 대여권 자동 사용(이벤트/선물/쿠폰 등 무료로 받은 대여권, 계정의 대여권이 실제로 소모됨)",
-         "type": "checkbox", "default": False},
-        {"key": "KAKAO_USE_PAID_TICKETS",
-         "label": "구매한(돈으로 산) 대여권도 사용 - 보유 대여권 자동 사용이 켜져 있을 때만 적용",
-         "type": "checkbox", "default": False},
-        {"key": "KAKAO_USE_WAITFREE",
-         "label": "기다무 대여권 자동 사용(작품당 실행 1회에 1장, 계정의 대여권이 "
-                  "실제로 소모됨)",
-         "type": "checkbox", "default": False},
-        {"key": "LOW_PRIORITY_MODE",
-         "label": "다운로드 시 서버 리소스 양보(다운로드/압축 작업의 CPU 우선순위를 낮춰 BookOasis "
-                  "웹서버 응답이 밀리지 않게 함, 리눅스 전용 - 다른 환경에선 조용히 무시됨)",
-         "type": "checkbox", "default": True},
-        {"key": "DOWNLOAD_NICE_LEVEL",
-         "label": "CPU 양보 정도(0~19, 클수록 더 많이 양보 - 위 옵션이 켜져 있을 때만 적용)",
-         "type": "number", "default": 10},
-        {"key": "ZIP_STORED",
-         "label": "zip 무압축 저장(이미지는 이미 압축돼 있어 재압축해도 용량이 거의 안 줄고 CPU만 "
-                  "쓰므로 기본 권장. 끄면 용량이 조금 줄지만 CPU를 더 씀)",
-         "type": "checkbox", "default": True},
-        {"key": "MAX_NEW_EPISODES_PER_TITLE", "label": "1회 실행당 작품별 최대 신규 다운로드 회차 수(0=무제한)",
-         "type": "number", "default": 10},
-        {"key": "FAST_MODE",
-         "label": "고속 모드(밀린 회차 몰아받기) - 동시 작품 6개 이상·이미지 10개 이상·회차 간 대기 0.2초 이하·"
-                  "작품당 1회 50화까지. 서버가 제한(429/503)하면 자동으로 쉬었다가 다시 빨라짐",
-         "type": "boolean", "default": False},
-        {"key": "PARALLEL_TITLES",
-         "label": "동시에 처리할 작품 수(1~10, 네이버·카카오 각각 적용)", "type": "number", "default": 2},
-        {"key": "INITIAL_EPISODES_LIMIT",
-         "label": "처음 구독한 작품은 최신 N화만 받기(0 = 전체 회차). 이전 회차는 카드의 '다운로드'/'다시 확인'으로 받을 수 있음",
-         "type": "number", "default": 0},
+        {"key": "AUTO_SUBSCRIBE_NEW_TITLES", "label": "신간 자동 구독", "type": "checkbox", "default": False,
+         "hint": "요일별 목록에 처음 나타나는 작품을 전부 구독합니다(관심 작가 작품은 이 설정과 상관없이 자동 구독)."},
+        {"key": "INITIAL_EPISODES_LIMIT", "label": "새로 구독한 작품은 최신 N화만 받기", "type": "number", "default": 0,
+         "hint": "0 = 전체 회차. 이전 회차는 카드의 '다운로드'/'다시 확인'으로 받을 수 있습니다."},
+        {"key": "ALLOW_BL", "label": "BL 장르 받기", "type": "checkbox", "default": False,
+         "hint": "끄면 BL 작품은 받지 않고 자동 구독도 하지 않습니다(전 플랫폼)."},
+        {"key": "ALLOW_GL", "label": "GL 장르 받기", "type": "checkbox", "default": False,
+         "hint": "끄면 GL 작품은 받지 않고 자동 구독도 하지 않습니다(전 플랫폼)."},
+
+        {"key": "COMPARE_FOLDER", "label": "중복 확인 폴더(모든 플랫폼)", "type": "textarea", "default": "",
+         "hint": "한 줄에 폴더 하나. 하위 폴더명/압축파일명을 시리즈명으로 보고 비교합니다. "
+                 "플랫폼별 폴더는 각 탭에서 따로 지정합니다."},
+        {"key": "COMPARE_LIBRARY_ID", "label": "중복 확인 라이브러리(모든 플랫폼)", "type": "library", "default": "",
+         "hint": "고른 BookOasis 라이브러리에 같은 이름의 시리즈가 있으면 '보유중'으로 봅니다."},
+        {"key": "COMPARE_LIBRARY_NAME", "label": "중복 확인 라이브러리 이름", "type": "hidden", "default": ""},
+
+        {"key": "FAST_MODE", "label": "고속 모드(밀린 회차 몰아받기)", "type": "checkbox", "default": False,
+         "hint": "동시 작품 6개↑·이미지 10개↑·회차 간 대기 0.2초↓·작품당 1회 50화까지 올립니다. "
+                 "서버가 제한(429/503)하면 자동으로 쉬었다가 다시 빨라집니다."},
+        {"key": "PARALLEL_TITLES", "label": "동시에 처리할 작품 수(1~10)", "type": "number", "default": 2,
+         "hint": "네이버·카카오 각각 적용."},
         {"key": "MAX_CONCURRENT_DOWNLOADS", "label": "이미지 동시 다운로드 수", "type": "number", "default": 5},
         {"key": "DELAY_SECONDS", "label": "회차 간 대기(초)", "type": "number", "default": 1.0},
+        {"key": "MAX_NEW_EPISODES_PER_TITLE", "label": "작품당 1회 실행에 받을 최대 회차 수", "type": "number",
+         "default": 10, "hint": "0 = 무제한. 남은 회차는 다음 실행 때 이어서 받습니다."},
         {"key": "REQUEST_TIMEOUT_SECONDS", "label": "요청 타임아웃(초)", "type": "number", "default": 10},
-        {"key": "COOKIE_KEEPALIVE_HOURS",
-         "label": "쿠키 자동 갱신 간격(시간, 0=끔) - 예약 실행을 꺼 둬도 동작. 만료되면 디스코드로 알림",
-         "type": "number", "default": 6},
-        {"key": "FOLDER_ZERO_FILL", "label": "회차 폴더명 자릿수", "type": "number", "default": 4},
-        {"key": "IMAGE_ZERO_FILL", "label": "이미지 파일명 자릿수", "type": "number", "default": 4},
-        {"key": "DISCORD_WEBHOOK_URL", "label": "디스코드 웹훅 URL(선택)", "type": "text"},
-        {"key": "DISCORD_BOT_TOKEN", "label": "디스코드 봇 토큰(선택, 완결확인용)", "type": "password"},
-        {"key": "DISCORD_CHANNEL_ID", "label": "디스코드 채널 ID(선택)", "type": "text"},
+        {"key": "LOW_PRIORITY_MODE", "label": "BookOasis에 CPU 양보", "type": "checkbox", "default": True,
+         "hint": "다운로드/압축 작업의 CPU 우선순위를 낮춰 웹 화면이 느려지지 않게 합니다(리눅스)."},
+        {"key": "DOWNLOAD_NICE_LEVEL", "label": "CPU 양보 정도(0~19)", "type": "number", "default": 10,
+         "hint": "클수록 더 많이 양보. 위 옵션이 켜져 있을 때만 적용."},
+
+        {"key": "TEMP_DOWNLOAD_ROOT", "label": "임시 작업 경로", "type": "text",
+         "hint": "압축 전 낱장 이미지와 완성된 zip을 잠시 두는 곳. 비우면 플러그인 데이터 폴더. "
+                 "저장 경로가 원격/rclone 마운트라면 반드시 로컬 디스크로 지정하세요."},
+        {"key": "ADD_COVER_AS_FIRST_PAGE", "label": "표지를 회차 zip 첫 페이지로 넣기", "type": "checkbox",
+         "default": True},
+        {"key": "GENERATE_COMICINFO_XML", "label": "ComicInfo.xml 넣기(회차 zip 안)", "type": "checkbox",
+         "default": True, "hint": "Komga/Kavita 등이 읽는 메타데이터."},
+        {"key": "GENERATE_SERIES_JSON", "label": "series.json 만들기(시리즈 폴더)", "type": "checkbox",
+         "default": True, "hint": "BookOasis 스캐너가 읽는 시리즈 메타데이터."},
+        {"key": "GENERATE_KAVITA_YAML", "label": "kavita.yaml 만들기(시리즈 폴더)", "type": "checkbox",
+         "default": True, "hint": "새 회차를 받거나 작품 정보가 바뀌었을 때만 갱신."},
+        {"key": "KAVITA_YAML_EMBED_COVER", "label": "kavita.yaml에 표지(base64) 넣기", "type": "checkbox",
+         "default": True, "hint": "끄면 모든 회차 cover가 FIRST."},
+        {"key": "ZIP_STORED", "label": "zip 무압축 저장(권장)", "type": "checkbox", "default": True,
+         "hint": "이미지는 이미 압축돼 있어 재압축해도 용량은 거의 그대로고 CPU만 씁니다."},
+        {"key": "FOLDER_ZERO_FILL", "label": "회차 번호 자릿수", "type": "number", "default": 4,
+         "hint": "예: 4 → '제목 0012화'."},
+        {"key": "IMAGE_ZERO_FILL", "label": "이미지 파일 번호 자릿수", "type": "number", "default": 4},
+
+        {"key": "COOKIE_KEEPALIVE_HOURS", "label": "쿠키 자동 갱신 간격(시간)", "type": "number", "default": 6,
+         "hint": "0 = 끔. 자동 실행을 꺼 둬도 동작하고, 만료되면 디스코드로 알립니다."},
+        {"key": "DISCORD_WEBHOOK_URL", "label": "디스코드 웹훅 URL", "type": "text"},
+        {"key": "DISCORD_BOT_TOKEN", "label": "디스코드 봇 토큰", "type": "password", "hint": "선택. 완결 확인 알림용."},
+        {"key": "DISCORD_CHANNEL_ID", "label": "디스코드 채널 ID", "type": "text"},
+
+        # ---------------- 네이버웹툰 ----------------
+        {"key": "NAVER_COOKIE_JSON", "label": "네이버 로그인 쿠키", "type": "password", "required": False},
+        {"key": "DOWNLOAD_ROOT", "label": "저장 경로", "type": "text",
+         "hint": "비우면 플러그인 데이터 폴더/downloads."},
+        {"key": "NAVER_DOWNLOAD_DAILY_PLUS", "label": "매일+ 작품 받기", "type": "checkbox", "default": False,
+         "hint": "켜면 매일+ 작품을 자동 구독해 받습니다. 끄면 받지 않고, 예전에 자동 구독된 매일+ 작품도 "
+                 "구독 전으로 되돌립니다(직접 구독한 작품은 그대로 받음)."},
+        {"key": "NAVER_TRY_OWNED_PAID", "label": "대여/소장한 유료 회차도 받기", "type": "checkbox", "default": True,
+         "hint": "로그인 쿠키 필요. 결제는 하지 않습니다."},
+        {"key": "COMPARE_FOLDERS_NAVER", "label": "중복 확인 폴더", "type": "textarea", "default": "",
+         "hint": "한 줄에 폴더 하나. 네이버 작품하고만 비교합니다."},
+        {"key": "NAVER_DOWNLOAD_OWNED", "label": "이미 갖고 있는 작품도 받기", "type": "checkbox", "default": False,
+         "hint": "끄면 중복 확인 폴더/라이브러리에 있는 작품은 자동 다운로드하지 않습니다"
+                 "(이 플러그인이 이미 받기 시작한 작품, 카드의 '다운로드' 버튼은 예외)."},
+
+        # ---------------- 카카오웹툰 ----------------
+        {"key": "KAKAO_ENABLE", "label": "카카오페이지 사용", "type": "checkbox", "default": False,
+         "hint": "카카오 웹툰 목록 수집/다운로드. 카카오웹소설을 쓰려면 이것도 켜야 합니다."},
+        {"key": "KAKAO_COOKIE", "label": "카카오페이지 로그인 쿠키", "type": "password", "required": False,
+         "hint": "Cookie-Editor JSON 또는 'a=b; c=d'. 비우면 무료 회차만. 웹소설도 이 쿠키를 씁니다."},
+        {"key": "KAKAO_AUTO", "label": "자동 실행에 포함", "type": "checkbox", "default": True,
+         "hint": "자동 실행 때 네이버와 동시에 카카오 웹툰·웹소설 새 회차를 확인합니다."},
+        {"key": "KAKAO_DOWNLOAD_ROOT", "label": "저장 경로", "type": "text",
+         "hint": "비우면 플러그인 데이터 폴더/kakao_downloads."},
+        {"key": "KAKAO_DOWNLOAD_WAITFREE", "label": "기다무 작품 받기", "type": "checkbox", "default": False,
+         "hint": "켜면 연재 중인 기다무 웹툰을 자동 구독해 받습니다. 끄면 받지 않고, 예전에 자동 구독된 기다무 웹툰도 "
+                 "구독 전으로 되돌립니다(직접 구독한 작품은 그대로 받음)."},
+        {"key": "KAKAO_SYNC_PURCHASED", "label": "구매 작품 자동 동기화", "type": "checkbox", "default": True,
+         "hint": "하루 1번 보관함 > 구매 목록의 작품을 등록하고 구매·대여 회차를 받습니다(로그인 쿠키 필요)."},
+        {"key": "KAKAO_USE_WAITFREE", "label": "기다무 대여권 자동 사용", "type": "checkbox", "default": False,
+         "hint": "작품당 실행 1회에 1장. 계정의 대여권이 실제로 소모됩니다(웹툰·웹소설 공통)."},
+        {"key": "KAKAO_USE_OWNED_TICKETS", "label": "보유 대여권 자동 사용", "type": "checkbox", "default": False,
+         "hint": "이벤트/선물/쿠폰으로 받은 대여권. 실제로 소모됩니다(웹툰·웹소설 공통)."},
+        {"key": "KAKAO_USE_PAID_TICKETS", "label": "구매한 대여권도 사용", "type": "checkbox", "default": False,
+         "hint": "돈으로 산 대여권. '보유 대여권 자동 사용'이 켜져 있을 때만 적용."},
+        {"key": "COMPARE_FOLDERS_KAKAO", "label": "중복 확인 폴더", "type": "textarea", "default": "",
+         "hint": "한 줄에 폴더 하나. 카카오 웹툰하고만 비교합니다."},
+        {"key": "KAKAO_DOWNLOAD_OWNED", "label": "이미 갖고 있는 작품도 받기", "type": "checkbox", "default": False,
+         "hint": "끄면 중복 확인 폴더/라이브러리에 있는 웹툰은 자동 다운로드하지 않습니다"
+                 "(이 플러그인이 이미 받기 시작한 작품, 카드의 '다운로드' 버튼은 예외)."},
+
+        # ---------------- 카카오웹소설 ----------------
+        {"key": "KAKAO_NOVEL_ENABLE", "label": "카카오 웹소설 사용", "type": "checkbox", "default": False,
+         "hint": "회차별 EPUB(삽화 포함)으로 저장합니다. [카카오웹툰] 탭의 '카카오페이지 사용'도 켜져 있어야 하고, "
+                 "로그인 쿠키·대여권 설정은 그 탭 것을 같이 씁니다."},
+        {"key": "KAKAO_NOVEL_DOWNLOAD_ROOT", "label": "저장 경로", "type": "text",
+         "hint": "비우면 플러그인 데이터 폴더/kakao_novels."},
+        {"key": "KAKAO_NOVEL_DOWNLOAD_WAITFREE", "label": "기다무 작품 받기", "type": "checkbox", "default": False,
+         "hint": "켜면 연재 중인 기다무 웹소설을 자동 구독해 받습니다(작품 수가 많음). 끄면 받지 않고, 예전에 자동 구독된 "
+                 "기다무 웹소설도 구독 전으로 되돌립니다(직접 구독한 작품은 그대로 받음)."},
+        {"key": "COMPARE_FOLDERS_NOVEL", "label": "중복 확인 폴더", "type": "textarea", "default": "",
+         "hint": "한 줄에 폴더 하나. 카카오 웹소설하고만 비교합니다."},
+        {"key": "KAKAO_NOVEL_DOWNLOAD_OWNED", "label": "이미 갖고 있는 작품도 받기", "type": "checkbox",
+         "default": False,
+         "hint": "끄면 중복 확인 폴더/라이브러리에 있는 웹소설은 자동 다운로드하지 않습니다"
+                 "(이 플러그인이 이미 받기 시작한 작품, 카드의 '다운로드' 버튼은 예외)."},
     ]
 
     # plugin_board(실제 동작 중인 참조 플러그인) 기준: 좌측 사이드바 1등 시민
@@ -485,14 +447,16 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             "compare_status": compare_status,
             "repo_url": REPO_URL,
             "config_public": {
-                "NAVER_ID": cfg.get("NAVER_ID", ""),
                 "DOWNLOAD_ROOT": cfg.get("DOWNLOAD_ROOT", ""),
                 "TEMP_DOWNLOAD_ROOT": cfg.get("TEMP_DOWNLOAD_ROOT") or ss.TMP_DOWNLOAD_DEFAULT_DIR,
                 "ENABLE_SCHEDULER": bool(cfg.get("ENABLE_SCHEDULER")),
                 "INTERVAL_MINUTES": cfg.get("INTERVAL_MINUTES"),
                 "FINISHED_SCAN_HOUR": cfg.get("FINISHED_SCAN_HOUR"),
                 "AUTO_SUBSCRIBE_NEW_TITLES": bool(cfg.get("AUTO_SUBSCRIBE_NEW_TITLES")),
-                "AUTO_SUBSCRIBE_DAILY_PLUS": bool(cfg.get("AUTO_SUBSCRIBE_DAILY_PLUS")),
+                "NAVER_DOWNLOAD_DAILY_PLUS": bool(pipeline._truthy(cfg.get("NAVER_DOWNLOAD_DAILY_PLUS"))),
+                "NAVER_DOWNLOAD_OWNED": bool(pipeline._truthy(cfg.get("NAVER_DOWNLOAD_OWNED"))),
+                "KAKAO_DOWNLOAD_OWNED": bool(pipeline._truthy(cfg.get("KAKAO_DOWNLOAD_OWNED"))),
+                "KAKAO_NOVEL_DOWNLOAD_OWNED": bool(pipeline._truthy(cfg.get("KAKAO_NOVEL_DOWNLOAD_OWNED"))),
                 "COMPARE_LIBRARY_ID": cfg.get("COMPARE_LIBRARY_ID", ""),
                 "COMPARE_LIBRARY_NAME": cfg.get("COMPARE_LIBRARY_NAME", ""),
                 "COMPARE_FOLDER": cfg.get("COMPARE_FOLDER", ""),
@@ -519,7 +483,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 "ALLOW_BL": bool(cfg.get("ALLOW_BL")),
                 "ALLOW_GL": bool(cfg.get("ALLOW_GL")),
                 "KAKAO_NOVEL_ENABLE": bool(cfg.get("KAKAO_NOVEL_ENABLE")),
-                "KAKAO_AUTO_SUBSCRIBE_WAITFREE": bool(cfg.get("KAKAO_AUTO_SUBSCRIBE_WAITFREE", True)),
+                "KAKAO_DOWNLOAD_WAITFREE": bool(pipeline._truthy(cfg.get("KAKAO_DOWNLOAD_WAITFREE"))),
+                "KAKAO_NOVEL_DOWNLOAD_WAITFREE": bool(pipeline._truthy(cfg.get("KAKAO_NOVEL_DOWNLOAD_WAITFREE"))),
                 "KAKAO_DOWNLOAD_ROOT": cfg.get("KAKAO_DOWNLOAD_ROOT") or ss.KAKAO_DOWNLOAD_DEFAULT_DIR,
                 "has_kakao_cookie": bool((cfg.get("KAKAO_COOKIE") or "").strip()),
                 "has_discord": bool(cfg.get("DISCORD_WEBHOOK_URL") or
@@ -587,7 +552,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 return self._act_force_reset()
             if action == "subscribe":
                 return self._act_set_flags(payload.get("titleId"), subscribed=True,
-                                            excluded=False, unsubscribed=False)
+                                            excluded=False, unsubscribed=False,
+                                            manual_subscribed=True, auto_subscribed=None)
             if action == "unsubscribe":
                 return self._act_set_flags(payload.get("titleId"), subscribed=False,
                                             unsubscribed=True)
@@ -596,7 +562,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                                             excluded=True)
             if action == "restore":
                 return self._act_set_flags(payload.get("titleId"), subscribed=True,
-                                            excluded=False, unsubscribed=False)
+                                            excluded=False, unsubscribed=False,
+                                            manual_subscribed=True, auto_subscribed=None)
             if action == "resync_title":
                 return self._act_resync_title(payload.get("titleId"))
             if action == "add_author":
@@ -674,8 +641,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             if compare_set is None:
                 item["in_library"] = None
             else:
-                scope = "naver" if platform == "naver" else ("novel" if item.get("novel") else "kakao")
-                hits = self.compare_hits(compare_set, t.get("title", ""), scope)
+                hits = compare.hits(compare_set, t.get("title", ""), compare.scope_of(platform, t))
                 item["in_library"] = bool(hits)
                 if hits:
                     item["in_library_src"] = hits[:5]
@@ -921,8 +887,10 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         if not ss.has_kakao_title(sid):
             return False, "목록에 없는 카카오 작품입니다"
         flags = {
-            "subscribe": {"subscribed": True, "excluded": False, "unsubscribed": False},
-            "restore": {"subscribed": True, "excluded": False, "unsubscribed": False},
+            "subscribe": {"subscribed": True, "excluded": False, "unsubscribed": False,
+                          "manual_subscribed": True, "auto_subscribed": None},
+            "restore": {"subscribed": True, "excluded": False, "unsubscribed": False,
+                        "manual_subscribed": True, "auto_subscribed": None},
             "unsubscribe": {"subscribed": False, "unsubscribed": True},
             "exclude": {"subscribed": False, "excluded": True},
         }
@@ -1457,47 +1425,57 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
     # 카테고리탭 설정 편집 (코어 플러그인 설정 화면 대신)
     # ------------------------------------------------------------------
     # (섹션, 그룹 제목, 키들) - 섹션은 설정 화면의 [공통][네이버][카카오페이지] 탭
+    # (섹션, 그룹 제목, 키들[, 그룹 설명]) - 섹션은 설정 화면의 탭
     _SETTINGS_GROUPS = [
-        ("common", "자동 실행", ("ENABLE_SCHEDULER", "INTERVAL_MINUTES", "FINISHED_SCAN_HOUR",
-                                "NEW_EP_SCOPE", "AUTO_SUBSCRIBE_NEW_TITLES")),
-        ("common", "쿠키 자동 갱신", ("COOKIE_KEEPALIVE_HOURS",)),
-        ("common", "다운로드 대상", ("ALLOW_BL", "ALLOW_GL")),
-        ("common", "공통 경로", ("TEMP_DOWNLOAD_ROOT",)),
-        ("common", "중복 확인 폴더(공통)", ("COMPARE_FOLDER",)),
-        ("common", "생성 파일", ("ADD_COVER_AS_FIRST_PAGE", "GENERATE_COMICINFO_XML", "GENERATE_SERIES_JSON",
-                                "GENERATE_KAVITA_YAML", "KAVITA_YAML_EMBED_COVER", "ZIP_STORED")),
-        ("common", "다운로드 속도 / 서버 부하", ("FAST_MODE", "PARALLEL_TITLES", "MAX_NEW_EPISODES_PER_TITLE",
-                                            "INITIAL_EPISODES_LIMIT",
-                                            "MAX_CONCURRENT_DOWNLOADS", "DELAY_SECONDS",
-                                            "REQUEST_TIMEOUT_SECONDS", "LOW_PRIORITY_MODE",
-                                            "DOWNLOAD_NICE_LEVEL", "FOLDER_ZERO_FILL", "IMAGE_ZERO_FILL")),
-        ("common", "디스코드 알림", ("DISCORD_WEBHOOK_URL", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID")),
-        ("naver", "네이버 계정", ("NAVER_ID", "NAVER_PW", "NAVER_COOKIE_JSON")),
-        ("naver", "네이버 다운로드", ("DOWNLOAD_ROOT", "AUTO_SUBSCRIBE_DAILY_PLUS", "NAVER_TRY_OWNED_PAID")),
-        ("naver", "중복 확인 폴더(네이버웹툰)", ("COMPARE_FOLDERS_NAVER",)),
-        ("kakao", "카카오페이지 사용 / 계정", ("KAKAO_ENABLE", "KAKAO_COOKIE")),
-        ("kakao", "카카오페이지 다운로드", ("KAKAO_DOWNLOAD_ROOT", "KAKAO_AUTO", "KAKAO_AUTO_SUBSCRIBE_WAITFREE",
-                                          "KAKAO_SYNC_PURCHASED")),
-        ("kakao", "카카오 웹소설", ("KAKAO_NOVEL_ENABLE", "KAKAO_NOVEL_DOWNLOAD_ROOT",
-                                   "KAKAO_NOVEL_AUTO_SUBSCRIBE_WAITFREE")),
-        ("kakao", "중복 확인 폴더(카카오)", ("COMPARE_FOLDERS_KAKAO", "COMPARE_FOLDERS_NOVEL")),
-        ("kakao", "카카오페이지 이용권(웹툰·웹소설 공통)", ("KAKAO_USE_WAITFREE", "KAKAO_USE_OWNED_TICKETS",
-                                                       "KAKAO_USE_PAID_TICKETS")),
+        ("common", "자동 실행", ("ENABLE_SCHEDULER", "INTERVAL_MINUTES", "FINISHED_SCAN_HOUR", "NEW_EP_SCOPE")),
+        ("common", "구독 / 다운로드 대상", ("AUTO_SUBSCRIBE_NEW_TITLES", "INITIAL_EPISODES_LIMIT",
+                                         "ALLOW_BL", "ALLOW_GL"),
+         "매일+·기다무 작품과 이미 갖고 있는 작품을 받을지는 각 플랫폼 탭에서 정합니다."),
+        ("common", "중복 확인(모든 플랫폼)", ("COMPARE_FOLDER", "COMPARE_LIBRARY_ID"),
+         "이미 갖고 있는 작품에 '📚 보유중' 뱃지를 붙이고, 각 플랫폼 탭의 '이미 갖고 있는 작품도 받기'가 꺼져 있으면 "
+         "자동 다운로드에서 뺍니다. 플랫폼별 폴더는 각 탭에서 지정합니다."),
+        ("common", "다운로드 속도", ("FAST_MODE", "PARALLEL_TITLES", "MAX_CONCURRENT_DOWNLOADS", "DELAY_SECONDS",
+                                   "MAX_NEW_EPISODES_PER_TITLE", "REQUEST_TIMEOUT_SECONDS")),
+        ("common", "서버 부하", ("LOW_PRIORITY_MODE", "DOWNLOAD_NICE_LEVEL")),
+        ("common", "저장 파일", ("TEMP_DOWNLOAD_ROOT", "ZIP_STORED", "ADD_COVER_AS_FIRST_PAGE",
+                                "GENERATE_COMICINFO_XML", "GENERATE_SERIES_JSON", "GENERATE_KAVITA_YAML",
+                                "KAVITA_YAML_EMBED_COVER", "FOLDER_ZERO_FILL", "IMAGE_ZERO_FILL")),
+        ("common", "알림 / 쿠키 유지", ("COOKIE_KEEPALIVE_HOURS", "DISCORD_WEBHOOK_URL", "DISCORD_BOT_TOKEN",
+                                       "DISCORD_CHANNEL_ID")),
+
+        ("naver", "계정", ("NAVER_COOKIE_JSON",)),
+        ("naver", "다운로드", ("DOWNLOAD_ROOT", "NAVER_DOWNLOAD_DAILY_PLUS", "NAVER_TRY_OWNED_PAID")),
+        ("naver", "중복 확인", ("COMPARE_FOLDERS_NAVER", "NAVER_DOWNLOAD_OWNED")),
+
+        ("kakao", "사용 / 계정(웹툰·웹소설 공통)", ("KAKAO_ENABLE", "KAKAO_COOKIE", "KAKAO_AUTO")),
+        ("kakao", "다운로드", ("KAKAO_DOWNLOAD_ROOT", "KAKAO_DOWNLOAD_WAITFREE", "KAKAO_SYNC_PURCHASED")),
+        ("kakao", "대여권(웹툰·웹소설 공통)", ("KAKAO_USE_WAITFREE", "KAKAO_USE_OWNED_TICKETS",
+                                            "KAKAO_USE_PAID_TICKETS")),
+        ("kakao", "중복 확인", ("COMPARE_FOLDERS_KAKAO", "KAKAO_DOWNLOAD_OWNED")),
+
+        ("novel", "사용", ("KAKAO_NOVEL_ENABLE",)),
+        ("novel", "다운로드", ("KAKAO_NOVEL_DOWNLOAD_ROOT", "KAKAO_NOVEL_DOWNLOAD_WAITFREE")),
+        ("novel", "중복 확인", ("COMPARE_FOLDERS_NOVEL", "KAKAO_NOVEL_DOWNLOAD_OWNED")),
     ]
-    _SETTINGS_SECTIONS = [("common", "공통"), ("naver", "네이버"), ("kakao", "카카오페이지")]
+
+    _SETTINGS_SECTIONS = [("common", "공통"), ("naver", "네이버웹툰"), ("kakao", "카카오웹툰"),
+                          ("novel", "카카오웹소설")]
     # 설정 탭의 다른 UI(중복 확인 라이브러리 드롭다운)가 따로 관리하는 키
-    _SETTINGS_HIDDEN = ("COMPARE_LIBRARY_ID", "COMPARE_LIBRARY_NAME")
+    _SETTINGS_HIDDEN = ()
 
     def _settings_fields(self):
         by_key = {f["key"]: f for f in self.settings_schema}
         groups, seen = [], set()
-        for section, glabel, keys in self._SETTINGS_GROUPS:
+        for g in self._SETTINGS_GROUPS:
+            section, glabel, keys = g[0], g[1], g[2]
             fields = [dict(by_key[k]) for k in keys if k in by_key]
             seen.update(f["key"] for f in fields)
             if fields:
-                groups.append({"section": section, "label": glabel, "fields": fields})
+                groups.append({"section": section, "label": glabel, "fields": fields,
+                               "desc": g[3] if len(g) > 3 else ""})
         rest = [dict(f) for f in self.settings_schema
-                if f["key"] not in seen and f["key"] not in self._SETTINGS_HIDDEN]
+                if f["key"] not in seen and f["key"] not in self._SETTINGS_HIDDEN
+                and f.get("type") != "hidden"]
         if rest:
             groups.append({"section": "common", "label": "기타", "fields": rest})
         return groups
@@ -1602,108 +1580,15 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 "SELECT DISTINCT series_name FROM books WHERE library_id = ? "
                 "AND COALESCE(is_deleted, 0) = 0",
                 (library_id,))
-            return set(_normalize_series_name(r["series_name"])
+            return set(compare.normalize(r["series_name"])
                        for r in rows if r.get("series_name")), None
         except Exception as e:  # noqa: BLE001
             return None, "라이브러리 조회 실패: %s" % e
 
-    # 중복 확인 폴더 설정 키 -> (적용 대상, 화면 표시 이름)
-    _COMPARE_FOLDER_KEYS = (("COMPARE_FOLDER", "all", "공통"),
-                            ("COMPARE_FOLDERS_NAVER", "naver", "네이버웹툰"),
-                            ("COMPARE_FOLDERS_KAKAO", "kakao", "카카오웹툰"),
-                            ("COMPARE_FOLDERS_NOVEL", "novel", "카카오웹소설"))
-
-    @staticmethod
-    def _split_folders(raw):
-        """여러 줄(또는 ';' 구분)로 넣은 폴더 목록 -> [경로]. 중복/빈 줄 제거."""
-        out = []
-        for line in str(raw or "").replace("\r", "\n").replace(";", "\n").split("\n"):
-            p = line.strip().strip('"').strip()
-            if p and p not in out:
-                out.append(p)
-        return out
-
-    def _scan_compare_folder(self, folder):
-        """폴더 하나의 시리즈명 집합. 원격 마운트 부담을 줄이려고 60초 캐시.
-        반환: (set|None, error_message|None)"""
-        if not os.path.isdir(folder):
-            return None, "폴더를 찾을 수 없음: %s" % folder
-        now = time.time()
-        cached = _COMPARE_FOLDER_CACHE.get(folder)
-        if cached and (now - cached[0]) < 60:
-            return cached[1], None
-        try:
-            names = set()
-            with os.scandir(folder) as it:
-                for entry in it:
-                    if entry.name.startswith("."):
-                        continue
-                    if entry.is_dir():
-                        names.add(_normalize_series_name(entry.name))
-                    elif entry.name.lower().endswith((".zip", ".cbz", ".epub", ".pdf")):
-                        stem = os.path.splitext(entry.name)[0]
-                        # "제목 0012화#110" / "제목 05권" 같은 꼬리표를 떼어 시리즈명만 남긴다.
-                        stem = _EPISODE_SUFFIX_RE.sub("", stem)
-                        names.add(_normalize_series_name(stem))
-            names.discard("")
-            _COMPARE_FOLDER_CACHE[folder] = (now, names)
-            return names, None
-        except Exception as e:  # noqa: BLE001
-            return None, "폴더 읽기 실패: %s (%s)" % (folder, e)
-
     def _build_compare_set(self, db_type, cfg):
-        """중복 확인 기준을 만든다. 폴더는 공통/네이버웹툰/카카오웹툰/카카오웹소설별로
-        여러 개 지정할 수 있고, 각 작품은 자기 플랫폼 폴더 + 공통 폴더 + 라이브러리와만 비교한다.
-        반환: (compare dict|None, status dict)
-          compare = {"all"|"naver"|"kakao"|"novel": {정규화된 이름: [출처 표시, ...]}}
-        아무것도 설정 안 됐으면 None - 카드에 뱃지를 아예 안 띄운다('모름' 상태)."""
-        status = {"enabled": False, "sources": [], "count": 0, "errors": [], "folders": []}
-        compare = {"all": {}, "naver": {}, "kakao": {}, "novel": {}}
-        any_source = False
-        for key, scope, label in self._COMPARE_FOLDER_KEYS:
-            folders = self._split_folders(cfg.get(key))
-            for idx, folder in enumerate(folders, 1):
-                names, err = self._scan_compare_folder(folder)
-                src = "%s 폴더%s" % (label, (" %d" % idx) if len(folders) > 1 else "")
-                if err:
-                    status["errors"].append("%s: %s" % (src, err))
-                    status["folders"].append({"scope": label, "path": folder, "count": None, "error": err})
-                    continue
-                any_source = True
-                status["folders"].append({"scope": label, "path": folder, "count": len(names)})
-                status["sources"].append("%s(%d개)" % (src, len(names)))
-                bucket = compare[scope]
-                tag = "%s: %s" % (src, folder)
-                for n in names:
-                    bucket.setdefault(n, []).append(tag)
-
-        lib_set, lib_err = self._get_compare_library_series_set(db_type, cfg)
-        if lib_err:
-            status["errors"].append(lib_err)
-        if lib_set is not None:
-            any_source = True
-            tag = "라이브러리: %s" % (cfg.get("COMPARE_LIBRARY_NAME") or cfg.get("COMPARE_LIBRARY_ID"))
-            for n in lib_set:
-                compare["all"].setdefault(n, []).append(tag)
-            status["sources"].append("라이브러리(%d개)" % len(lib_set))
-
-        if not any_source:
-            return None, status
-        status["enabled"] = True
-        status["count"] = len(set().union(*[set(v) for k, v in compare.items()]))
-        # 목록 캐시 키: 폴더별 스캔 시각 + 결과 크기(폴더 캐시가 갱신될 때만 목록을 다시 만든다)
-        compare["_sig"] = repr((tuple((f["path"], f.get("count"), (_COMPARE_FOLDER_CACHE.get(f["path"]) or (0,))[0])
-                                      for f in status["folders"]),
-                                len(lib_set) if lib_set is not None else None))
-        return compare, status
-
-    @staticmethod
-    def compare_hits(compare, name, scope):
-        """작품 하나의 중복 출처 목록(자기 플랫폼 + 공통)."""
-        if compare is None:
-            return None
-        n = _normalize_series_name(name)
-        return list(compare["all"].get(n, [])) + list((compare.get(scope) or {}).get(n, []))
+        """중복 확인 기준(compare.py). 라이브러리 조회는 이 클래스의 DB 접근을 쓴다."""
+        compare.set_library_source(lambda c, _db=db_type: self._get_compare_library_series_set(_db, c))
+        return compare.build(cfg)
 
 
 def action_slug(label):
@@ -1736,6 +1621,9 @@ def action_slug(label):
 # 호출에 안전하도록 이미 설계돼 있음 - PID 락 + 프로세스 전역 플래그).
 try:
     _bootstrap_provider = WebtoonManagerMetadataProvider()
+    # 자동 다운로드의 "보유 작품 건너뛰기"도 라이브러리 기준을 쓸 수 있게 등록
+    compare.set_library_source(
+        lambda c: _bootstrap_provider._get_compare_library_series_set("general", c))
     scheduler.ensure_started(lambda: _bootstrap_provider._get_cfg("general"),
                               pipeline.run_full_cycle,
                               pipeline.run_finished_scan_job)

@@ -394,9 +394,22 @@ def _apply_waitfree_autosubscribe(cfg, patch, log=print):
     """'기다무 자동 구독'이 켜져 있으면 연재 중인 기다무 작품을 구독으로 올린다.
     네이버 '매일+ 자동 구독'과 같은 규칙: 사용자가 구독/구독해제/제외를 한 번도
     고르지 않은(전부 기본값인) 작품만 건드린다. 완결작은 대상이 아니다."""
-    if not cfg.get("KAKAO_AUTO_SUBSCRIBE_WAITFREE", True):
-        return 0
+    from . import pipeline as _plx
+    toon_on = _plx._truthy(cfg.get("KAKAO_DOWNLOAD_WAITFREE"))
+    novel_on = _plx._truthy(cfg.get("KAKAO_NOVEL_DOWNLOAD_WAITFREE")) and novel_enabled(cfg)
     current = ss.load_kakao_titles()
+    # '기다무 작품 다운로드'가 꺼진 쪽(웹툰/웹소설)은 예전에 자동 구독됐던 기다무 작품을
+    # 구독 전 상태로 되돌린다(직접 구독한 작품은 그대로). 다시 켜면 다음 스캔 때 다시 자동 구독.
+    off = {sid: {"subscribed": False, "auto_subscribed": None}
+           for sid, t in current.items()
+           if t.get("auto_subscribed") == "waitfree" and t.get("subscribed") and not t.get("manual_subscribed")
+           and not (novel_on if _is_novel(t) else toon_on)}
+    if off:
+        ss.upsert_kakao_title(off)
+        log("기다무 작품 받기가 꺼져 있어 자동 구독됐던 기다무 작품 %d개를 구독 전 상태로 되돌림" % len(off))
+        current = ss.load_kakao_titles()
+    if not (toon_on or novel_on):
+        return 0
     promote = {}
     # 예전 버전이 쿠키 없이 자동 구독해 둔 성인 기다무 작품은 받을 수 없으므로
     # 자동 구독 이전 상태로 되돌린다(사용자가 직접 구독한 작품은 건드리지 않음)
@@ -413,7 +426,7 @@ def _apply_waitfree_autosubscribe(cfg, patch, log=print):
         t = current.get(sid) or {}
         if not t.get("waitfree") or t.get("status") == "완결":
             continue
-        if _is_novel(t) and not (novel_enabled(cfg) and cfg.get("KAKAO_NOVEL_AUTO_SUBSCRIBE_WAITFREE")):
+        if not (novel_on if _is_novel(t) else toon_on):
             continue
         if adult_block_reason(cfg, t):
             continue   # 성인 인증 쿠키가 없으면 받을 수 없으니 자동 구독하지 않음
@@ -1023,6 +1036,7 @@ def run_kakao_cycle(cfg, log=print, manage_job=False):
     titles = {k: v for k, v in titles.items()
               if _pl.in_new_episode_scope(cfg, v, "kakao", now) and _needs_check(cfg, v, now)
               and not adult_block_reason(cfg, v) and not _pl.bl_blocked(cfg, v)}
+    titles = _pl.filter_auto_targets(cfg, titles, "kakao", log=log, label="카카오페이지: ")
     log("카카오페이지: 구독 %d개 중 이번에 확인할 작품 %d개(오늘 요일·기다무 중 새 회차/대여권 충전된 작품만)" %
         (all_count, len(titles)))
     items = sorted(titles.items(), key=lambda kv: str(kv[1].get("title") or ""))
