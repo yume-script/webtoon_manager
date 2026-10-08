@@ -145,6 +145,8 @@ def build_session(cookie_raw, timeout=15):
         s.cookies.set(name, value, domain=".kakao.com", path="/")
     s.kakao_cookie_source_hash = _cookie_hash(cookie_raw)
     s.kakao_has_cookie = bool(cookies)
+    from . import ratelimit
+    ratelimit.install(s, "카카오", log=ss.append_log)
     return s
 
 

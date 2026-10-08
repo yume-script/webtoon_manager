@@ -583,6 +583,10 @@ def _write_kavita_yaml_impl(download_root, title_id, session=None, embed_cover=T
         if not series_dir:
             series_dir = downloader.title_dir(download_root, t.get("title") or tid, tid)
         title = t.get("title") or tid
+        try:
+            downloader.wait_moves(series_dir, timeout=300)   # 옮기는 중인 회차 zip까지 반영
+        except Exception:  # noqa: BLE001
+            pass
         archives = _list_archives(series_dir)
         if not archives:
             if log and folder_title is not None:

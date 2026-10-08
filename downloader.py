@@ -183,17 +183,226 @@ def _archive_prefix(title, episode_no, folder_zero_fill=4):
     return "%s %s화" % (safe_name(title), ep_name)
 
 
+# ---- 라이브러리 폴더 목록 캐시 ----------------------------------------------
+# "이미 받은 회차인가?"를 확인할 때마다 작품 폴더 전체를 os.listdir 했는데, 라이브러리가
+# rclone(구글 드라이브) 마운트면 회차 수백 개 폴더 목록 한 번에 수백 ms~수 초가 걸려
+# 회차마다 두 번씩 기다렸다. 목록을 잠깐(5분) 기억하고, 이 플러그인이 파일을 넣거나
+# 지울 때 바로 반영한다.
+_DIR_CACHE = {}
+_DIR_TTL = 300
+_dir_lock = threading.Lock()
+
+
+def _list_dir_cached(path):
+    now = time.time()
+    with _dir_lock:
+        ent = _DIR_CACHE.get(path)
+        if ent and now - ent[0] < _DIR_TTL:
+            return ent[1]
+    try:
+        names = set(os.listdir(path))
+    except OSError:
+        return None
+    with _dir_lock:
+        _DIR_CACHE[path] = (now, names)
+    return names
+
+
+def _dir_cache_add(path, name):
+    with _dir_lock:
+        ent = _DIR_CACHE.get(path)
+        if ent:
+            ent[1].add(name)
+
+
+def _dir_cache_remove(path, name):
+    with _dir_lock:
+        ent = _DIR_CACHE.get(path)
+        if ent:
+            ent[1].discard(name)
+
+
+def invalidate_dir(path=None):
+    """다른 곳에서 라이브러리 파일 이름을 바꿨을 때 호출(None이면 전부)."""
+    with _dir_lock:
+        if path is None:
+            _DIR_CACHE.clear()
+        else:
+            _DIR_CACHE.pop(path, None)
+
+
+# ---- 완성된 zip을 라이브러리로 옮기기(백그라운드) ---------------------------------
+# zip은 로컬 임시 폴더(temp_root/_outbox)에서 만들고, 라이브러리 폴더(원격 마운트일 수
+# 있음)로 옮기는 건 별도 스레드가 한다. 그동안 작업 스레드는 바로 다음 회차를 받는다.
+# 옮기기가 실패하면 파일은 _outbox에 남고 다음 실행 때 다시 옮긴다.
+_MOVE_WORKERS = 3
+# 옮기기 대기가 이보다 많으면(라이브러리 쓰기가 다운로드보다 느림) 다운로드 쪽이 잠깐 기다린다
+# - 로컬 임시 디스크에 zip이 무한정 쌓이지 않게.
+_MAX_PENDING_MOVES = 24
+_mover = None
+_mover_lock = threading.Lock()
+_pending = {}          # series_dir -> set(Future)
+
+
+def _get_mover():
+    global _mover
+    with _mover_lock:
+        if _mover is None:
+            def _init():
+                try:
+                    lower_thread_priority(10)
+                except Exception:  # noqa: BLE001
+                    pass
+            _mover = ThreadPoolExecutor(max_workers=_MOVE_WORKERS, thread_name_prefix="wtm_mover",
+                                        initializer=_init)
+        return _mover
+
+
+def _outbox_dir(temp_root):
+    return os.path.join(temp_root, "_outbox")
+
+
+def _move_into_library(src, series_dir, name, log=None):
+    """src(로컬 zip)를 series_dir/name 으로 원자적으로 옮긴다."""
+    dst = os.path.join(series_dir, name)
+    os.makedirs(series_dir, exist_ok=True)
+    try:
+        os.replace(src, dst)                      # 같은 디스크면 즉시
+    except OSError:
+        tmp = dst + ".tmp"
+        shutil.copyfile(src, tmp)                 # 다른 디스크(원격 마운트 등)
+        os.replace(tmp, dst)
+        try:
+            os.remove(src)
+        except OSError:
+            pass
+    try:
+        os.remove(src + ".dest")
+    except OSError:
+        pass
+    _dir_cache_add(series_dir, name)
+    return dst
+
+
+def _queue_move(src, series_dir, name, log=None, wait=False):
+    with open(src + ".dest", "w", encoding="utf-8") as f:
+        json.dump({"series_dir": series_dir, "name": name}, f, ensure_ascii=False)
+    if wait:
+        return _move_into_library(src, series_dir, name, log=log)
+
+    def _job():
+        try:
+            return _move_into_library(src, series_dir, name, log=log)
+        except Exception as e:  # noqa: BLE001
+            if log:
+                log("라이브러리로 옮기기 실패(다음 실행 때 다시 시도): %s -> %s (%s)" % (name, series_dir, e))
+            raise
+    while True:
+        with _mover_lock:
+            n_pending = sum(len(v) for v in _pending.values())
+        if n_pending < _MAX_PENDING_MOVES:
+            break
+        time.sleep(0.2)
+    fut = _get_mover().submit(_job)
+    with _mover_lock:
+        _pending.setdefault(series_dir, set()).add(fut)
+
+    def _done(f, sd=series_dir):
+        with _mover_lock:
+            s_ = _pending.get(sd)
+            if s_:
+                s_.discard(f)
+                if not s_:
+                    _pending.pop(sd, None)
+    fut.add_done_callback(_done)
+    return os.path.join(series_dir, name)
+
+
+def wait_moves(series_dir=None, timeout=600):
+    """옮기는 중인 zip이 라이브러리에 다 들어갈 때까지 기다린다(kavita.yaml 갱신 전 등)."""
+    with _mover_lock:
+        if series_dir is None:
+            futs = [f for s_ in _pending.values() for f in s_]
+        else:
+            futs = list(_pending.get(series_dir) or ())
+    end = time.time() + timeout
+    for f in futs:
+        try:
+            f.result(timeout=max(0.1, end - time.time()))
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def flush_outbox(temp_root, log=None):
+    """이전 실행에서 못 옮기고 남은 zip을 라이브러리로 옮긴다."""
+    root = _outbox_dir(temp_root)
+    if not os.path.isdir(root):
+        return 0
+    _ACTIVE_TEMP_ROOTS.add(temp_root)
+    n = 0
+    for sub in os.listdir(root):
+        box = os.path.join(root, sub)
+        if not os.path.isdir(box):
+            continue
+        for fname in os.listdir(box):
+            if fname.endswith(".tmp"):
+                try:   # 압축 도중 중단돼 남은 조각
+                    if time.time() - os.path.getmtime(os.path.join(box, fname)) > 3600:
+                        os.remove(os.path.join(box, fname))
+                except OSError:
+                    pass
+                continue
+            if not fname.endswith(".dest"):
+                continue
+            src = os.path.join(box, fname[:-5])
+            try:
+                with open(os.path.join(box, fname), encoding="utf-8") as f:
+                    d = json.load(f)
+                if os.path.exists(src):
+                    _move_into_library(src, d["series_dir"], d["name"], log=log)
+                    n += 1
+                else:
+                    os.remove(os.path.join(box, fname))
+            except Exception as e:  # noqa: BLE001
+                if log:
+                    log("남아 있던 zip 옮기기 실패(다음에 다시): %s (%s)" % (fname, e))
+        try:
+            os.rmdir(box)       # 비었으면 정리
+        except OSError:
+            pass
+    if n and log:
+        log("이전 실행에서 남은 회차 zip %d개를 라이브러리로 옮겼습니다" % n)
+    return n
+
+
+def _outbox_has(temp_root, prefix, title_id):
+    box = os.path.join(_outbox_dir(temp_root), str(title_id)) if temp_root else None
+    if not box or not os.path.isdir(box):
+        return None
+    for fname in os.listdir(box):
+        if fname.startswith(prefix) and fname.endswith(".zip"):
+            return os.path.join(box, fname)
+    return None
+
+
+_ACTIVE_TEMP_ROOTS = set()
+
+
 def find_existing_episode_archive(download_root, title, title_id, episode_no, folder_zero_fill=4):
     """이미 압축까지 끝난 회차의 zip 파일을 찾는다. 파일명에 페이지 수가
     포함돼 있어 정확한 이름을 미리 알 수 없으므로 '제목 00xx화#' 접두어로
     찾는다."""
     series_dir = title_dir(download_root, title, title_id)
-    if not os.path.isdir(series_dir):
-        return None
     prefix = _archive_prefix(title, episode_no, folder_zero_fill) + "#"
-    for fname in os.listdir(series_dir):
+    names = _list_dir_cached(series_dir)
+    for fname in (names or ()):
         if fname.startswith(prefix) and fname.lower().endswith(".zip"):
             return os.path.join(series_dir, fname)
+    # 라이브러리로 옮기는 중(또는 지난번에 못 옮긴) zip도 "이미 받음"으로 본다
+    for tr in list(_ACTIVE_TEMP_ROOTS):
+        hit = _outbox_has(tr, prefix, title_id)
+        if hit:
+            return hit
     return None
 
 
@@ -231,6 +440,7 @@ def download_episode(session, download_root, temp_root, title, title_id, episode
                     (title_id, episode_no))
             try:
                 os.remove(existing_archive)
+                _dir_cache_remove(os.path.dirname(existing_archive), os.path.basename(existing_archive))
             except OSError as e:
                 return False, False, 0, "기존 파일 삭제 실패: %s" % e
         else:
@@ -247,6 +457,7 @@ def download_episode(session, download_root, temp_root, title, title_id, episode
                         (title_id, episode_no, e))
                 try:
                     os.remove(existing_archive)
+                    _dir_cache_remove(os.path.dirname(existing_archive), os.path.basename(existing_archive))
                 except OSError:
                     pass
 
@@ -363,7 +574,7 @@ def download_episode(session, download_root, temp_root, title, title_id, episode
 
 def compress_episode(download_root, temp_root, title, title_id, episode_no,
                       folder_zero_fill=4, log=None, comicinfo_meta=None,
-                      zip_stored=True, session=None, cover_url=None):
+                      zip_stored=True, session=None, cover_url=None, async_move=True):
     """2단계(별도 단계): download_episode()로 temp_root 임시 폴더에 완전히
     다 받아진 회차 이미지를 '제목 00xx화#장수.zip'으로 압축해서 실제 웹툰
     폴더(download_root)로 옮기고, 임시 낱장 폴더는 삭제한다. 다운로드
@@ -413,13 +624,17 @@ def compress_episode(download_root, temp_root, title, title_id, episode_no,
     # 죽어도 "완성된 이름"의 파일이 실제 라이브러리 경로에 절대 안 생긴다.
     # (이미지 자체는 temp_root라는 별도 위치에서 압축 전까지 머무른다.)
     series_dir = title_dir(download_root, title, title_id)
-    os.makedirs(series_dir, exist_ok=True)
     count = len(files)
     archive_name = "%s#%d.zip" % (_archive_prefix(title, episode_no, folder_zero_fill), count)
+    # 1.34.0: zip은 로컬 임시 폴더(_outbox)에서 만들고 라이브러리로는 백그라운드로 옮긴다
+    # (라이브러리가 원격 마운트여도 다음 회차 다운로드가 기다리지 않게). 옮기는 동안에도
+    # find_existing_episode_archive()가 _outbox를 보므로 중복으로 받지 않는다.
+    _ACTIVE_TEMP_ROOTS.add(temp_root)
+    box = os.path.join(_outbox_dir(temp_root), str(title_id))
+    os.makedirs(box, exist_ok=True)
+    local_zip = os.path.join(box, archive_name)
     archive_path = os.path.join(series_dir, archive_name)
-    if os.path.exists(archive_path):
-        os.remove(archive_path)
-    tmp_path = archive_path + ".tmp"
+    tmp_path = local_zip + ".tmp"
     try:
         cover = fetch_cover_bytes(session, cover_url, log=log) if cover_url else None
         with zipfile.ZipFile(tmp_path, "w",
@@ -450,7 +665,11 @@ def compress_episode(download_root, temp_root, title, title_id, episode_no,
                     if log:
                         log("titleId=%s no=%s: ComicInfo.xml 생성 실패(이미지 압축은 정상 진행) - %s" %
                             (title_id, episode_no, e))
-        os.replace(tmp_path, archive_path)
+        os.replace(tmp_path, local_zip)
+        if async_move:
+            _queue_move(local_zip, series_dir, archive_name, log=log)
+        else:
+            _queue_move(local_zip, series_dir, archive_name, log=log, wait=True)
         shutil.rmtree(target_dir, ignore_errors=True)
         # 임시 폴더 구조는 temp_root/titleId/회차번호/ 였으니, 회차 폴더를
         # 지운 뒤 상위 titleId 폴더가 비어있으면(그 작품 회차가 지금 이거

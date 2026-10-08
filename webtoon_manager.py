@@ -90,6 +90,7 @@ DEFAULTS = {
     "AUTO_SUBSCRIBE_DAILY_PLUS": False,
     "MAX_NEW_EPISODES_PER_TITLE": 10,
     "PARALLEL_TITLES": 2,
+    "FAST_MODE": False,
     "INITIAL_EPISODES_LIMIT": 0,
     "MAX_CONCURRENT_DOWNLOADS": 5,
     "DELAY_SECONDS": 1.0,
@@ -254,8 +255,12 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
          "type": "checkbox", "default": True},
         {"key": "MAX_NEW_EPISODES_PER_TITLE", "label": "1회 실행당 작품별 최대 신규 다운로드 회차 수(0=무제한)",
          "type": "number", "default": 10},
+        {"key": "FAST_MODE",
+         "label": "고속 모드(밀린 회차 몰아받기) - 동시 작품 6개 이상·이미지 10개 이상·회차 간 대기 0.2초 이하·"
+                  "작품당 1회 50화까지. 서버가 제한(429/503)하면 자동으로 쉬었다가 다시 빨라짐",
+         "type": "boolean", "default": False},
         {"key": "PARALLEL_TITLES",
-         "label": "동시에 처리할 작품 수(1~5, 네이버·카카오 각각 적용)", "type": "number", "default": 2},
+         "label": "동시에 처리할 작품 수(1~10, 네이버·카카오 각각 적용)", "type": "number", "default": 2},
         {"key": "INITIAL_EPISODES_LIMIT",
          "label": "처음 구독한 작품은 최신 N화만 받기(0 = 전체 회차). 이전 회차는 카드의 '다운로드'/'다시 확인'으로 받을 수 있음",
          "type": "number", "default": 0},
@@ -320,12 +325,14 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
     # ------------------------------------------------------------------
     # 설정 헬퍼
     # ------------------------------------------------------------------
-    def _get_cfg(self, db_type):
+    def _get_cfg(self, db_type, for_settings=False):
         cfg = self.get_plugin_config(db_type, default={}) or {}
         merged = dict(DEFAULTS)
         merged.update({k: v for k, v in cfg.items() if v not in (None, "")})
         if not merged.get("DOWNLOAD_ROOT"):
             merged["DOWNLOAD_ROOT"] = ss.DOWNLOAD_DEFAULT_DIR
+        if not for_settings:
+            merged = pipeline.apply_fast_mode(merged)   # 설정 화면에는 사용자가 넣은 값 그대로
         return merged
 
     # ------------------------------------------------------------------
@@ -687,7 +694,19 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             "titles_rev": ss.titles_rev(),
             "log_tail": ss.tail_log(60),
             "history": ss.load_history(limit=200),
+            "speed": self._speed_info(cfg),
         }, ensure_ascii=False)
+
+    def _speed_info(self, cfg):
+        from . import ratelimit
+        info = ss.download_rate(3600)
+        info["fast"] = bool(pipeline._truthy(cfg.get("FAST_MODE")))
+        info["parallel"] = cfg.get("PARALLEL_TITLES")
+        try:
+            info["throttle"] = ratelimit.status()
+        except Exception:  # noqa: BLE001
+            info["throttle"] = {}
+        return info
 
     def _act_kakao_manual_lookup(self, db_type, title_id):
         from . import kakao_api, kakao_pipeline
@@ -1426,7 +1445,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         ("common", "공통 경로", ("TEMP_DOWNLOAD_ROOT", "COMPARE_FOLDER")),
         ("common", "생성 파일", ("ADD_COVER_AS_FIRST_PAGE", "GENERATE_COMICINFO_XML", "GENERATE_SERIES_JSON",
                                 "GENERATE_KAVITA_YAML", "KAVITA_YAML_EMBED_COVER", "ZIP_STORED")),
-        ("common", "다운로드 속도 / 서버 부하", ("PARALLEL_TITLES", "MAX_NEW_EPISODES_PER_TITLE",
+        ("common", "다운로드 속도 / 서버 부하", ("FAST_MODE", "PARALLEL_TITLES", "MAX_NEW_EPISODES_PER_TITLE",
                                             "INITIAL_EPISODES_LIMIT",
                                             "MAX_CONCURRENT_DOWNLOADS", "DELAY_SECONDS",
                                             "REQUEST_TIMEOUT_SECONDS", "LOW_PRIORITY_MODE",
@@ -1463,7 +1482,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
     def _act_get_settings(self, db_type):
         """설정 폼용 스키마 + 현재 값. 비밀번호/토큰/쿠키 값 자체는 내려보내지
         않고 '저장돼 있음' 여부만 알려준다(빈 칸으로 저장하면 기존 값 유지)."""
-        cfg = self._get_cfg(db_type)
+        cfg = self._get_cfg(db_type, for_settings=True)
         groups = self._settings_fields()
         values, secret_set = {}, {}
         for g in groups:

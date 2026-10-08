@@ -440,6 +440,20 @@
     }
   }
 
+  // 최근 1시간 다운로드 속도 + 고속 모드/서버 제한 상태
+  function speedLine() {
+    var sp = state.speed;
+    if (!sp) return '';
+    var txt = '최근 1시간 ' + (sp.total || 0) + '화 (네이버 ' + (sp.naver || 0) + ' · 카카오 ' + (sp.kakao || 0) + ')';
+    txt += sp.fast ? ' · 고속 모드' : '';
+    var th = sp.throttle || {};
+    Object.keys(th).forEach(function (k) {
+      if (th[k].cooling > 0) txt += ' · ' + k + ' 서버 제한으로 ' + th[k].cooling + '초 쉬는 중';
+      else if (th[k].level > 0) txt += ' · ' + k + ' 속도 조절 ' + th[k].level + '단계';
+    });
+    return '<div class="wtm-hint" style="margin:2px 0 0 0">' + escapeHtml(txt) + '</div>';
+  }
+
   function renderStatusBar() {
     var job = state.job || {};
     var pill = el('[data-el="status-pill"]');
@@ -460,7 +474,7 @@
         msg.innerHTML = parts.map(function (p) {
           return '<div>' + escapeHtml(p.msg || '') + ' <span class="wtm-hint" style="margin:0">· 작품 ' +
             (p.done || 0) + '/' + (p.total || 0) + '</span></div>';
-        }).join('');
+        }).join('') + speedLine();
       } else {
         msg.textContent = job.message || '';
       }
@@ -566,6 +580,7 @@
     state.kakao_queue = data.kakao_queue || [];
     state.log_tail = data.log_tail || state.log_tail;
     state.history = data.history || state.history;
+    state.speed = data.speed || state.speed;
     if (data.titles_rev && data.titles_rev !== state.titles_rev) {
       // 다운로드 중에는 작품 정보가 몇 초마다 바뀐다. 그때마다 수천 개 목록을 다시
       // 받아 그리면 서버/브라우저 CPU를 많이 쓰므로 작업 중엔 60초에 한 번만 갱신.

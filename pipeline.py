@@ -57,6 +57,31 @@ def target_weekdays(now=None):
     return days
 
 
+def _truthy(v):
+    return str(v).lower() in ("1", "true", "on", "y", "yes")
+
+
+def apply_fast_mode(cfg):
+    """고속 모드면 속도 관련 값을 끌어올린 cfg 사본을 돌려준다(저장된 설정은 그대로).
+    사용자가 이미 더 높게(대기는 더 짧게) 잡아 둔 값은 그대로 둔다."""
+    if not _truthy(cfg.get("FAST_MODE")):
+        return cfg
+    c = dict(cfg)
+
+    def _f(k, d):
+        try:
+            return float(c.get(k, d))
+        except (TypeError, ValueError):
+            return float(d)
+    c["PARALLEL_TITLES"] = max(int(_f("PARALLEL_TITLES", 2)), 6)
+    c["MAX_CONCURRENT_DOWNLOADS"] = max(int(_f("MAX_CONCURRENT_DOWNLOADS", 5)), 10)
+    c["DELAY_SECONDS"] = min(_f("DELAY_SECONDS", 1.0), 0.2)
+    cap = int(_f("MAX_NEW_EPISODES_PER_TITLE", 10))
+    if 0 < cap < 50:
+        c["MAX_NEW_EPISODES_PER_TITLE"] = 50
+    return c
+
+
 _WD_KO = {"mon": "월", "tue": "화", "wed": "수", "thu": "목", "fri": "금", "sat": "토", "sun": "일"}
 
 
@@ -607,6 +632,10 @@ def run_download_cycle(cfg, log=print):
 
     download_root = cfg.get("DOWNLOAD_ROOT") or ss.DOWNLOAD_DEFAULT_DIR
     temp_root = cfg.get("TEMP_DOWNLOAD_ROOT") or ss.TMP_DOWNLOAD_DEFAULT_DIR
+    try:
+        downloader.flush_outbox(temp_root, log=log)   # 지난번에 못 옮긴 zip 먼저 정리
+    except Exception as e:  # noqa: BLE001
+        log("남은 zip 정리 실패(무시): %s" % e)
     if download_root == ss.DOWNLOAD_DEFAULT_DIR:
         log("이번 다운로드 경로(설정 안 됨 - 기본 경로 사용): %s" % download_root)
     else:
@@ -848,7 +877,7 @@ def run_download_cycle(cfg, log=print):
 
         return
 
-    workers = max(1, min(5, int(_cfg_num(cfg, "PARALLEL_TITLES", 2))))
+    workers = max(1, min(10, int(_cfg_num(cfg, "PARALLEL_TITLES", 2))))
     items = list(subscribed.items())
     if workers == 1:
         for i, (tid, t) in enumerate(items):

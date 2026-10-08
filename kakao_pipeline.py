@@ -165,6 +165,8 @@ def _renumber_existing_files(root, title, sid, episodes, folder_zero_fill=4, log
         moves.append((f, new_name))
     if not moves:
         return 0
+    downloader.wait_moves(series_dir)     # 옮기는 중인 zip이 다 들어간 뒤에 이름 변경
+    downloader.invalidate_dir(series_dir)
     try:
         for f, _new in moves:
             os.replace(os.path.join(series_dir, f), os.path.join(series_dir, f + ".renum"))
@@ -180,6 +182,7 @@ def _renumber_existing_files(root, title, sid, episodes, folder_zero_fill=4, log
             (title, len(moves), moves[0][0], moves[0][1]))
     except OSError as e:
         log("%s: 회차 번호 이름 변경 중 오류(일부만 적용됐을 수 있음) - %s" % (title, e))
+    downloader.invalidate_dir(series_dir)
     return len(moves)
 
 
@@ -286,6 +289,7 @@ def _migrate_title_folder(root, old_title, new_title, sid, log=print):
     new_dir = downloader.title_dir(root, new_title, sid)
     if not os.path.isdir(old_dir) or os.path.abspath(old_dir) == os.path.abspath(new_dir):
         return
+    downloader.wait_moves(old_dir)
     try:
         os.makedirs(new_dir, exist_ok=True)
         old_prefix = downloader.safe_name(old_title) + " "
@@ -303,6 +307,8 @@ def _migrate_title_folder(root, old_title, new_title, sid, log=print):
         log("카카오 %s: 제목 변경에 맞춰 폴더/파일 이름 정리 (%s -> %s)" % (sid, old_title, new_title))
     except OSError as e:
         log("카카오 %s: 폴더 이름 정리 실패(무시) - %s" % (sid, e))
+    downloader.invalidate_dir(old_dir)
+    downloader.invalidate_dir(new_dir)
 
 
 def _refresh_info(cfg, session, sid, t, log=print):
@@ -988,6 +994,10 @@ def run_kakao_cycle(cfg, log=print, manage_job=False):
     """구독 중인 카카오페이지 작품 전체를 확인한다(자동 사이클/'카카오 전체 실행')."""
     total = {"downloaded": 0, "locked": 0, "failures": [], "waitfree_used": 0,
              "auth_expired": False, "cancelled": False}
+    try:
+        downloader.flush_outbox(kakao_temp_root(cfg), log=log)
+    except Exception as e:  # noqa: BLE001
+        log("카카오: 남은 zip 정리 실패(무시): %s" % e)
     if not (cfg.get("KAKAO_COOKIE") or "").strip():
         log("카카오페이지: 로그인 쿠키가 없어 무료 회차만 시도합니다.")
     titles = {k: v for k, v in ss.load_kakao_titles().items()
@@ -1053,7 +1063,7 @@ def run_kakao_cycle(cfg, log=print, manage_job=False):
             if r["auth_expired"]:
                 total["auth_expired"] = True
 
-    workers = max(1, min(5, _num(cfg, "PARALLEL_TITLES", 2)))
+    workers = max(1, min(10, _num(cfg, "PARALLEL_TITLES", 2)))
     try:
         if workers == 1:
             for sid, t in items:

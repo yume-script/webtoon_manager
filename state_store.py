@@ -347,6 +347,44 @@ def load_history(limit=200, query=None):
     return list(out)
 
 
+_rate_cache = {}
+
+
+def download_rate(window=3600):
+    """최근 window초 동안 받은 회차 수 {"total", "naver", "kakao"} (이력 파일 기준).
+    이력 파일이 바뀌었을 때만 다시 센다."""
+    sig = _file_sig(HISTORY_PATH)
+    if sig is None:
+        return {"total": 0, "naver": 0, "kakao": 0}
+    now = time.time()
+    hit = _rate_cache.get("v")
+    if hit and _rate_cache.get("k") == (sig, window) and now - _rate_cache.get("at", 0) < 60:
+        return dict(hit)
+    out = {"total": 0, "naver": 0, "kakao": 0}
+    cut = now - window
+    try:
+        with open(HISTORY_PATH, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError:
+        lines = []
+    for line in reversed(lines):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if float(e.get("ts") or 0) < cut:
+            break
+        if e.get("type") != "download":
+            continue
+        out["total"] += 1
+        if str(e.get("platform") or "").startswith("kakao"):
+            out["kakao"] += 1
+        else:
+            out["naver"] += 1
+    _rate_cache.update({"k": (sig, window), "v": out, "at": now})
+    return dict(out)
+
+
 def _load_history_raw(limit=200, query=None):
     if not os.path.exists(HISTORY_PATH):
         return []

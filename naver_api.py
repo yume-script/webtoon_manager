@@ -115,6 +115,8 @@ def build_session(cookie_storage_state_json=None, naver_id=None, naver_pw=None,
                 if c.get("name") and c.get("value") is not None:
                     sess.cookies.set(c["name"], c["value"], domain=".naver.com", path="/")
     sess.naver_cookie_source_hash = cookie_hash(cookie_storage_state_json)
+    from . import ratelimit
+    ratelimit.install(sess, "네이버", log=ss.append_log)
     return sess
 
 
