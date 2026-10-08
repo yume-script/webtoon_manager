@@ -262,8 +262,14 @@ def _download_novel_episode(cfg, session, root, title, sid, ep, t, force=False, 
     return True, False, data["words"], None
 
 
-def platform_label(t):
-    return "[카카오웹소설]" if _is_novel(t) else "[카카오웹툰]"
+def platform_label(t, with_kind=False):
+    base = "카카오웹소설" if _is_novel(t) else "카카오웹툰"
+    if with_kind:
+        from . import pipeline as _pl
+        kind = _pl.kind_label(t, "kakao")
+        if kind:
+            return "[%s·%s]" % (base, kind)
+    return "[%s]" % base
 
 
 def _is_novel(t):
@@ -1029,7 +1035,7 @@ def run_kakao_cycle(cfg, log=print, manage_job=False):
         with lock:
             done["n"] += 1
             n = done["n"]
-        label = platform_label(t)
+        label = platform_label(t, with_kind=True)
 
         def _st(i, m, text, n=n, label=label):
             msg = "%s %s (%d/%d화)" % (label, text, i + 1, m) if m else "%s %s" % (label, text)
@@ -1184,7 +1190,7 @@ def run_kakao_series_job(cfg, sid, log=print, only_nos=None, force=False):
     except kakao_api.KakaoAuthExpired as e:
         log("카카오페이지: %s" % e)
 
-    label = platform_label(t)
+    label = platform_label(t, with_kind=True)
 
     def _progress(i, n, text):
         ss.save_title_job_state({"progress": i, "total": n,

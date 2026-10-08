@@ -57,6 +57,32 @@ def target_weekdays(now=None):
     return days
 
 
+_WD_KO = {"mon": "월", "tue": "화", "wed": "수", "thu": "목", "fri": "금", "sat": "토", "sun": "일"}
+
+
+def kind_label(t, platform="naver"):
+    """진행 표시용 작품 구분: 완결 / 기다무 / 신작 / 매일+ / 연재 요일 / 구매.
+    예) "기다무·신작·월", "매일+", "완결", "화·금". 해당 없으면 ""."""
+    t = t or {}
+    parts = []
+    finished = t.get("status") == "완결" or bool(t.get("info_finished"))
+    if finished:
+        parts.append("완결")
+    if platform == "kakao" and t.get("waitfree") and not finished:
+        parts.append("기다무")
+    if t.get("new"):
+        parts.append("신작")
+    wds = list(t.get("weekdays") or [])
+    if "dailyPlus" in wds:
+        parts.append("매일+")
+    days = [_WD_KO[d] for d in ("mon", "tue", "wed", "thu", "fri", "sat", "sun") if d in wds]
+    if days and not finished:
+        parts.append("매일" if len(days) == 7 else "·".join(days))
+    if t.get("purchased"):
+        parts.append("구매")
+    return "·".join(parts)
+
+
 def in_new_episode_scope(cfg, t, platform="naver", now=None):
     """설정 NEW_EP_SCOPE가 'today'(기본)면 오늘(전후) 요일 연재작 + 매일+ + 기다무 +
     아직 한 번도 받지 않은 작품만 새 회차를 확인한다. 'all'이면 구독작 전부."""
@@ -129,10 +155,13 @@ def _naver_paid_sweep(cfg, session, tid, t, download_root, temp_root, log, skip_
     return got
 
 
-def _naver_status(done, total, text):
-    """상단 상태 줄의 네이버 진행 표시(카카오와 동시에 돌아도 서로 덮어쓰지 않게 따로 저장)."""
-    ss.save_job_state({"progress": done, "message": "[네이버웹툰] " + text,
-                        "naver": {"msg": "[네이버웹툰] " + text, "done": done, "total": total,
+def _naver_status(done, total, text, t=None):
+    """상단 상태 줄의 네이버 진행 표시(카카오와 동시에 돌아도 서로 덮어쓰지 않게 따로 저장).
+    t(작품)를 주면 "[네이버웹툰·매일+]"처럼 구분(요일/매일+/완결/신작)도 붙인다."""
+    kind = kind_label(t, "naver") if t else ""
+    head = "[네이버웹툰%s] " % (("·" + kind) if kind else "")
+    ss.save_job_state({"progress": done, "message": head + text,
+                        "naver": {"msg": head + text, "done": done, "total": total,
                                   "running": True}})
 
 
@@ -626,7 +655,7 @@ def run_download_cycle(cfg, log=print):
         with lock:
             state["done"] += 1
             done_n = state["done"]
-        _naver_status(done_n, len(subscribed), "%s - 새 회차 확인 중" % t.get("title", tid))
+        _naver_status(done_n, len(subscribed), "%s - 새 회차 확인 중" % t.get("title", tid), t=t)
         session = _thread_session()
         try:
             new_eps = _episodes_to_download(session, cfg, tid, t.get("last_downloaded_no"))
@@ -682,8 +711,8 @@ def run_download_cycle(cfg, log=print):
                     "episode_no": ep["no"], "error": "유료 회차(목록 API charge=true)",
                 })
                 break
-            _naver_status(state["done"], len(subscribed), "%s - %s화 받는 중 (%d/%d화)" % (
-                t.get("title", tid), ep["no"], capped.index(ep) + 1, len(capped)))
+            _naver_status(state["done"], len(subscribed), "%s %s화 받는 중 (%d/%d화)" % (
+                t.get("title", tid), ep["no"], capped.index(ep) + 1, len(capped)), t=t)
             try:
                 ok, skipped, img_count, err = downloader.download_episode(
                     session, download_root, temp_root, t.get("title", tid), tid, ep["no"],

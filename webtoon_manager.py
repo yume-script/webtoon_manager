@@ -748,7 +748,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             nt = ss.get_kakao_title(cur) or {}
             return ss.try_acquire_title_job({
                 "title_id": cur, "title": "[카카오] %s" % nt.get("title", cur),
-                "message": "%s %s 회차 확인 중" % (kakao_pipeline.platform_label(nt), nt.get("title", cur)),
+                "message": "%s %s 회차 확인 중" % (kakao_pipeline.platform_label(nt, with_kind=True), nt.get("title", cur)),
                 "started_at": time.time(), "finished_at": None, "cancel_requested": False,
                 "last_error": None, "progress": 0, "total": 0})
 
