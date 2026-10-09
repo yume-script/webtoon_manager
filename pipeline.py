@@ -639,18 +639,25 @@ def run_kavita_yaml_all(cfg, log=print, force_info=True, manage_job=True):
             "" if len(unmatched) <= 20 else " ...외 %d개" % (len(unmatched) - 20)))
 
     counts = {"written": 0, "unchanged": 0, "skipped": 0, "error": 0}
+    last_tick = 0.0
     for i, (full, folder_title, tid, platform) in enumerate(targets):
-        if ss.load_job_state().get("cancel_requested"):
-            log("kavita.yaml 일괄 생성 취소됨")
-            break
-        ss.save_job_state({"progress": i, "message": "kavita.yaml: %s" % folder_title})
+        now = time.time()
+        if now - last_tick >= 1.0:
+            # 진행 표시/취소 확인은 1초에 한 번만(예전엔 폴더마다 상태 파일을 읽고 썼음)
+            last_tick = now
+            if ss.load_job_state().get("cancel_requested"):
+                log("kavita.yaml 일괄 생성 취소됨")
+                break
+            ss.save_job_state({"progress": i, "message": "kavita.yaml: %s" % folder_title})
         r = kavita_yaml.write_kavita_yaml(
             download_root, tid, session=session,
             embed_cover=bool(cfg.get("KAVITA_YAML_EMBED_COVER", True)),
             force_info=force_info, log=log, series_dir=full, folder_title=folder_title,
-            platform=platform)
+            platform=platform, quick=not force_info)
         counts[r] = counts.get(r, 0) + 1
-        time.sleep(0.2)
+        if r == "written":
+            time.sleep(0.2)     # 실제로 파일을 쓴 경우만 잠깐 쉼(원격 마운트 부담 분산)
+    kavita_yaml.flush_state()
     msg = ("kavita.yaml 일괄 생성 완료: 갱신 %d / 변경없음 %d / 회차파일없음 %d / 실패 %d"
            " / 형식불일치 폴더 %d" % (counts["written"], counts["unchanged"], counts["skipped"],
                                    counts["error"], len(unmatched)))

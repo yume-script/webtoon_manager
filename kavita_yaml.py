@@ -511,16 +511,100 @@ def _state_key(series_dir):
     return os.path.abspath(series_dir)
 
 
+# kavita_state.json(시리즈 폴더별 '이미 반영한 최종 회차/작품정보 서명') 메모리 캐시.
+# 예전에는 시리즈 하나 확인할 때마다 이 파일 전체를 읽고(쓰고) 해서, 2000개 폴더를
+# 점검하면 수백 KB짜리 JSON을 수천 번 파싱했다(일일 점검 CPU의 대부분).
+# 이제는 한 번 읽어 메모리에 두고, 바뀐 내용은 모아 두었다가 10초에 한 번(또는 점검 끝에) 쓴다.
+# 이 파일은 "다시 쓸 필요 없음"을 판단하는 최적화용 기록이라, 혹시 마지막 몇 초분이
+# 저장 안 돼도 다음 점검 때 다시 확인할 뿐 문제는 없다.
+_STATE = {"sig": None, "data": None, "dirty": False, "flushed_at": 0.0}
+_STATE_FLUSH_SEC = 10
+
+
+def _file_sig(path):
+    try:
+        st = os.stat(path)
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
 def _load_state():
-    return ss.read_json(KAVITA_STATE_PATH, {})
+    with ss._lock:
+        sig = _file_sig(KAVITA_STATE_PATH)
+        if _STATE["data"] is None or (sig != _STATE["sig"] and not _STATE["dirty"]):
+            _STATE["data"] = ss.read_json(KAVITA_STATE_PATH, {})
+            _STATE["sig"] = sig
+        return _STATE["data"]
 
 
-def _save_state(series_dir, archives, sig):
+def flush_state(force=True):
+    with ss._lock:
+        if not _STATE["dirty"] or _STATE["data"] is None:
+            return
+        if not force and time.time() - _STATE["flushed_at"] < _STATE_FLUSH_SEC:
+            return
+        ss.write_json(KAVITA_STATE_PATH, _STATE["data"])
+        _STATE["sig"] = _file_sig(KAVITA_STATE_PATH)
+        _STATE["dirty"] = False
+        _STATE["flushed_at"] = time.time()
+
+
+import atexit as _atexit
+_atexit.register(flush_state)
+
+
+def _save_state(series_dir, archives, sig, dir_mtime=None):
     with ss._lock:   # 여러 작품을 동시에 처리할 때 서로 덮어쓰지 않게
         st = _load_state()
-        st[_state_key(series_dir)] = {"latest": archives[-1][0], "count": len(archives), "sig": sig,
-                                      "v": SIG_VERSION, "at": time.time()}
-        ss.write_json(KAVITA_STATE_PATH, st)
+        rec = {"latest": archives[-1][0], "count": len(archives), "sig": sig,
+               "v": SIG_VERSION, "at": time.time()}
+        if dir_mtime is None:
+            dir_mtime = _dir_mtime(series_dir)
+        if dir_mtime is not None:
+            rec["dir_mtime"] = dir_mtime
+        st[_state_key(series_dir)] = rec
+        _STATE["dirty"] = True
+    flush_state(force=False)
+
+
+def _dir_mtime(series_dir):
+    try:
+        return os.stat(series_dir).st_mtime_ns
+    except OSError:
+        return None
+
+
+def _touch_state(series_dir):
+    """실제로 확인해서 변경 없음 -> 확인 시각과 폴더 수정 시각만 갱신(다음 빠른 점검용)."""
+    with ss._lock:
+        rec = _load_state().get(_state_key(series_dir))
+        if not rec:
+            return
+        dm = _dir_mtime(series_dir)
+        if rec.get("dir_mtime") == dm and time.time() - float(rec.get("at") or 0) < 3600:
+            return
+        rec["dir_mtime"] = dm
+        rec["at"] = time.time()
+        _STATE["dirty"] = True
+    flush_state(force=False)
+
+
+QUICK_RECHECK_SEC = 7 * 24 * 3600
+
+
+def _quick_unchanged(series_dir, path, sig):
+    """일일 전체 점검용 빠른 판정: 폴더 수정 시각이 마지막으로 확인했을 때와 같고 작품 정보도
+    그대로면 폴더 목록을 읽지 않고 '변경 없음'으로 본다. 원격 마운트에서는 폴더 수정 시각이
+    정확하지 않을 수 있어 7일에 한 번은 실제로 확인한다."""
+    rec = _load_state().get(_state_key(series_dir))
+    if not rec or rec.get("v") != SIG_VERSION or rec.get("sig") != sig:
+        return False
+    if not rec.get("dir_mtime") or time.time() - float(rec.get("at") or 0) > QUICK_RECHECK_SEC:
+        return False
+    if rec.get("dir_mtime") != _dir_mtime(series_dir):
+        return False
+    return os.path.exists(path)
 
 
 def _already_current(path, series_dir, archives, sig):
@@ -554,7 +638,7 @@ def _already_current(path, series_dir, archives, sig):
 
 def _write_kavita_yaml_impl(download_root, title_id, session=None, embed_cover=True,
                       refresh_info=True, force_info=False, log=None,
-                      series_dir=None, folder_title=None, platform="naver"):
+                      series_dir=None, folder_title=None, platform="naver", quick=False):
     """시리즈 폴더에 kavita.yaml을 생성/갱신한다.
 
     series_dir를 주면(폴더 전체 스캔 시) 그 폴더를 그대로 쓴다. 제목이 나중에
@@ -583,6 +667,9 @@ def _write_kavita_yaml_impl(download_root, title_id, session=None, embed_cover=T
         if not series_dir:
             series_dir = downloader.title_dir(download_root, t.get("title") or tid, tid)
         title = t.get("title") or tid
+        path = os.path.join(series_dir, YAML_NAME)
+        if quick and not force_info and _quick_unchanged(series_dir, path, _meta_sig(t, platform, embed_cover)):
+            return "unchanged"
         try:
             downloader.wait_moves(series_dir, timeout=300)   # 옮기는 중인 회차 zip까지 반영
         except Exception:  # noqa: BLE001
@@ -593,9 +680,9 @@ def _write_kavita_yaml_impl(download_root, title_id, session=None, embed_cover=T
                 log("%s: 회차 압축파일(zip/cbz)이 없어 건너뜀" % os.path.basename(series_dir))
             return "skipped"  # 받은 회차가 없는 작품은 만들지 않음
 
-        path = os.path.join(series_dir, YAML_NAME)
         if not force_info and _already_current(path, series_dir, archives,
                                                _meta_sig(t, platform, embed_cover)):
+            _touch_state(series_dir)
             return "unchanged"
 
         if refresh_info:
@@ -677,6 +764,10 @@ def write_kavita_yaml(*args, **kwargs):
     try:
         return _write_kavita_yaml_impl(*args, **kwargs)
     finally:
+        try:
+            flush_state(force=not kwargs.get("quick"))   # 일괄 점검 중에는 10초에 한 번만 저장
+        except Exception:  # noqa: BLE001
+            pass
         try:
             flush_epub_cache()
         except Exception:  # noqa: BLE001
