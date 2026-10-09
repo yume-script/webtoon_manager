@@ -36,6 +36,7 @@ from . import discord_notify
 from . import naver_api
 from . import downloader
 from . import compare
+from . import worker_ctl
 
 PLUGIN_ID = "webtoon_manager"
 
@@ -108,6 +109,7 @@ DEFAULTS = {
     "DOWNLOAD_NICE_LEVEL": 10,
     "ZIP_STORED": True,
     "NAVER_DOWNLOAD_DAILY_PLUS": False,
+    "WORKER_MODE": True,
     "KAKAO_DOWNLOAD_WAITFREE": False,
     "KAKAO_NOVEL_DOWNLOAD_WAITFREE": False,
     "NAVER_DOWNLOAD_OWNED": False,
@@ -162,10 +164,14 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         {"key": "MAX_NEW_EPISODES_PER_TITLE", "label": "작품당 1회 실행에 받을 최대 회차 수", "type": "number",
          "default": 10, "hint": "0 = 무제한. 남은 회차는 다음 실행 때 이어서 받습니다."},
         {"key": "REQUEST_TIMEOUT_SECONDS", "label": "요청 타임아웃(초)", "type": "number", "default": 10},
+        {"key": "WORKER_MODE", "label": "별도 작업 프로세스에서 실행(권장)", "type": "checkbox", "default": True,
+         "hint": "다운로드·스캔을 BookOasis와 분리된 프로세스에서 돌려 다운로드 중에도 BookOasis가 느려지지 않게 합니다. "
+                 "끄면 예전처럼 BookOasis 안에서 실행합니다(문제가 있을 때만)."},
         {"key": "LOW_PRIORITY_MODE", "label": "BookOasis에 CPU 양보", "type": "checkbox", "default": True,
-         "hint": "다운로드/압축 작업의 CPU 우선순위를 낮춰 웹 화면이 느려지지 않게 합니다(리눅스)."},
+         "hint": "다운로드 작업의 CPU 우선순위를 낮춥니다. 별도 작업 프로세스면 프로세스 전체를 가장 낮게(nice 19), "
+                 "아니면 작업 스레드만 아래 값만큼 낮춥니다(리눅스)."},
         {"key": "DOWNLOAD_NICE_LEVEL", "label": "CPU 양보 정도(0~19)", "type": "number", "default": 10,
-         "hint": "클수록 더 많이 양보. 위 옵션이 켜져 있을 때만 적용."},
+         "hint": "별도 작업 프로세스를 끈 경우에만 적용. 클수록 더 많이 양보."},
 
         {"key": "TEMP_DOWNLOAD_ROOT", "label": "임시 작업 경로", "type": "text",
          "hint": "압축 전 낱장 이미지와 완성된 zip을 잠시 두는 곳. 비우면 플러그인 데이터 폴더. "
@@ -416,19 +422,9 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
     def get_dashboard_data(self, db_type, limit=10):
         cfg = self._get_cfg(db_type)
 
-        # 매 폴링마다 스케줄러가 떠 있는지 확인하고 없으면 기동
-        try:
-            scheduler.ensure_started(lambda: self._get_cfg(db_type),
-                                      pipeline.run_full_cycle,
-                                      pipeline.run_finished_scan_job)
-        except Exception:  # noqa: BLE001
-            pass
-
+        # 매 폴링마다 스케줄러/작업 프로세스가 떠 있는지 확인하고 없으면 기동
+        self._ensure_background(db_type, cfg)
         update_status = self._check_update_available()
-        try:
-            self._maybe_drain_kakao_queue(cfg)
-        except Exception:  # noqa: BLE001
-            pass
 
         compare_set, compare_status = self._build_compare_set(db_type, cfg)
         items_list = self._build_title_items(cfg, compare_set)
@@ -506,6 +502,18 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         dict({'success': bool, 'message'|'error': str})를 반환할 것으로 기대한다
         (튜플이면 '반환값 형식이 올바르지 않습니다'로 간주하고 HTTP 400을 내려버림).
         apply()와 달리 _dispatch()의 (bool, str) 튜플을 여기서 dict로 감싸준다."""
+        if action_id in worker_ctl.WORKER_ACTIONS and not worker_ctl.IN_WORKER:
+            cfg = self._get_cfg(db_type)
+            if worker_ctl.enabled(cfg):
+                try:
+                    ss.flush_titles()     # 화면에서 바꾼 구독 정보가 작업 프로세스에 보이도록 먼저 저장
+                except Exception:  # noqa: BLE001
+                    pass
+                raw = self.get_plugin_config(db_type, default={}) or {}
+                res = worker_ctl.forward(raw, db_type, action_id, context or {}, log=ss.append_log)
+                if res is not None:
+                    return res
+                ss.append_log("작업 프로세스에 연결할 수 없어 BookOasis 안에서 직접 실행: %s" % action_id)
         ok, message = self._dispatch(db_type, action_id, context or {})
         if action_id not in ("poll_status", "get_settings"):
             # 버튼으로 바꾼 작품 정보(구독/제외 등)는 묶음 저장을 기다리지 않고 바로 반영
@@ -598,7 +606,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
     # 카카오페이지
     # ------------------------------------------------------------------
     def _kakao_items(self, cfg):
-        if cfg.get("KAKAO_ENABLE"):
+        if cfg.get("KAKAO_ENABLE") and (worker_ctl.IN_WORKER or not worker_ctl.enabled(cfg)):
             try:
                 from . import kakao_pipeline
                 kakao_pipeline.repair_old_records_async(cfg)
@@ -648,7 +656,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             return item
 
         items_list = [_slim(t, tid, "naver") for tid, t in ss.load_titles().items()]
-        if cfg.get("KAKAO_ENABLE"):
+        if cfg.get("KAKAO_ENABLE") and (worker_ctl.IN_WORKER or not worker_ctl.enabled(cfg)):
             try:
                 from . import kakao_pipeline
                 kakao_pipeline.repair_old_records_async(cfg)
@@ -663,6 +671,53 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         """화면의 주기적 폴링용 가벼운 상태(작업 진행/로그/이력/목록 변경 표식).
         작품 목록 자체는 titles_rev가 바뀌었을 때만 화면이 따로 다시 받는다."""
         cfg = self._get_cfg(db_type)
+        worker = self._ensure_background(db_type, cfg)
+        return True, json.dumps({
+            "job": ss.load_job_state(),
+            "title_job": ss.load_title_job_state(),
+            "kakao_queue": ss.kakao_queue_list(),
+            "titles_rev": ss.titles_rev(),
+            "log_tail": ss.tail_log(60),
+            "history": ss.load_history(limit=200),
+            "speed": self._speed_info(cfg, worker),
+        }, ensure_ascii=False)
+
+    def _speed_info(self, cfg, worker=None):
+        from . import ratelimit
+        info = ss.download_rate(3600)
+        info["fast"] = bool(pipeline._truthy(cfg.get("FAST_MODE")))
+        info["parallel"] = cfg.get("PARALLEL_TITLES")
+        if worker_ctl.enabled(cfg):
+            # 다운로드는 작업 프로세스에서 돌므로 서버 제한 상태도 그쪽 값을 보여준다
+            info["worker"] = ({"pid": worker.get("pid"), "nice": worker.get("nice")} if worker
+                              else {"starting": True})
+            info["throttle"] = (worker or {}).get("throttle") or {}
+            return info
+        try:
+            info["throttle"] = ratelimit.status()
+        except Exception:  # noqa: BLE001
+            info["throttle"] = {}
+        return info
+
+    def _ensure_background(self, db_type, cfg):
+        """스케줄러/카카오 대기열/작업 프로세스를 상황에 맞게 띄운다.
+        - 별도 작업 프로세스 모드(기본): 설정을 넘기고 워커가 없으면 띄움. 반환: 워커 상태
+        - 끈 경우: 예전처럼 BookOasis 안에서 스케줄러와 대기열을 돌림"""
+        if worker_ctl.IN_WORKER:
+            return None
+        worker_ctl.reap()
+        try:
+            # 설정은 모드와 상관없이 항상 넘긴다 - 끈 경우에도 작업 프로세스가 그걸 보고 스스로 끝나야 함
+            raw = self.get_plugin_config(db_type, default={}) or {}
+            worker_ctl.write_cfg(raw)
+        except Exception:  # noqa: BLE001
+            raw = None
+        if worker_ctl.enabled(cfg):
+            try:
+                return worker_ctl.ensure_running(raw or {}, log=ss.append_log)
+            except Exception as e:  # noqa: BLE001
+                ss.append_log("작업 프로세스 확인 실패(무시): %s" % e)
+                return None
         try:
             scheduler.ensure_started(lambda: self._get_cfg(db_type),
                                       pipeline.run_full_cycle,
@@ -673,26 +728,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             self._maybe_drain_kakao_queue(cfg)
         except Exception:  # noqa: BLE001
             pass
-        return True, json.dumps({
-            "job": ss.load_job_state(),
-            "title_job": ss.load_title_job_state(),
-            "kakao_queue": ss.kakao_queue_list(),
-            "titles_rev": ss.titles_rev(),
-            "log_tail": ss.tail_log(60),
-            "history": ss.load_history(limit=200),
-            "speed": self._speed_info(cfg),
-        }, ensure_ascii=False)
-
-    def _speed_info(self, cfg):
-        from . import ratelimit
-        info = ss.download_rate(3600)
-        info["fast"] = bool(pipeline._truthy(cfg.get("FAST_MODE")))
-        info["parallel"] = cfg.get("PARALLEL_TITLES")
-        try:
-            info["throttle"] = ratelimit.status()
-        except Exception:  # noqa: BLE001
-            info["throttle"] = {}
-        return info
+        return None
 
     def _act_kakao_manual_lookup(self, db_type, title_id):
         from . import kakao_api, kakao_pipeline
@@ -1436,7 +1472,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
          "자동 다운로드에서 뺍니다. 플랫폼별 폴더는 각 탭에서 지정합니다."),
         ("common", "다운로드 속도", ("FAST_MODE", "PARALLEL_TITLES", "MAX_CONCURRENT_DOWNLOADS", "DELAY_SECONDS",
                                    "MAX_NEW_EPISODES_PER_TITLE", "REQUEST_TIMEOUT_SECONDS")),
-        ("common", "서버 부하", ("LOW_PRIORITY_MODE", "DOWNLOAD_NICE_LEVEL")),
+        ("common", "실행 방식 / 서버 부하", ("WORKER_MODE", "LOW_PRIORITY_MODE", "DOWNLOAD_NICE_LEVEL")),
         ("common", "저장 파일", ("TEMP_DOWNLOAD_ROOT", "ZIP_STORED", "ADD_COVER_AS_FIRST_PAGE",
                                 "GENERATE_COMICINFO_XML", "GENERATE_SERIES_JSON", "GENERATE_KAVITA_YAML",
                                 "KAVITA_YAML_EMBED_COVER", "FOLDER_ZERO_FILL", "IMAGE_ZERO_FILL")),
@@ -1545,6 +1581,10 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
             return False, "잘못된 값이 있습니다: %s" % ", ".join(errors)
         if not self._save_cfg_patch(db_type, patch):
             return False, "설정 저장 실패"
+        try:   # 작업 프로세스가 새 설정을 바로 쓰게
+            worker_ctl.write_cfg(self.get_plugin_config(db_type, default={}) or {})
+        except Exception:  # noqa: BLE001
+            pass
         return True, "설정을 저장했습니다(%d개 항목)" % len(patch)
 
     def _save_cfg_patch(self, db_type, patch):
@@ -1580,8 +1620,12 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 "SELECT DISTINCT series_name FROM books WHERE library_id = ? "
                 "AND COALESCE(is_deleted, 0) = 0",
                 (library_id,))
-            return set(compare.normalize(r["series_name"])
-                       for r in rows if r.get("series_name")), None
+            names = set(compare.normalize(r["series_name"]) for r in rows if r.get("series_name"))
+            try:
+                worker_ctl.write_library_cache(library_id, names)   # 작업 프로세스용(DB를 못 봄)
+            except Exception:  # noqa: BLE001
+                pass
+            return names, None
         except Exception as e:  # noqa: BLE001
             return None, "라이브러리 조회 실패: %s" % e
 
@@ -1622,10 +1666,9 @@ def action_slug(label):
 try:
     _bootstrap_provider = WebtoonManagerMetadataProvider()
     # 자동 다운로드의 "보유 작품 건너뛰기"도 라이브러리 기준을 쓸 수 있게 등록
-    compare.set_library_source(
-        lambda c: _bootstrap_provider._get_compare_library_series_set("general", c))
-    scheduler.ensure_started(lambda: _bootstrap_provider._get_cfg("general"),
-                              pipeline.run_full_cycle,
-                              pipeline.run_finished_scan_job)
+    if not worker_ctl.IN_WORKER:
+        compare.set_library_source(
+            lambda c: _bootstrap_provider._get_compare_library_series_set("general", c))
+        _bootstrap_provider._ensure_background("general", _bootstrap_provider._get_cfg("general"))
 except Exception:  # noqa: BLE001
     pass

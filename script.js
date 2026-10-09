@@ -449,6 +449,7 @@
     if (!sp) return '';
     var txt = '최근 1시간 ' + (sp.total || 0) + '화 (네이버 ' + (sp.naver || 0) + ' · 카카오 ' + (sp.kakao || 0) + ')';
     txt += sp.fast ? ' · 고속 모드' : '';
+    if (sp.worker) txt += sp.worker.pid ? (' · 별도 작업 프로세스(nice ' + sp.worker.nice + ')') : ' · 작업 프로세스 시작 중';
     var th = sp.throttle || {};
     Object.keys(th).forEach(function (k) {
       if (th[k].cooling > 0) txt += ' · ' + k + ' 서버 제한으로 ' + th[k].cooling + '초 쉬는 중';

@@ -30,7 +30,12 @@ def lower_thread_priority(nice_level=10):
     리눅스가 아니거나 권한이 없어 실패해도 조용히 무시한다 - 그냥 기본
     우선순위로 도는 것뿐이라 무해하고, 이것 때문에 다운로드가 막히면 안 된다."""
     try:
-        os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), int(nice_level))
+        tid = threading.get_native_id()
+        # 이미 더 낮은 우선순위(더 큰 nice)라면 그대로 둔다 - 별도 작업 프로세스는 nice 19로
+        # 시작하는데, 여기서 10으로 '올려' 버리면 안 되므로.
+        cur = os.getpriority(os.PRIO_PROCESS, tid)
+        if int(nice_level) > cur:
+            os.setpriority(os.PRIO_PROCESS, tid, int(nice_level))
         return True
     except (AttributeError, OSError, ValueError):
         return False

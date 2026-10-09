@@ -86,6 +86,16 @@ def _pid_alive(pid):
             return False
 
     try:
+        # 끝났지만 아직 정리되지 않은(좀비) 프로세스는 죽은 것으로 본다(리눅스)
+        with open("/proc/%s/status" % int(pid), encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("State:"):
+                    if "Z" in line.split()[1:2]:
+                        return False
+                    break
+    except (OSError, ValueError):
+        pass
+    try:
         os.kill(pid, 0)
         return True
     except OSError:
@@ -133,8 +143,24 @@ def _loop(get_cfg_func, run_full_cycle_func, run_finished_scan_func):
         _dl.lower_thread_priority(10)   # 예약 작업 전체를 낮은 CPU 우선순위로
     except Exception:  # noqa: BLE001
         pass
+    global _started_in_process
     while True:
         cfg = get_cfg_func() or {}
+        # 실행 방식이 바뀌면(별도 작업 프로세스 켜기/끄기) 맞지 않는 쪽 스케줄러는 스스로 멈춘다
+        try:
+            from . import worker_ctl as _wc
+            if not _wc.scheduler_allowed(cfg):
+                with _lock:
+                    if _read_lock() == str(os.getpid()):
+                        try:
+                            os.remove(ss.SCHED_LOCK_PATH)
+                        except OSError:
+                            pass
+                    _started_in_process = False
+                _ss.append_log("스케줄러를 %s로 넘김" % ("BookOasis" if _wc.IN_WORKER else "별도 작업 프로세스"))
+                return
+        except Exception:  # noqa: BLE001
+            pass
         enabled = str(cfg.get("ENABLE_SCHEDULER", "")).lower() in ("1", "true", "on", "y", "yes")
         interval_min = cfg.get("INTERVAL_MINUTES")
         try:
@@ -201,8 +227,9 @@ def ensure_started(get_cfg_func, run_full_cycle_func, run_finished_scan_func):
             return False
         existing_pid = _read_lock()
         if _pid_alive(existing_pid) and existing_pid != str(os.getpid()):
-            # 다른 프로세스(워커)가 이미 스케줄러를 돌리고 있다고 간주
-            _started_in_process = True
+            # 다른 프로세스가 이미 스케줄러를 돌리고 있다. (예전엔 여기서 '시작함'으로 표시해
+            # 다시 시도하지 않았는데, 별도 작업 프로세스로 넘어갈 때 BookOasis 쪽 스케줄러가
+            # 멈춘 뒤 이어받아야 하므로 다음 호출 때 다시 확인한다 - 잠금 파일 읽기뿐이라 가벼움)
             return False
         _write_lock()
         t = threading.Thread(target=_loop, args=(get_cfg_func, run_full_cycle_func, run_finished_scan_func),
