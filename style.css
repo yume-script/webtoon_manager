@@ -217,3 +217,8 @@ select.wtm-input option { color: #111; background: #fff; }
 @media (max-width: 640px) { .wtm-set-grid { grid-template-columns: 1fr; } }
 .wtm-set-grid { align-items: start; }
 .wtm-set-field .wtm-input { flex: none; width: 100%; box-sizing: border-box; }
+
+/* 묶음 안의 소제목(알림 받을 곳의 디스코드/텔레그램/슬랙/ntfy 등) */
+.wtm-set-subhead { grid-column: 1 / -1; font-weight: 700; font-size: 12.5px; margin-top: 4px; padding: 6px 0 2px;
+  border-top: 1px dashed var(--app-border, rgba(127,127,127,.25)); color: var(--app-text-primary, inherit); }
+.wtm-set-grid > .wtm-set-subhead:first-child { border-top: none; margin-top: 0; padding-top: 0; }

@@ -197,21 +197,21 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
          "hint": "0 = 끔. 자동 실행을 꺼 둬도 동작하고, 만료되면 디스코드로 알립니다."},
         {"key": "NOTIFY_NEW_EPISODES_ALL", "label": "구독 작품 전부 새 회차 알림", "type": "checkbox", "default": False,
          "hint": "끄면 카드에서 🔔를 켠 작품만 새 회차를 받았을 때 디스코드로 알립니다(기본)."},
-        {"key": "DISCORD_WEBHOOK_URL", "label": "디스코드 웹훅 URL", "type": "text",
+        {"key": "DISCORD_WEBHOOK_URL", "label": "웹훅 URL", "type": "text",
          "hint": "채널 설정 > 연동 > 웹후크에서 만든 주소."},
-        {"key": "DISCORD_BOT_TOKEN", "label": "디스코드 봇 토큰", "type": "password",
+        {"key": "DISCORD_BOT_TOKEN", "label": "봇 토큰", "type": "password",
          "hint": "선택. 웹훅 대신(또는 함께) 봇으로 보낼 때."},
-        {"key": "DISCORD_CHANNEL_ID", "label": "디스코드 채널 ID", "type": "text", "hint": "봇으로 보낼 때만 필요."},
-        {"key": "NOTIFY_TELEGRAM_BOT_TOKEN", "label": "텔레그램 봇 토큰", "type": "password",
+        {"key": "DISCORD_CHANNEL_ID", "label": "채널 ID", "type": "text", "hint": "봇으로 보낼 때만 필요."},
+        {"key": "NOTIFY_TELEGRAM_BOT_TOKEN", "label": "봇 토큰", "type": "password",
          "hint": "텔레그램 @BotFather에서 /newbot으로 만든 봇의 토큰(123456:ABC...)."},
-        {"key": "NOTIFY_TELEGRAM_CHAT_ID", "label": "텔레그램 채팅 ID", "type": "text",
+        {"key": "NOTIFY_TELEGRAM_CHAT_ID", "label": "채팅 ID", "type": "text",
          "hint": "알림 받을 대화/그룹/채널 ID. 여러 곳이면 쉼표로 구분. 봇에게 먼저 메시지를 보낸 뒤 "
                  "https://api.telegram.org/bot<토큰>/getUpdates 에서 chat.id 확인(채널은 @채널이름도 가능)."},
-        {"key": "NOTIFY_SLACK_WEBHOOK_URL", "label": "슬랙 웹훅 URL", "type": "password",
-         "hint": "선택. Slack Incoming Webhook 주소(https://hooks.slack.com/services/...)."},
-        {"key": "NOTIFY_NTFY_URL", "label": "ntfy 토픽 주소", "type": "text",
-         "hint": "선택. 휴대폰 푸시 앱 ntfy. 예) https://ntfy.sh/내토픽이름 (자체 서버 주소도 가능)."},
-        {"key": "NOTIFY_NTFY_TOKEN", "label": "ntfy 접근 토큰", "type": "password",
+        {"key": "NOTIFY_SLACK_WEBHOOK_URL", "label": "웹훅 URL", "type": "password",
+         "hint": "Slack Incoming Webhook 주소(https://hooks.slack.com/services/...)."},
+        {"key": "NOTIFY_NTFY_URL", "label": "토픽 주소", "type": "text",
+         "hint": "예) https://ntfy.sh/내토픽이름 (자체 서버 주소도 가능). 토픽 이름은 길고 추측하기 어렵게."},
+        {"key": "NOTIFY_NTFY_TOKEN", "label": "접근 토큰", "type": "password",
          "hint": "비공개 토픽/자체 서버에서 토큰을 쓰는 경우만."},
 
         # ---------------- 네이버웹툰 ----------------
@@ -1510,9 +1510,10 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         ("common", "저장 파일", ("TEMP_DOWNLOAD_ROOT", "ZIP_STORED", "ADD_COVER_AS_FIRST_PAGE",
                                 "GENERATE_COMICINFO_XML", "GENERATE_SERIES_JSON", "GENERATE_KAVITA_YAML",
                                 "KAVITA_YAML_EMBED_COVER", "FOLDER_ZERO_FILL", "IMAGE_ZERO_FILL")),
-        ("common", "알림 받을 곳", ("DISCORD_WEBHOOK_URL", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID",
-                                   "NOTIFY_TELEGRAM_BOT_TOKEN", "NOTIFY_TELEGRAM_CHAT_ID",
-                                   "NOTIFY_SLACK_WEBHOOK_URL", "NOTIFY_NTFY_URL", "NOTIFY_NTFY_TOKEN"),
+        ("common", "알림 받을 곳", ("#디스코드", "DISCORD_WEBHOOK_URL", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID",
+                                   "#텔레그램", "NOTIFY_TELEGRAM_BOT_TOKEN", "NOTIFY_TELEGRAM_CHAT_ID",
+                                   "#슬랙", "NOTIFY_SLACK_WEBHOOK_URL",
+                                   "#ntfy (휴대폰 푸시)", "NOTIFY_NTFY_URL", "NOTIFY_NTFY_TOKEN"),
          "채워 넣은 곳 전부로 같은 알림(새 회차, 완결, 쿠키 만료, 다운로드 실패 요약)을 보냅니다. "
          "저장 후 아래 '알림 테스트 보내기'로 곳마다 성공 여부를 확인하세요."),
         ("common", "알림 종류 / 쿠키 유지", ("NOTIFY_NEW_EPISODES_ALL", "COOKIE_KEEPALIVE_HOURS"),
@@ -1543,7 +1544,9 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         groups, seen = [], set()
         for g in self._SETTINGS_GROUPS:
             section, glabel, keys = g[0], g[1], g[2]
-            fields = [dict(by_key[k]) for k in keys if k in by_key]
+            # "#제목"은 묶음 안의 소제목(한 줄 전체를 차지해서 다음 칸들이 새 줄에서 시작)
+            fields = [({"key": "_h_%d" % i, "type": "heading", "label": k[1:]} if k.startswith("#")
+                       else dict(by_key[k])) for i, k in enumerate(keys) if k.startswith("#") or k in by_key]
             seen.update(f["key"] for f in fields)
             if fields:
                 groups.append({"section": section, "label": glabel, "fields": fields,
@@ -1564,6 +1567,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         for g in groups:
             for f in g["fields"]:
                 k = f["key"]
+                if f.get("type") == "heading":
+                    continue
                 v = cfg.get(k, f.get("default"))
                 if f.get("type") == "password":
                     secret_set[k] = bool(str(v or "").strip())

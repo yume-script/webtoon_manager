@@ -667,6 +667,9 @@
   function settingFieldHtml(f, value, secretSet) {
     var key = escapeHtml(f.key);
     var label = escapeHtml(f.label || f.key);
+    if (f.type === 'heading') {
+      return '<div class="wtm-set-subhead">' + label + '</div>';
+    }
     var hint = f.hint ? '<span class="wtm-set-hint">' + escapeHtml(f.hint) + '</span>' : '';
     if (f.type === 'checkbox') {
       return '<label class="wtm-set-field wtm-set-check">' +
