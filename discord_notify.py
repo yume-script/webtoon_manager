@@ -36,9 +36,127 @@ def _send_bot_message(bot_token, channel_id, content, embed=None, timeout=10):
         return False, str(e)
 
 
+# ---------------------------------------------------------------------------
+# 디스코드 외 알림 채널 (텔레그램 / 슬랙 / ntfy) - 설정된 곳 전부로 같은 알림을 보낸다
+# ---------------------------------------------------------------------------
+def _html(s):
+    return (str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def _plain_text(title, description, fields=None, url=None):
+    lines = [title]
+    if description:
+        lines.append(description)
+    for k, v in (fields or {}).items():
+        lines.append("%s: %s" % (k, v))
+    if url:
+        lines.append(url)
+    return "\n".join(lines)
+
+
+def _send_telegram(cfg, title, description, fields=None, url=None, thumbnail=None, timeout=10):
+    token = (cfg.get("NOTIFY_TELEGRAM_BOT_TOKEN") or "").strip()
+    chats = [c.strip() for c in str(cfg.get("NOTIFY_TELEGRAM_CHAT_ID") or "").replace(";", ",").split(",")
+             if c.strip()]
+    if not token or not chats:
+        return False, "텔레그램 봇 토큰/채팅 ID 없음"
+    body = "<b>%s</b>" % _html(title)
+    if description:
+        body += "\n" + _html(description)
+    for k, v in (fields or {}).items():
+        body += "\n%s: %s" % (_html(k), _html(v))
+    if url:
+        body += '\n<a href="%s">열기</a>' % _html(url)
+    base = "https://api.telegram.org/bot%s/" % token
+    errs, ok_any = [], False
+    for chat in chats:
+        try:
+            r = None
+            if thumbnail and len(body) <= 1000:      # 표지와 함께(사진 설명은 1024자 제한)
+                r = requests.post(base + "sendPhoto", data={"chat_id": chat, "photo": thumbnail,
+                                                            "caption": body, "parse_mode": "HTML"},
+                                  timeout=timeout)
+            if r is None or r.status_code >= 300:    # 표지를 못 붙이면 글만
+                r = requests.post(base + "sendMessage", data={"chat_id": chat, "text": body[:4000],
+                                                              "parse_mode": "HTML",
+                                                              "disable_web_page_preview": "true"},
+                                  timeout=timeout)
+            if r.status_code >= 300:
+                errs.append("%s: HTTP %s %s" % (chat, r.status_code, r.text[:150]))
+            else:
+                ok_any = True
+        except requests.RequestException as e:
+            errs.append("%s: %s" % (chat, e))
+    return ok_any, ("; ".join(errs) if errs else "ok")
+
+
+def _send_slack(cfg, title, description, fields=None, url=None, timeout=10):
+    hook = (cfg.get("NOTIFY_SLACK_WEBHOOK_URL") or "").strip()
+    if not hook:
+        return False, "슬랙 웹훅 URL 없음"
+    text = "*%s*" % title
+    if description:
+        text += "\n" + description
+    for k, v in (fields or {}).items():
+        text += "\n%s: %s" % (k, v)
+    if url:
+        text += "\n<%s|열기>" % url
+    try:
+        r = requests.post(hook, json={"text": text}, timeout=timeout)
+        if r.status_code >= 300:
+            return False, "HTTP %s %s" % (r.status_code, r.text[:150])
+        return True, "ok"
+    except requests.RequestException as e:
+        return False, str(e)
+
+
+def _send_ntfy(cfg, title, description, fields=None, url=None, thumbnail=None, timeout=10):
+    """ntfy(휴대폰 푸시 앱). 설정값은 토픽 주소 전체(예: https://ntfy.sh/내토픽)."""
+    topic_url = (cfg.get("NOTIFY_NTFY_URL") or "").strip().rstrip("/")
+    if not topic_url or "/" not in topic_url.split("://", 1)[-1]:
+        return False, "ntfy 토픽 주소 없음(예: https://ntfy.sh/내토픽)"
+    server, topic = topic_url.rsplit("/", 1)
+    msg = description or ""
+    for k, v in (fields or {}).items():
+        msg += "\n%s: %s" % (k, v)
+    payload = {"topic": topic, "title": title, "message": msg.strip() or title}
+    if url:
+        payload["click"] = url
+    if thumbnail:
+        payload["icon"] = thumbnail
+    headers = {}
+    tok = (cfg.get("NOTIFY_NTFY_TOKEN") or "").strip()
+    if tok:
+        headers["Authorization"] = "Bearer %s" % tok
+    try:
+        r = requests.post(server, json=payload, headers=headers, timeout=timeout)
+        if r.status_code >= 300:
+            return False, "HTTP %s %s" % (r.status_code, r.text[:150])
+        return True, "ok"
+    except requests.RequestException as e:
+        return False, str(e)
+
+
+def configured_channels(cfg):
+    out = []
+    if cfg.get("DISCORD_WEBHOOK_URL") or (cfg.get("DISCORD_BOT_TOKEN") and cfg.get("DISCORD_CHANNEL_ID")):
+        out.append("디스코드")
+    if cfg.get("NOTIFY_TELEGRAM_BOT_TOKEN") and cfg.get("NOTIFY_TELEGRAM_CHAT_ID"):
+        out.append("텔레그램")
+    if cfg.get("NOTIFY_SLACK_WEBHOOK_URL"):
+        out.append("슬랙")
+    if cfg.get("NOTIFY_NTFY_URL"):
+        out.append("ntfy")
+    return out
+
+
 def notify(cfg, title, description, color=COLOR_INFO, fields=None, mention_manage_tab=True,
-           url=None, thumbnail=None):
-    """cfg: {DISCORD_WEBHOOK_URL, DISCORD_BOT_TOKEN, DISCORD_CHANNEL_ID}"""
+           url=None, thumbnail=None, detail=False):
+    """설정된 모든 알림 채널(디스코드/텔레그램/슬랙/ntfy)로 보낸다.
+    반환: (하나라도 성공, 메시지). detail=True면 채널별 결과를 메시지에 담는다(테스트 버튼용)."""
+    results = []          # [(채널, ok, msg)]
+
+    # 디스코드
     embed = {"title": title, "description": description, "color": color}
     if url:
         embed["url"] = url
@@ -48,26 +166,33 @@ def notify(cfg, title, description, color=COLOR_INFO, fields=None, mention_manag
         embed["fields"] = [{"name": k, "value": str(v), "inline": True} for k, v in fields.items()]
     if mention_manage_tab:
         embed.setdefault("footer", {"text": "BookOasis > 웹툰 다운로더 카테고리탭에서 확인/처리하세요."})
-
-    ok_any = False
-    errs = []
     webhook_url = cfg.get("DISCORD_WEBHOOK_URL")
     if webhook_url:
         ok, msg = _send_webhook(webhook_url, embed)
-        ok_any = ok_any or ok
-        if not ok:
-            errs.append("webhook: %s" % msg)
-
+        results.append(("디스코드 웹훅", ok, msg))
     bot_token = cfg.get("DISCORD_BOT_TOKEN")
     channel_id = cfg.get("DISCORD_CHANNEL_ID")
     if bot_token and channel_id:
         ok, msg = _send_bot_message(bot_token, channel_id, content="", embed=embed)
-        ok_any = ok_any or ok
-        if not ok:
-            errs.append("bot: %s" % msg)
+        results.append(("디스코드 봇", ok, msg))
 
-    if not webhook_url and not (bot_token and channel_id):
-        return False, "디스코드 알림 대상이 설정되지 않음"
+    # 그 외 채널
+    if cfg.get("NOTIFY_TELEGRAM_BOT_TOKEN") or cfg.get("NOTIFY_TELEGRAM_CHAT_ID"):
+        ok, msg = _send_telegram(cfg, title, description, fields, url, thumbnail)
+        results.append(("텔레그램", ok, msg))
+    if cfg.get("NOTIFY_SLACK_WEBHOOK_URL"):
+        ok, msg = _send_slack(cfg, title, description, fields, url)
+        results.append(("슬랙", ok, msg))
+    if cfg.get("NOTIFY_NTFY_URL"):
+        ok, msg = _send_ntfy(cfg, title, description, fields, url, thumbnail)
+        results.append(("ntfy", ok, msg))
+
+    if not results:
+        return False, "알림 채널이 설정되지 않음([설정] > [공통] > 알림)"
+    ok_any = any(r[1] for r in results)
+    if detail:
+        return ok_any, " / ".join("%s %s" % (name, "✅" if ok else "❌ " + msg) for name, ok, msg in results)
+    errs = ["%s: %s" % (name, msg) for name, ok, msg in results if not ok]
     return ok_any, ("; ".join(errs) if errs else "ok")
 
 

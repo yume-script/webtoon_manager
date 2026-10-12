@@ -396,7 +396,7 @@
         '설정 안 됨'],
       ['zip 무압축 저장', cfg.ZIP_STORED ? '사용(CPU 절약)' : '사용 안 함(DEFLATE 압축)'],
       ['작품당 최대 신규 다운로드', cfg.MAX_NEW_EPISODES_PER_TITLE],
-      ['디스코드 알림', cfg.has_discord ? '설정됨' : '(미설정)']
+      ['알림', (cfg.notify_channels && cfg.notify_channels.length) ? cfg.notify_channels.join(', ') : '(미설정)']
     ];
     box.innerHTML = rows.map(function (r) {
       return '<div><b>' + r[0] + '</b><br>' + escapeHtml(String(r[1])) + '</div>';
@@ -839,6 +839,7 @@
         var r = await callAction(action, {});
         headerAction.disabled = false;
         if (!r.success) alert(r.message || '실패');
+        else if (action === 'test_discord') alert(r.message || '보냄');
         await refresh();
         return;
       }

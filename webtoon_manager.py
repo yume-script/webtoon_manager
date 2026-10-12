@@ -197,9 +197,22 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
          "hint": "0 = 끔. 자동 실행을 꺼 둬도 동작하고, 만료되면 디스코드로 알립니다."},
         {"key": "NOTIFY_NEW_EPISODES_ALL", "label": "구독 작품 전부 새 회차 알림", "type": "checkbox", "default": False,
          "hint": "끄면 카드에서 🔔를 켠 작품만 새 회차를 받았을 때 디스코드로 알립니다(기본)."},
-        {"key": "DISCORD_WEBHOOK_URL", "label": "디스코드 웹훅 URL", "type": "text"},
-        {"key": "DISCORD_BOT_TOKEN", "label": "디스코드 봇 토큰", "type": "password", "hint": "선택. 완결 확인 알림용."},
-        {"key": "DISCORD_CHANNEL_ID", "label": "디스코드 채널 ID", "type": "text"},
+        {"key": "DISCORD_WEBHOOK_URL", "label": "디스코드 웹훅 URL", "type": "text",
+         "hint": "채널 설정 > 연동 > 웹후크에서 만든 주소."},
+        {"key": "DISCORD_BOT_TOKEN", "label": "디스코드 봇 토큰", "type": "password",
+         "hint": "선택. 웹훅 대신(또는 함께) 봇으로 보낼 때."},
+        {"key": "DISCORD_CHANNEL_ID", "label": "디스코드 채널 ID", "type": "text", "hint": "봇으로 보낼 때만 필요."},
+        {"key": "NOTIFY_TELEGRAM_BOT_TOKEN", "label": "텔레그램 봇 토큰", "type": "password",
+         "hint": "텔레그램 @BotFather에서 /newbot으로 만든 봇의 토큰(123456:ABC...)."},
+        {"key": "NOTIFY_TELEGRAM_CHAT_ID", "label": "텔레그램 채팅 ID", "type": "text",
+         "hint": "알림 받을 대화/그룹/채널 ID. 여러 곳이면 쉼표로 구분. 봇에게 먼저 메시지를 보낸 뒤 "
+                 "https://api.telegram.org/bot<토큰>/getUpdates 에서 chat.id 확인(채널은 @채널이름도 가능)."},
+        {"key": "NOTIFY_SLACK_WEBHOOK_URL", "label": "슬랙 웹훅 URL", "type": "password",
+         "hint": "선택. Slack Incoming Webhook 주소(https://hooks.slack.com/services/...)."},
+        {"key": "NOTIFY_NTFY_URL", "label": "ntfy 토픽 주소", "type": "text",
+         "hint": "선택. 휴대폰 푸시 앱 ntfy. 예) https://ntfy.sh/내토픽이름 (자체 서버 주소도 가능)."},
+        {"key": "NOTIFY_NTFY_TOKEN", "label": "ntfy 접근 토큰", "type": "password",
+         "hint": "비공개 토픽/자체 서버에서 토큰을 쓰는 경우만."},
 
         # ---------------- 네이버웹툰 ----------------
         {"key": "NAVER_COOKIE_JSON", "label": "네이버 로그인 쿠키", "type": "password", "required": False},
@@ -486,8 +499,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 "KAKAO_NOVEL_DOWNLOAD_WAITFREE": bool(pipeline._truthy(cfg.get("KAKAO_NOVEL_DOWNLOAD_WAITFREE"))),
                 "KAKAO_DOWNLOAD_ROOT": cfg.get("KAKAO_DOWNLOAD_ROOT") or ss.KAKAO_DOWNLOAD_DEFAULT_DIR,
                 "has_kakao_cookie": bool((cfg.get("KAKAO_COOKIE") or "").strip()),
-                "has_discord": bool(cfg.get("DISCORD_WEBHOOK_URL") or
-                                     (cfg.get("DISCORD_BOT_TOKEN") and cfg.get("DISCORD_CHANNEL_ID"))),
+                "has_discord": bool(discord_notify.configured_channels(cfg)),
+                "notify_channels": discord_notify.configured_channels(cfg),
             },
         }
         return {"success": True, "items": [bundle]}
@@ -932,8 +945,9 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         on = not t.get("notify_new")
         (ss.upsert_kakao_title if kakao else ss.upsert_title)({tid: {"notify_new": on}})
         cfg = self._get_cfg("general")
-        warn = "" if (cfg.get("DISCORD_WEBHOOK_URL") or (cfg.get("DISCORD_BOT_TOKEN") and cfg.get("DISCORD_CHANNEL_ID"))) \
-            else " (디스코드 알림 설정이 비어 있어 아직 보내지 못합니다 - [설정] > [공통] > 알림)"
+        chans = discord_notify.configured_channels(cfg)
+        warn = (" (%s로 보냅니다)" % ", ".join(chans)) if chans \
+            else " (알림 받을 곳 설정이 비어 있어 아직 보내지 못합니다 - [설정] > [공통] > 알림 받을 곳)"
         return True, ("'%s' 새 회차 알림을 켰습니다%s" % (t.get("title", tid), warn)) if on \
             else "'%s' 새 회차 알림을 껐습니다" % t.get("title", tid)
 
@@ -1441,8 +1455,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
 
     def _act_test_discord(self, db_type):
         cfg = self._get_cfg(db_type)
-        ok, msg = discord_notify.notify(cfg, "🔔 웹툰 다운로더 플러그인 테스트",
-                                         "이 메시지가 보이면 디스코드 알림 설정이 정상입니다.")
+        ok, msg = discord_notify.notify(cfg, "🔔 웹툰 다운로더 알림 테스트",
+                                         "이 메시지가 보이면 알림 설정이 정상입니다.", detail=True)
         return ok, msg
 
     # ------------------------------------------------------------------
@@ -1496,9 +1510,13 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         ("common", "저장 파일", ("TEMP_DOWNLOAD_ROOT", "ZIP_STORED", "ADD_COVER_AS_FIRST_PAGE",
                                 "GENERATE_COMICINFO_XML", "GENERATE_SERIES_JSON", "GENERATE_KAVITA_YAML",
                                 "KAVITA_YAML_EMBED_COVER", "FOLDER_ZERO_FILL", "IMAGE_ZERO_FILL")),
-        ("common", "알림 / 쿠키 유지", ("DISCORD_WEBHOOK_URL", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID",
-                                       "NOTIFY_NEW_EPISODES_ALL", "COOKIE_KEEPALIVE_HOURS"),
-         "새 회차 알림: 작품 카드의 🔔 버튼으로 작품마다 켜고 끕니다. 새 회차를 받으면 회차 번호·제목과 작품 링크를 보냅니다."),
+        ("common", "알림 받을 곳", ("DISCORD_WEBHOOK_URL", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID",
+                                   "NOTIFY_TELEGRAM_BOT_TOKEN", "NOTIFY_TELEGRAM_CHAT_ID",
+                                   "NOTIFY_SLACK_WEBHOOK_URL", "NOTIFY_NTFY_URL", "NOTIFY_NTFY_TOKEN"),
+         "채워 넣은 곳 전부로 같은 알림(새 회차, 완결, 쿠키 만료, 다운로드 실패 요약)을 보냅니다. "
+         "저장 후 아래 '알림 테스트 보내기'로 곳마다 성공 여부를 확인하세요."),
+        ("common", "알림 종류 / 쿠키 유지", ("NOTIFY_NEW_EPISODES_ALL", "COOKIE_KEEPALIVE_HOURS"),
+         "새 회차 알림은 작품 카드의 🔔 버튼으로 작품마다 켜고 끕니다."),
 
         ("naver", "계정", ("NAVER_COOKIE_JSON",)),
         ("naver", "다운로드", ("DOWNLOAD_ROOT", "NAVER_DOWNLOAD_DAILY_PLUS", "NAVER_TRY_OWNED_PAID")),

@@ -137,7 +137,7 @@
       <div data-el="settings-form"><div class="wtm-hint">불러오는 중...</div></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
         <button class="wtm-btn wtm-btn-primary" data-el="settings-save">설정 저장</button>
-        <button class="wtm-btn wtm-btn-secondary" data-action="test_discord">디스코드 테스트 알림 보내기</button>
+        <button class="wtm-btn wtm-btn-secondary" data-action="test_discord">알림 테스트 보내기</button>
         <span class="wtm-hint" data-el="settings-save-msg" style="margin:0;align-self:center"></span>
       </div>
       <div class="wtm-settings-summary" data-el="settings-summary" style="display:none"></div>
@@ -224,7 +224,7 @@
         <li><b>자동 실행(스케줄러) 사용</b>을 켜고 <b>실행 주기</b>를 정합니다(기본 240분, 최소 10분).</li>
         <li>저장 위치가 rclone/원격 마운트라면 <b>임시 작업 경로</b>를 빠른 로컬 디스크로 지정하세요(압축 전 낱장 이미지를 받는 곳).</li>
         <li>Kavita/BookOasis에서 쓸 부가 파일(ComicInfo.xml, series.json, kavita.yaml)을 원하는 대로 켜고 끕니다.</li>
-        <li>디스코드 알림을 받으려면 웹훅 URL(또는 봇 토큰+채널 ID)을 넣고 <b>디스코드 테스트 알림</b>으로 확인합니다.</li>
+        <li>알림을 받으려면 디스코드·텔레그램·슬랙·ntfy 중 원하는 곳을 넣고 <b>알림 테스트 보내기</b>로 확인합니다.</li>
       </ol>
       <p class="wtm-hint"><b>[설정] &gt; [네이버웹툰]</b></p>
       <ol class="wtm-hint wtm-help-list">
@@ -502,8 +502,19 @@
     </details>
 
     <details class="wtm-box">
-      <summary class="wtm-box-title">🔔 디스코드 알림</summary>
+      <summary class="wtm-box-title">🔔 알림 (디스코드 / 텔레그램 / 슬랙 / ntfy)</summary>
       <ul class="wtm-hint wtm-help-list">
+        <li><b>알림 받을 곳</b>([설정] &gt; [공통]): 채워 넣은 곳 전부로 같은 알림을 보냅니다. 저장 후 <b>알림 테스트 보내기</b>를 누르면 곳마다 ✅/❌ 결과가 나옵니다.
+          <ul>
+            <li><b>디스코드</b>: 웹훅 URL(또는 봇 토큰 + 채널 ID).</li>
+            <li><b>텔레그램</b>: @BotFather에서 <code>/newbot</code>으로 봇을 만들어 토큰을 받고, 그 봇에게 아무 메시지나 보낸 뒤
+              <code>https://api.telegram.org/bot&lt;토큰&gt;/getUpdates</code>에서 <code>chat.id</code>를 찾아 넣습니다.
+              그룹이면 봇을 그룹에 초대, 채널이면 봇을 관리자로 추가하고 <code>@채널이름</code>을 넣어도 됩니다. 여러 곳은 쉼표로 구분.
+              새 회차 알림은 표지 사진과 함께 갑니다.</li>
+            <li><b>슬랙</b>: Incoming Webhook 주소.</li>
+            <li><b>ntfy</b>(휴대폰 푸시 앱): 앱에서 토픽을 구독하고 <code>https://ntfy.sh/토픽이름</code>을 넣습니다.
+              토픽 이름을 아는 사람은 누구나 볼 수 있으니 길고 추측하기 어렵게 정하세요. 공개 서버(ntfy.sh)는 하루 보낼 수 있는 수에 제한이 있습니다.</li>
+          </ul></li>
         <li><b>새 회차 알림</b>: 작품 카드의 <b>🔕/🔔</b> 버튼으로 작품마다 켭니다(구독 중인 작품). 켠 작품의 새 회차를 받으면
           "🆕 [플랫폼] 제목 - 새 회차 N화"로 회차 번호·부제와 작품 링크, 표지를 보냅니다. 한 번 실행에 받은 회차는 작품당 한 번에 묶어 보냅니다.
           예전 회차를 채워 받는 경우(처음 받기, 다시 확인, 구매 회차 채우기)는 알리지 않고, 이전에 받은 마지막 회차보다 뒤의 회차만 알립니다.
