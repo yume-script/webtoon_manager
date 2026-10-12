@@ -834,6 +834,8 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
     comicinfo_on = bool(cfg.get("GENERATE_COMICINFO_XML", True))
     cover_url = (t.get("cover_url") or t.get("thumbnail")) if cfg.get("ADD_COVER_AS_FIRST_PAGE", True) else None
     last_ok = t.get("last_downloaded_no")
+    prev_last_no = last_ok         # 새 회차 알림: 이전에 받은 마지막 회차보다 뒤인 것만 알림
+    notice_eps = []
     max_checked = checked_no
     locked_run = 0
     ticket_available = use_waitfree
@@ -977,6 +979,8 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
                            "unit": "words" if is_novel else "images"})
         if no < kakao_api.SPECIAL_EP_BASE and (last_ok is None or no > last_ok):
             last_ok = no
+        if no < kakao_api.SPECIAL_EP_BASE and prev_last_no is not None and no > prev_last_no:
+            notice_eps.append((no, ep.get("subtitle")))
 
     summary = "신규 %d화" % res["downloaded"]
     if res.get("adult_blocked"):
@@ -1000,6 +1004,14 @@ def download_series(cfg, session, sid, log=print, full=False, cancel_check=None,
     ss.upsert_kakao_title({sid: done_patch})
 
     _update_yaml()   # 작품 정보(완결 등)만 바뀐 경우도 반영
+    if notice_eps and discord_notify.wants_new_episode_notice(cfg, ss.get_kakao_title(sid) or t):
+        try:
+            discord_notify.notify_new_episodes(
+                cfg, platform_label(t), title, notice_eps,
+                url="https://page.kakao.com/content/%s" % sid,
+                thumbnail=t.get("thumbnail"))
+        except Exception as e:  # noqa: BLE001
+            log("새 회차 디스코드 알림 실패(무시): %s" % e)
     return res
 
 

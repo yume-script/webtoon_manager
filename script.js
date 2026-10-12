@@ -189,6 +189,11 @@
   function cardActionsHtml(t) {
     var st = statusOf(t);
     var pAttr = ' data-platform="' + (t.platform || 'naver') + '"';
+    // 새 회차 디스코드 알림 켜기/끄기(구독 중인 작품에만 표시)
+    var bell = '<button class="wtm-btn wtm-btn-small' + (t.notify_new ? ' wtm-btn-primary' : ' wtm-btn-ghost') +
+      '" data-card-action="toggle_notify" data-title-id="' + escapeHtml(t.titleId) + '"' + pAttr +
+      ' title="' + (t.notify_new ? '새 회차 알림 켜짐 - 누르면 끔' : '새 회차를 받으면 디스코드로 알림') + '">' +
+      (t.notify_new ? '🔔' : '🔕') + '</button>';
     if (t.platform === 'kakao') {
       var sid = escapeHtml(t.titleId);
       var open = '<a class="wtm-btn wtm-btn-small wtm-btn-ghost" href="https://page.kakao.com/content/' + sid + '" target="_blank" rel="noopener">열기</a>';
@@ -198,7 +203,7 @@
           '<button class="wtm-btn wtm-btn-small" data-goto-manual="' + sid + '"' + pAttr + '>선택 회차 다운로드</button>' +
           '<button class="wtm-btn wtm-btn-small" data-card-action="resync_title" data-title-id="' + sid + '"' + pAttr + ' title="파일을 직접 지운 회차가 있으면 눌러주세요 - 다음 다운로드 때 전체 회차를 다시 확인합니다">다시 확인</button>' +
           '<button class="wtm-btn wtm-btn-small" data-card-action="unsubscribe" data-title-id="' + sid + '"' + pAttr + '>구독해제</button>' +
-          '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-card-action="exclude" data-title-id="' + sid + '"' + pAttr + '>제외</button>' + open;
+          '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-card-action="exclude" data-title-id="' + sid + '"' + pAttr + '>제외</button>' + bell + open;
       }
       if (st === 'unsubscribed' || st === 'excluded') {
         return res + '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-card-action="restore" data-title-id="' + sid + '"' + pAttr + '>다시 구독</button>' + open;
@@ -214,7 +219,7 @@
         '<button class="wtm-btn wtm-btn-small" data-goto-manual="' + t.titleId + '">선택 회차 다운로드</button>' +
         '<button class="wtm-btn wtm-btn-small" data-card-action="resync_title" data-title-id="' + t.titleId + '" title="파일을 직접 지운 회차가 있으면 눌러주세요 - 다음 다운로드 때 전체 회차를 다시 확인합니다">다시 확인</button>' +
         '<button class="wtm-btn wtm-btn-small" data-card-action="unsubscribe" data-title-id="' + t.titleId + '">구독해제</button>' +
-        '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-card-action="exclude" data-title-id="' + t.titleId + '">제외</button>' + nOpen;
+        '<button class="wtm-btn wtm-btn-small wtm-btn-danger" data-card-action="exclude" data-title-id="' + t.titleId + '">제외</button>' + bell + nOpen;
     }
     if (st === 'unsubscribed' || st === 'excluded') {
       return '<button class="wtm-btn wtm-btn-small wtm-btn-primary" data-card-action="restore" data-title-id="' + t.titleId + '">다시 구독</button>' + nOpen;
@@ -974,6 +979,7 @@
       }
       cardAction.disabled = false;
       if (!r5.success) alert(r5.message || '실패');
+      else if (actName === 'toggle_notify' && /설정이 비어/.test(r5.message || '')) alert(r5.message);
       await refresh();
       return;
     }

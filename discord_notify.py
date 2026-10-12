@@ -36,9 +36,14 @@ def _send_bot_message(bot_token, channel_id, content, embed=None, timeout=10):
         return False, str(e)
 
 
-def notify(cfg, title, description, color=COLOR_INFO, fields=None, mention_manage_tab=True):
+def notify(cfg, title, description, color=COLOR_INFO, fields=None, mention_manage_tab=True,
+           url=None, thumbnail=None):
     """cfg: {DISCORD_WEBHOOK_URL, DISCORD_BOT_TOKEN, DISCORD_CHANNEL_ID}"""
     embed = {"title": title, "description": description, "color": color}
+    if url:
+        embed["url"] = url
+    if thumbnail:
+        embed["thumbnail"] = {"url": thumbnail}
     if fields:
         embed["fields"] = [{"name": k, "value": str(v), "inline": True} for k, v in fields.items()]
     if mention_manage_tab:
@@ -99,3 +104,32 @@ def notify_failures(cfg, failures):
     return notify(
         cfg, "⚠️ 다운로드 실패 요약 (%d건)" % len(failures),
         "\n".join(lines) + more, color=COLOR_ERROR)
+
+
+def notify_new_episodes(cfg, platform_label, title, episodes, url=None, thumbnail=None):
+    """새 회차 알림. episodes: [(회차번호, 부제), ...] - 이번에 받은 새 회차들."""
+    if not episodes:
+        return False, "새 회차 없음"
+    eps = sorted(episodes, key=lambda e: e[0])
+    lines = []
+    import re as _re
+    for no, sub in eps[:10]:
+        sub = (sub or "").strip()
+        if title and sub.startswith(title):          # 카카오 부제는 "작품명 N화" 형태가 많음
+            sub = sub[len(title):].strip(" -:·")
+        if _re.fullmatch(r"%s\s*화" % no, sub or ""):  # 남은 게 회차 번호뿐이면 생략
+            sub = ""
+        lines.append("· %s화%s" % (no, (" - %s" % sub) if sub else ""))
+    if len(eps) > 10:
+        lines.append("· 외 %d화" % (len(eps) - 10))
+    head = "%s %s" % (platform_label, title) if platform_label else title
+    return notify(cfg, "🆕 %s - 새 회차 %d화" % (head, len(eps)), "\n".join(lines),
+                  color=COLOR_DONE, mention_manage_tab=False, url=url, thumbnail=thumbnail)
+
+
+def wants_new_episode_notice(cfg, t):
+    """이 작품의 새 회차를 알릴지: 카드에서 🔔를 켠 작품, 또는 [공통] '구독 작품 전부 알림'이 켜진 경우."""
+    if (t or {}).get("notify_new"):
+        return True
+    v = cfg.get("NOTIFY_NEW_EPISODES_ALL")
+    return v if isinstance(v, bool) else str(v).lower() in ("1", "true", "on", "yes")

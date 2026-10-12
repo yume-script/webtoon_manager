@@ -110,6 +110,7 @@ DEFAULTS = {
     "ZIP_STORED": True,
     "NAVER_DOWNLOAD_DAILY_PLUS": False,
     "WORKER_MODE": True,
+    "NOTIFY_NEW_EPISODES_ALL": False,
     "KAKAO_DOWNLOAD_WAITFREE": False,
     "KAKAO_NOVEL_DOWNLOAD_WAITFREE": False,
     "NAVER_DOWNLOAD_OWNED": False,
@@ -194,6 +195,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
 
         {"key": "COOKIE_KEEPALIVE_HOURS", "label": "쿠키 자동 갱신 간격(시간)", "type": "number", "default": 6,
          "hint": "0 = 끔. 자동 실행을 꺼 둬도 동작하고, 만료되면 디스코드로 알립니다."},
+        {"key": "NOTIFY_NEW_EPISODES_ALL", "label": "구독 작품 전부 새 회차 알림", "type": "checkbox", "default": False,
+         "hint": "끄면 카드에서 🔔를 켠 작품만 새 회차를 받았을 때 디스코드로 알립니다(기본)."},
         {"key": "DISCORD_WEBHOOK_URL", "label": "디스코드 웹훅 URL", "type": "text"},
         {"key": "DISCORD_BOT_TOKEN", "label": "디스코드 봇 토큰", "type": "password", "hint": "선택. 완결 확인 알림용."},
         {"key": "DISCORD_CHANNEL_ID", "label": "디스코드 채널 ID", "type": "text"},
@@ -547,6 +550,8 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
                 return self._act_kakao_verify_cookie(self._get_cfg(db_type), payload)
             if action.startswith("kakao_"):
                 return self._dispatch_kakao(db_type, action, payload)
+            if action == "toggle_notify":
+                return self._act_toggle_notify(payload)
             if payload.get("platform") == "kakao" and action in (
                     "subscribe", "unsubscribe", "exclude", "restore", "resync_title", "download_title"):
                 return self._kakao_card_action(db_type, action, payload)
@@ -625,7 +630,7 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
     _UI_FIELDS = ("title", "author", "thumbnail", "weekdays", "status", "subscribed",
                   "unsubscribed", "excluded", "new", "rest", "up_flag", "rating", "waitfree",
                   "category", "last_result", "adult", "is_adult", "last_downloaded_no",
-                  "episode_count", "last_seen_at", "purchased")
+                  "episode_count", "last_seen_at", "purchased", "notify_new")
 
     def _build_title_items(self, cfg, compare_set):
         """목록 데이터. titles.json/kakao_titles.json이 바뀌지 않았으면 이전 결과를
@@ -916,6 +921,21 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         res = {True: "✅ 로그인 유지", False: "❌ 만료 감지", None: "확인 못 함"}.get(st.get("ok"), "확인 못 함")
         return "쿠키 자동 갱신: %g시간마다 / 마지막 %s %s" % (
             h, time.strftime("%m-%d %H:%M", time.localtime(st["last_at"])), res)
+
+    def _act_toggle_notify(self, payload):
+        """카드의 🔔 버튼: 이 작품의 새 회차를 받으면 디스코드로 알릴지 켜고 끈다."""
+        tid = str(payload.get("titleId") or "").strip()
+        kakao = payload.get("platform") == "kakao"
+        t = ss.get_kakao_title(tid) if kakao else ss.get_title(tid)
+        if not t:
+            return False, "목록에 없는 작품입니다"
+        on = not t.get("notify_new")
+        (ss.upsert_kakao_title if kakao else ss.upsert_title)({tid: {"notify_new": on}})
+        cfg = self._get_cfg("general")
+        warn = "" if (cfg.get("DISCORD_WEBHOOK_URL") or (cfg.get("DISCORD_BOT_TOKEN") and cfg.get("DISCORD_CHANNEL_ID"))) \
+            else " (디스코드 알림 설정이 비어 있어 아직 보내지 못합니다 - [설정] > [공통] > 알림)"
+        return True, ("'%s' 새 회차 알림을 켰습니다%s" % (t.get("title", tid), warn)) if on \
+            else "'%s' 새 회차 알림을 껐습니다" % t.get("title", tid)
 
     def _kakao_card_action(self, db_type, action, payload):
         """통합 목록 카드에서 카카오 작품에 대해 누른 버튼(네이버와 같은 액션 이름)."""
@@ -1476,8 +1496,9 @@ class WebtoonManagerMetadataProvider(BaseMetadataProvider):
         ("common", "저장 파일", ("TEMP_DOWNLOAD_ROOT", "ZIP_STORED", "ADD_COVER_AS_FIRST_PAGE",
                                 "GENERATE_COMICINFO_XML", "GENERATE_SERIES_JSON", "GENERATE_KAVITA_YAML",
                                 "KAVITA_YAML_EMBED_COVER", "FOLDER_ZERO_FILL", "IMAGE_ZERO_FILL")),
-        ("common", "알림 / 쿠키 유지", ("COOKIE_KEEPALIVE_HOURS", "DISCORD_WEBHOOK_URL", "DISCORD_BOT_TOKEN",
-                                       "DISCORD_CHANNEL_ID")),
+        ("common", "알림 / 쿠키 유지", ("DISCORD_WEBHOOK_URL", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID",
+                                       "NOTIFY_NEW_EPISODES_ALL", "COOKIE_KEEPALIVE_HOURS"),
+         "새 회차 알림: 작품 카드의 🔔 버튼으로 작품마다 켜고 끕니다. 새 회차를 받으면 회차 번호·제목과 작품 링크를 보냅니다."),
 
         ("naver", "계정", ("NAVER_COOKIE_JSON",)),
         ("naver", "다운로드", ("DOWNLOAD_ROOT", "NAVER_DOWNLOAD_DAILY_PLUS", "NAVER_TRY_OWNED_PAID")),

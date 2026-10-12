@@ -789,6 +789,8 @@ def run_download_cycle(cfg, log=print):
                 _series_json_meta_for(t, tid), log=log)
 
         last_ok_no = t.get("last_downloaded_no")
+        prev_last_no = last_ok_no      # 새 회차 알림: 이전에 받은 마지막 회차보다 뒤인 것만 알림
+        notice_eps = []
         consecutive_fail = 0
         owned_mode = naver_try_owned_paid(cfg)
         tried_paid = set()
@@ -886,6 +888,8 @@ def run_download_cycle(cfg, log=print):
                     if c_ok:
                         consecutive_fail = 0
                         last_ok_no = ep["no"]
+                        if prev_last_no is not None and ep["no"] > prev_last_no:
+                            notice_eps.append((ep["no"], ep.get("subtitle")))
                     else:
                         # 버그 수정: 예전에는 압축이 실패해도 last_ok_no를 이미
                         # 위에서 무조건 이 회차 번호로 넘겨버려서, 실제로는 zip이
@@ -940,6 +944,14 @@ def run_download_cycle(cfg, log=print):
         if last_ok_no != t.get("last_downloaded_no"):
             patch["last_downloaded_no"] = last_ok_no
         ss.upsert_title({tid: patch})
+        if notice_eps and discord_notify.wants_new_episode_notice(cfg, ss.get_title(tid) or t):
+            try:
+                discord_notify.notify_new_episodes(
+                    cfg, "[네이버웹툰]", t.get("title", tid), notice_eps,
+                    url="https://comic.naver.com/webtoon/list?titleId=%s" % tid,
+                    thumbnail=t.get("thumbnail"))
+            except Exception as e:  # noqa: BLE001
+                log("새 회차 디스코드 알림 실패(무시): %s" % e)
 
         # 새 회차를 받았거나(목록 변경) 작품 정보가 바뀌었으면 kavita.yaml 갱신.
         # 내용이 같으면 파일은 건드리지 않는다.
