@@ -41,11 +41,35 @@ def lower_thread_priority(nice_level=10):
         return False
 
 
-# 시리즈 썸네일(메인 이미지)을 회차마다 매번 새로 내려받지 않도록, 프로세스
-# 생존 기간 동안만 URL 기준으로 캐시한다. {url: (bytes, 확장자) | None}
-# None은 "이 URL은 실패했음"을 기억해 같은 실행 내에서 반복 재시도하지 않기
-# 위함이다(다음 프로세스 재시작/재로드 시에는 다시 시도됨).
-_THUMBNAIL_CACHE = {}
+# 시리즈 썸네일(메인 이미지)을 회차마다 매번 새로 내려받지 않도록 URL 기준으로 캐시한다.
+# {url: (bytes, 확장자) | None}. None은 "이 URL은 실패했음"(같은 실행 중 반복 재시도 방지).
+# 1.39.2: 예전에는 한 번 받은 표지를 프로세스가 끝날 때까지 전부 들고 있어서(카카오 원본 표지
+# 장당 평균 약 800KB) 작품 수백~수천 개를 처리하면 수백 MB가 쌓였고, 다시 안 쓰는 메모리라
+# 스왑으로 밀려났다. 표지는 "지금 받는 작품"에만 필요하므로 최근 것 몇 개만 남긴다.
+import collections as _collections
+_THUMBNAIL_CACHE = _collections.OrderedDict()
+_THUMB_MAX_ITEMS = 24                  # 동시에 받는 작품 수(최대 10) x 2 정도면 충분
+_THUMB_MAX_BYTES = 32 * 1024 * 1024
+_thumb_lock = threading.Lock()
+
+
+def _thumb_get(url):
+    with _thumb_lock:
+        if url in _THUMBNAIL_CACHE:
+            _THUMBNAIL_CACHE.move_to_end(url)
+            return True, _THUMBNAIL_CACHE[url]
+    return False, None
+
+
+def _thumb_put(url, value):
+    with _thumb_lock:
+        _THUMBNAIL_CACHE[url] = value
+        _THUMBNAIL_CACHE.move_to_end(url)
+        total = sum(len(v[0]) for v in _THUMBNAIL_CACHE.values() if v)
+        while _THUMBNAIL_CACHE and (len(_THUMBNAIL_CACHE) > _THUMB_MAX_ITEMS or total > _THUMB_MAX_BYTES):
+            _k, old = _THUMBNAIL_CACHE.popitem(last=False)
+            if old:
+                total -= len(old[0])
 
 
 def fetch_cover_bytes(session, thumbnail_url, timeout=10, log=None):
@@ -54,8 +78,9 @@ def fetch_cover_bytes(session, thumbnail_url, timeout=10, log=None):
     다운로드 자체를 실패로 처리하면 안 된다(부가 기능이므로)."""
     if not thumbnail_url:
         return None
-    if thumbnail_url in _THUMBNAIL_CACHE:
-        return _THUMBNAIL_CACHE[thumbnail_url]
+    hit, cached = _thumb_get(thumbnail_url)
+    if hit:
+        return cached
     try:
         getter = session.get if session is not None else requests.get
         resp = getter(thumbnail_url, timeout=timeout)
@@ -70,7 +95,7 @@ def fetch_cover_bytes(session, thumbnail_url, timeout=10, log=None):
         if log:
             log("메인 이미지(썸네일) 다운로드 실패(무시하고 계속) - %s" % e)
         result = None
-    _THUMBNAIL_CACHE[thumbnail_url] = result
+    _thumb_put(thumbnail_url, result)
     return result
 
 
