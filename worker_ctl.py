@@ -35,8 +35,11 @@ LIB_CACHE_PATH = os.path.join(ss.DATA_DIR, "compare_library_cache.json")
 STATE_PATH = os.path.join(ss.DATA_DIR, "worker_state.json")
 LOCK_PATH = os.path.join(ss.DATA_DIR, "worker.lock")
 OUT_PATH = os.path.join(ss.DATA_DIR, "worker.out")
-SOCK_PATH = os.path.join("/tmp", "wtm_worker_%s.sock" % hashlib.sha1(
-    os.path.abspath(ss.DATA_DIR).encode("utf-8")).hexdigest()[:12])
+# 통신: 127.0.0.1의 임시 TCP 포트 + 무작위 토큰(리눅스/윈도우 공통). 작업 프로세스가 뜨면서
+# 포트와 토큰을 이 파일에 적고, 플러그인은 이 파일을 읽어 접속한다. 토큰이 맞아야 요청을 받는다.
+# (1.39.2까지는 유닉스 소켓/fcntl을 써서 윈도우 네이티브 BookOasis에서는 동작하지 않았음)
+PORT_PATH = os.path.join(ss.DATA_DIR, "worker_port.json")
+IS_WINDOWS = os.name == "nt"
 
 # 워커로 넘기는 작업(백그라운드 스레드를 띄우는 버튼들)
 WORKER_ACTIONS = {
@@ -121,11 +124,23 @@ def read_library_set(cfg):
     return set(d.get("names") or []), None
 
 
-def _send(msg, timeout=5.0):
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(timeout)
+def _endpoint():
+    d = ss.read_json(PORT_PATH, {})
     try:
-        s.connect(SOCK_PATH)
+        return int(d.get("port") or 0), str(d.get("token") or "")
+    except (TypeError, ValueError):
+        return 0, ""
+
+
+def _send(msg, timeout=5.0):
+    port, token = _endpoint()
+    if not port:
+        raise OSError("작업 프로세스 주소 없음")
+    msg = dict(msg)
+    msg["token"] = token
+    s = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+    try:
+        s.settimeout(timeout)
         s.sendall((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
         buf = b""
         while not buf.endswith(b"\n"):
@@ -157,6 +172,57 @@ def _reap():
             _procs.remove(p)
 
 
+def _python_exe():
+    """작업 프로세스를 띄울 파이썬. 윈도우에서 BookOasis가 pythonw.exe(창 없는 파이썬)나
+    서비스 래퍼로 돌고 있으면 같은 폴더의 python.exe를 쓴다."""
+    exe = sys.executable or "python"
+    if IS_WINDOWS:
+        base = os.path.basename(exe).lower()
+        if base == "pythonw.exe":
+            cand = os.path.join(os.path.dirname(exe), "python.exe")
+            if os.path.exists(cand):
+                return cand
+    return exe
+
+
+def _try_lock(f):
+    """작업 프로세스가 하나만 뜨도록 잠금 파일을 잡는다(리눅스 fcntl / 윈도우 msvcrt)."""
+    try:
+        import fcntl
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            return False
+    except ImportError:
+        import msvcrt
+        try:
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            return False
+
+
+def _lower_process_priority(low):
+    """프로세스 전체 CPU 우선순위 낮추기. 반환: 화면 표시용 값(리눅스 nice 숫자 / 윈도우 '낮음')."""
+    if not low:
+        return 0
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            k32.SetPriorityClass(k32.GetCurrentProcess(), 0x00004000)   # BELOW_NORMAL
+        except Exception:  # noqa: BLE001
+            pass
+        return "낮음"
+    try:
+        os.setpriority(os.PRIO_PROCESS, 0, 19)
+    except (AttributeError, OSError):
+        pass
+    return 19
+
+
 def spawn(log=None):
     """워커 프로세스를 띄운다(여러 BookOasis 프로세스가 동시에 불러도 워커는 하나만 남음 -
     워커가 시작하자마자 잠금 파일을 잡고, 못 잡으면 스스로 끝낸다)."""
@@ -180,9 +246,17 @@ def spawn(log=None):
         code = "import runpy,sys; runpy.run_path(sys.argv[1], run_name='__main__')"
         try:
             out = open(OUT_PATH, "ab")
-            p = subprocess.Popen([sys.executable, "-u", "-c", code, main], env=env, cwd=ss.DATA_DIR,
+            kw = {}
+            if IS_WINDOWS:
+                # 창 없이, BookOasis와 분리된 프로세스 그룹, 처음부터 낮은 우선순위로
+                kw["creationflags"] = (0x08000000      # CREATE_NO_WINDOW
+                                       | 0x00000200    # CREATE_NEW_PROCESS_GROUP
+                                       | 0x00004000)   # BELOW_NORMAL_PRIORITY_CLASS
+            else:
+                kw["start_new_session"] = True
+            p = subprocess.Popen([_python_exe(), "-u", "-c", code, main], env=env, cwd=ss.DATA_DIR,
                                  stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                                 start_new_session=True, close_fds=True)
+                                 close_fds=True, **kw)
             out.close()
             _procs.append(p)
             if log:
@@ -244,24 +318,18 @@ def _jobs_running():
 
 
 def run_worker():
-    import fcntl
+    import secrets
     import socketserver
 
     ss.ensure_dirs()
     lock = open(LOCK_PATH, "a+")
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+    if not _try_lock(lock):
         print("다른 작업 프로세스가 이미 실행 중 - 종료", flush=True)
         return
 
     cfg0 = read_cfg()
     # 스레드를 만들기 전에 낮춰야 이후 모든 스레드가 이 우선순위를 물려받는다
-    nice = 19 if _truthy(cfg0.get("LOW_PRIORITY_MODE"), True) else 0
-    try:
-        os.setpriority(os.PRIO_PROCESS, 0, nice)
-    except (AttributeError, OSError):
-        pass
+    nice = _lower_process_priority(_truthy(cfg0.get("LOW_PRIORITY_MODE"), True))
 
     # 이전 워커가 작업 도중에 끝났으면(업데이트/재시작) 실행 중 표시가 남아 있다 - 정리
     if ss.load_job_state().get("running"):
@@ -279,10 +347,12 @@ def run_worker():
     class Handler(socketserver.StreamRequestHandler):
         def handle(self):
             try:
-                line = self.rfile.readline()
+                line = self.rfile.readline(4 * 1024 * 1024)
                 msg = json.loads(line.decode("utf-8")) if line else {}
                 op = msg.get("op")
-                if op == "status":
+                if not secrets.compare_digest(str(msg.get("token") or ""), token):
+                    out = {"ok": False, "error": "토큰 불일치"}
+                elif op == "status":
                     out = {"ok": True, "pid": os.getpid(), "started_at": started_at, "nice": nice,
                            "version": version, "throttle": ratelimit.status()}
                 elif op == "action":
@@ -298,18 +368,21 @@ def run_worker():
             except OSError:
                 pass
 
-    class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    class Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
         daemon_threads = True
+        allow_reuse_address = False
 
+    token = secrets.token_hex(16)
+    server = Server(("127.0.0.1", 0), Handler)      # 로컬 전용, 빈 포트 자동 선택
+    port = server.server_address[1]
+    tmp = PORT_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"port": port, "token": token, "pid": os.getpid()}, f)
     try:
-        os.remove(SOCK_PATH)
+        os.chmod(tmp, 0o600)
     except OSError:
         pass
-    server = Server(SOCK_PATH, Handler)
-    try:
-        os.chmod(SOCK_PATH, 0o600)
-    except OSError:
-        pass
+    os.replace(tmp, PORT_PATH)
     threading.Thread(target=server.serve_forever, name="wtm_worker_socket", daemon=True).start()
 
     def _state(extra=None):
@@ -321,7 +394,7 @@ def run_worker():
         except Exception:  # noqa: BLE001
             pass
 
-    ss.append_log("별도 작업 프로세스 실행 중(PID %d, CPU 우선순위 nice %d, 버전 %s)" % (os.getpid(), nice, version))
+    ss.append_log("별도 작업 프로세스 실행 중(PID %d, CPU 우선순위 %s, 버전 %s)" % (os.getpid(), ("nice %s" % nice) if isinstance(nice, int) else nice, version))
     _state()
     try:
         from . import kakao_pipeline
@@ -378,8 +451,13 @@ def run_worker():
         pass
     try:
         server.shutdown()
-        os.remove(SOCK_PATH)
+        server.server_close()
     except Exception:  # noqa: BLE001
+        pass
+    try:
+        if ss.read_json(PORT_PATH, {}).get("pid") == os.getpid():
+            os.remove(PORT_PATH)
+    except OSError:
         pass
     try:
         os.remove(STATE_PATH)
